@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>OpenCV.JS Test</title>
+</head>
+<body>
+<h2>OpenCV.JS Test</h2>
+
+<script type="text/javascript">
+    function onOpenCvReady() {
+        // let classifier = new cv.CascadeClassifier();
+        // classifier.load('haarcascade_frontalface_default.xml');
+
+        let aMat = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+        console.log("aMatRow1aMatRow1aMatRow1:::" + aMat.data32F);
+    }
+</script>
+<script async src="opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+</body>
+</html>
