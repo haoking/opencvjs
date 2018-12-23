@@ -1,4 +1,10 @@
 
+
+
+document.write("<script type='text/javascript' src='numeric-1.2.6.js'></script>");
+
+
+
 class JSMat {
 
     //cv.Mat()
