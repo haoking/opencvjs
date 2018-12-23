@@ -15,11 +15,19 @@
         // let classifier = new cv.CascadeClassifier();
         // classifier.load('haarcascade_frontalface_default.xml');
 
-        let aMat = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-        console.log("aMatRow1aMatRow1aMatRow1:::" + aMat.data32F);
+		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let dst = new cv.Mat();
+		// cv.add(mat1, mat2, dst);
+		// mat1.delete(), mat2.delete(); //Don't forget to delete cv.Mat when you don't want to use it any more.
+		// console.log("dst::" + dst.data32F);//dst::2,4,6,8,10,12,14,16,18
 
-        CV.add(aMat, aMat, aMat);
-         console.log("adddddddd:::" + aMat.data32F);
+		let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		let dst = new cv.Mat();
+		cv.addConstant(mat1, 10, dst);
+		mat1.delete();
+		console.log("dst::" + dst.data32F);//dst::11,12,13,14,15,16,17,18,19
+
 
     }
 </script>
