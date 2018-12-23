@@ -7,15 +7,22 @@
 <body>
 <h2>OpenCV.JS Test</h2>
 
+<script defer src="numeric-1.2.6.js"></script>
+<script defer src="JS_Mat.js"></script>
+
 <script type="text/javascript">
-    function onOpenCvReady() {
+    function onOpenCVReady() {
         // let classifier = new cv.CascadeClassifier();
         // classifier.load('haarcascade_frontalface_default.xml');
 
         let aMat = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
         console.log("aMatRow1aMatRow1aMatRow1:::" + aMat.data32F);
+
+        CV.add(aMat, aMat, aMat);
+         console.log("adddddddd:::" + aMat.data32F);
+
     }
 </script>
-<script async src="opencv.js" onload="onOpenCvReady();" type="text/javascript"></script>
+<script async src="opencv.js" onload="onOpenCVReady();" type="text/javascript"></script>
 </body>
 </html>
