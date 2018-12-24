@@ -1,6 +1,16 @@
 # opencvjs
 Complete opencvjs for single channel.(With the lastest OpenCV 4.0.0+)
 
+The official opencv.js stoped update. Moreover, it still has many errors from the last version.
+
+This project is inherited from official opencv.js.
+
+Which means all of the methods in opencv.js works here, also, fix most of the errors, especial for the single channel. As most of the project is using the gray image.
+
+Moreover, the version of the full channel will come after this release.
+
+------
+
 **add()**
 
 void cv.add(src1, src2, dst) 
