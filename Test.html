@@ -22,11 +22,30 @@
 		// mat1.delete(), mat2.delete(); //Don't forget to delete cv.Mat when you don't want to use it any more.
 		// console.log("dst::" + dst.data32F);//dst::2,4,6,8,10,12,14,16,18
 
+		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let dst = new cv.Mat();
+		// cv.addConstant(mat1, 10, dst);
+		// mat1.delete();
+		// console.log("dst::" + dst.data32F);//dst::11,12,13,14,15,16,17,18,19
+
+		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let dst = new cv.Mat();
+		// cv.subtract(mat1, mat2, dst);
+		// mat1.delete(), mat2.delete(); //Don't forget to delete cv.Mat when you don't want to use it any more.
+		// console.log("dst::" + dst.data32F);//dst::0,0,0,0,0,0,0,0,0
+
 		let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 		let dst = new cv.Mat();
-		cv.addConstant(mat1, 10, dst);
+		cv.constantSubtract(10, mat1, dst);
 		mat1.delete();
-		console.log("dst::" + dst.data32F);//dst::11,12,13,14,15,16,17,18,19
+		console.log("dst::" + dst.data32F);//dst::9,8,7,6,5,4,3,2,1
+
+
+		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let dst = cv.mul();
+		// console.log("dst::" + dst.data32F);//dst::11,12,13,14,15,16,17,18,19
+
 
 
     }
