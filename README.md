@@ -233,3 +233,36 @@ mat1.delete();
 console.log("dst::" + dst);//dst::45
 ```
 
+**norm()**
+
+Float dst = cv.norm(src1)
+
+src1		First input mat
+
+dst		Norm of src1
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let dst = cv.norm(mat1);
+mat1.delete();
+console.log("dst::" + dst);//dst::16.881943016134134
+```
+
+**norm2()**
+
+Float dst = cv.norm(src1, src2)
+
+src1		First input mat
+
+src2 	Second input mat
+
+dst		Norm of src1 and src2
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[9,10,11,12,13,14,15,16,17]);
+let dst2 = cv.norm2(mat1, mat2);
+mat1.delete(), mat2.delete();
+console.log("dst2::" + dst2);//dst2::24
+```
+
