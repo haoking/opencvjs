@@ -28,7 +28,8 @@ let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 let dst = new cv.Mat();
 cv.add(mat1, mat2, dst);
-mat1.delete(), mat2.delete(); //Don't forget to delete cv.Mat when you don't want to use it any more.
+mat1.delete(), mat2.delete();
+//Don't forget to delete cv.Mat when you don't want to use it any more.
 console.log("dst::" + dst.data32F);//dst::2,4,6,8,10,12,14,16,18
 ```
 
@@ -68,7 +69,8 @@ let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 let dst = new cv.Mat();
 cv.subtract(mat1, mat2, dst);
-mat1.delete(), mat2.delete(); //Don't forget to delete cv.Mat when you don't want to use it any more.
+mat1.delete(), mat2.delete(); 
+//Don't forget to delete cv.Mat when you don't want to use it any more.
 console.log("dst::" + dst.data32F);//dst::0,0,0,0,0,0,0,0,0
 ```
 
@@ -195,5 +197,24 @@ cv.constantDivide(10, mat1, dst);
 mat1.delete();
 console.log("dst::" + dst.data32F);
 //dst::10,5,3.3333332538604736,2.5,2,1.6666666269302368,1.4285714626312256,1.25,1.1111111640930176
+```
+
+**reshape()**
+
+Cv.Mat dst = cv.reshape(src1, rows)
+
+src1		First input mat
+
+rows	Reshape to rows
+
+dst		Output mat that has the same data of src1, but the row is equal to input rows
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let dst = cv.reshape(mat1, 1);
+mat1.delete();
+console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+//dst::1,2,3,4,5,6,7,8,9:::1:::9
+dst.delete();//Don't forget to delete cv.Mat when you don't want to use it any more.
 ```
 
