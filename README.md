@@ -5,9 +5,9 @@ The official opencv.js stoped update. Moreover, it still has many errors from th
 
 This project is inherited from official opencv.js.
 
-Which means all of the methods in opencv.js works here, also, fix most of the errors, especial for the single channel. As most of the project is using the gray image.
+Which means all of the methods in opencv.js works here, also, fix most of the errors, especial for the single channel. As most of the project is using the gray image and cv.CV_32FC1.
 
-Moreover, the version of the full channel will come after this release.
+Moreover, the version of the full channel and the full data type will come after the first release.
 
 ------
 
@@ -216,5 +216,20 @@ mat1.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::1,2,3,4,5,6,7,8,9:::1:::9
 dst.delete();//Don't forget to delete cv.Mat when you don't want to use it any more.
+```
+
+**sum()**
+
+Float dst = sum.reshape(src1)
+
+src1		First input mat
+
+dst		Sum of src1 data
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let dst = cv.sum(mat1);
+mat1.delete();
+console.log("dst::" + dst);//dst::45
 ```
 
