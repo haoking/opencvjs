@@ -86,12 +86,15 @@
 		// mat1.delete();
 		// console.log("dst::" + dst);//dst::16.881943016134134
 
-		let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[9,10,11,12,13,14,15,16,17]);
-		let dst2 = cv.norm2(mat1, mat2);
-		mat1.delete(), mat2.delete();
-		console.log("dst2::" + dst2);//dst2::24
+		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[9,10,11,12,13,14,15,16,17]);
+		// let dst2 = cv.norm2(mat1, mat2);
+		// mat1.delete(), mat2.delete();
+		// console.log("dst2::" + dst2);//dst2::24
 
+		let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		let dst = cv.diag(mat1);
+		console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);//dst::1,5,9:::3:::1
 
 
     }

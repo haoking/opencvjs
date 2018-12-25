@@ -266,3 +266,20 @@ mat1.delete(), mat2.delete();
 console.log("dst2::" + dst2);//dst2::24
 ```
 
+**diag()**
+
+Cv.Mat dst = cv.diag(src1, d = 0)
+
+src1		First input mat
+
+d		Index of the diagonal
+
+dst		Output mat that has the same data of src1, but the row is equal to input rows
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let dst = cv.diag(mat1);
+console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+//dst::1,5,9:::3:::1
+```
+
