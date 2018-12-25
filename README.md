@@ -279,7 +279,117 @@ dst		Output mat that has the same data of src1, but the row is equal to input ro
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 let dst = cv.diag(mat1);
+mat1.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::1,5,9:::3:::1
+```
+
+**vconcat()**
+
+void cv.vconcat(src1, src2, dst)
+
+src1		First input mat
+
+src2		Second input mat has the same cols as the first input mat
+
+dst		Output mat that has the same number of channels as the input mat
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let dst = new cv.Mat();
+cv.vconcat(mat1, mat1, dst);
+mat1.delete();
+console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+//dst::1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9:::6:::3
+```
+
+**hconcat()**
+
+void cv.hconcat(src1, src2, dst)
+
+src1		First input mat
+
+src2		Second input mat has the same rows as the first input mat
+
+dst		Output mat that has the same number of channels as the input mat
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let dst = new cv.Mat();
+cv.hconcat(mat1, mat1, dst);
+mat1.delete();
+console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+//dst::1,2,3,1,2,3,4,5,6,4,5,6,7,8,9,7,8,9:::3:::6
+```
+
+**row()**
+
+Cv.Mat dst = cv.row(src1, row)
+
+src1		First input mat
+
+row		Index of the rows
+
+dst		Output mat that has one row
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let dst = cv.row(mat1, 2);
+mat1.delete();
+console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+//dst::7,8,9:::1:::3
+```
+
+**col()**
+
+Cv.Mat dst = cv.col(src1, col)
+
+src1		First input mat
+
+col		Index of the cols
+
+dst		Output mat that has one col
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let dst = cv.col(mat1, 2);
+mat1.delete();
+console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+//dst::3,6,9:::3:::1
+```
+
+**MDS()**
+
+{m:Float, d:Array, s:Float} dst = cv.col(src1)
+
+src1		First input mat
+
+dst		Output with {mean, dev, stddev}
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let dst = cv.MDS(mat1);
+mat1.delete();
+console.log("dst::" + dst.m + ":::" + dst.d + ":::" + dst.s);
+//dst::5:::16,9,4,1,0,1,4,9,16:::2.581988897471611
+```
+
+**roi()**
+
+Cv.Mat dst = cv.roi(src1, rect)
+
+src1		First input mat
+
+rect		a rect
+
+dst		Output mat that has the same size and number of channels as the input rect
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let rect1 = new cv.Rect(1, 1, 2, 2)
+let dst = cv.roi(mat1, rect1);
+mat1.delete();
+console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+//dst::5,6,8,9:::2:::2
 ```
 
