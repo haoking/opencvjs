@@ -393,3 +393,34 @@ console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::5,6,8,9:::2:::2
 ```
 
+**svd()**
+
+{u:cv.Mat, w:cv.Mat, vt:cv.Mat} dst = cv.svd(src1)
+
+src1		First input mat
+
+dst		Output with {u, w, vt}
+
+```javascript
+let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+let s = cv.svd(mat1);
+mat1.delete();
+console.log("sssss::" + s.u.data32F + ":::" + s.w.data32F + "::::" + s.vt.data32F);
+//sssss::-0.2690670727222803,-0.6798212121523656,-0.6822360514399335,0.9620092303255996,-0.15566952916310073,-0.22428829318197974,-0.04627257443681115,0.7166659732384585,-0.6958798255856847:::817.7596679296927,2.4749744909160456,0.002964523081211532::::0.6822778524193859,-0.6671413517114333,-0.29903068226292867,0.22871202334807922,-0.19371852220929917,0.9540251278289649,0.6943973952097016,0.7193021277527875,-0.020413391102276603
+```
+
+**RodriguesFromArray()**
+
+cv.Mat dst = cv.RodriguesFromArray(arr1)
+
+arr1		First input array
+
+dst		the mat rodrigues from the input array
+
+```javascript
+let arr1 = [1,2,3,4,5,6,7,8,9];
+let dst = cv.RodriguesFromArray(arr1);
+console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+//dst::-0.694920539855957,0.7135210037231445,0.08929285407066345,-0.19200697541236877,-0.3037850260734558,0.9331923723220825,0.6929781436920166,0.6313496828079224,0.34810739755630493:::3:::3
+```
+
