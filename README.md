@@ -694,6 +694,136 @@ let cnt = matVec.get(0);
 mat.delete(); matVec.delete(); cnt.delete();
 ```
 
+**data**
+
+```javascript
+[Data Properties]	[C++ Type]		[JavaScript Typed Array]	[Mat Type]
+data				uchar			Uint8Array					CV_8U
+data8S				char			Int8Array					CV_8S
+data16U				ushort			Uint16Array					CV_16U
+data16S				short			Int16Array					CV_16S
+data32S				int				Int32Array					CV_32S
+data32F				float			Float32Array				CV_32F
+data64F				double			Float64Array				CV_64F
+
+// row = 3, col = 4, channels = 4
+let R = src.data[row * src.cols * src.channels() + col * src.channels()];
+let G = src.data[row * src.cols * src.channels() + col * src.channels() + 1];
+let B = src.data[row * src.cols * src.channels() + col * src.channels() + 2];
+let A = src.data[row * src.cols * src.channels() + col * src.channels() + 3];
+```
+
+**at**
+
+```javascript
+[Mat Type]		[At Manipulation]
+CV_8U			ucharAt
+CV_8S			charAt
+CV_16U			ushortAt
+CV_16S			shortAt
+CV_32S			intAt
+CV_32F			floatAt
+CV_64F			doubleAt
+
+//row = 3, col = 4, channels = 4
+let R = src.ucharAt(row, col * src.channels());
+let G = src.ucharAt(row, col * src.channels() + 1);
+let B = src.ucharAt(row, col * src.channels() + 2);
+let A = src.ucharAt(row, col * src.channels() + 3);
+```
+
+**ptr**
+
+```javascript
+[Mat Type]		[Ptr Manipulation]		[JavaScript Typed Array]
+CV_8U			ucharPtr				Uint8Array
+CV_8S			charPtr					Int8Array
+CV_16U			ushortPtr				Uint16Array
+CV_16S			shortPtr				Int16Array
+CV_32S			intPtr					Int32Array
+CV_32F			floatPtr				Float32Array
+CV_64F			doublePtr				Float64Array
+
+//row = 3, col = 4, channels = 4
+let pixel = src.ucharPtr(row, col);
+let R = pixel[0];
+let G = pixel[1];
+let B = pixel[2];
+let A = pixel[3];
+```
+
+**Bitwise Operations**
+
+```javascript
+cv.bitwise_not();
+cv.bitwise_and();
+cv.bitwise_or();
+cv.bitwise_xor();
+```
+
+**Point**
+
+```javascript
+let point = new cv.Point(x, y);
+let point = {x: x, y: y};
+```
+
+**Scalar**
+
+```javascript
+let scalar = new cv.Scalar(R, G, B, Alpha);
+let scalar = [R, G, B, Alpha];
+```
+
+**Size**
+
+```javascript
+let size = new cv.Size(width, height);
+let size = {width : width, height : height};
+```
+
+**Circle**
+
+```javascript
+let circle = new cv.Circle(center, radius);
+let circle = {center : center, radius : radius};
+```
+
+**Rect**
+
+```javascript
+let rect = new cv.Rect(x, y, width, height);
+let rect = {x : x, y : y, width : width, height : height};
+```
+
+**RotatedRect**
+
+```javascript
+let rotatedRect = new cv.RotatedRect(center, size, angle);
+let rotatedRect = {center : center, size : size, angle : angle};
+
+let vertices = cv.RotatedRect.points(rotatedRect);
+let point1 = vertices[0];
+let point2 = vertices[1];
+let point3 = vertices[2];
+let point4 = vertices[3];
+
+let boundingRect = cv.RotatedRect.boundingRect(rotatedRect);
+```
+
+**other**
+
+```javascript
+cv.imread();
+cv.imshow();
+cv.VideoCapture();
+
+src.delete();
+
+cv.cvtColor();
+cv.threshold();
+```
+
 ## To Do List
 
 - **Performance**, up speed performance.
