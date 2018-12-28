@@ -1202,6 +1202,64 @@ cv.split(complexI, planes);
 cv.merge(planes, complexI);
 ```
 
+**Template Matching**
+
+```javascript
+//cv.matchTemplate (image, templ, result, method, mask = new cv.Mat())
+cv.matchTemplate(src, templ, dst, cv.TM_CCOEFF, mask);
+```
+
+**Hough Transform**
+
+```javascript
+//cv.HoughLines (image, lines, rho, theta, threshold, srn = 0, stn = 0, min_theta = 0, max_theta = Math.PI)
+cv.HoughLines(src, lines, 1, Math.PI / 180, 30, 0, 0, 0, Math.PI);
+```
+
+**Probabilistic Hough Transform**
+
+```javascript
+//cv.HoughLinesP (image, lines, rho, theta, threshold, minLineLength = 0, maxLineGap = 0)
+cv.HoughLinesP(src, lines, 1, Math.PI / 180, 2, 0, 0);
+```
+
+**Hough Circle Transform**
+
+```javascript
+//cv.HoughCircles (image, circles, method, dp, minDist, param1 = 100, param2 = 100, minRadius = 0, maxRadius = 0)
+cv.HoughCircles(src, circles, cv.HOUGH_GRADIENT, 1, 45, 75, 40, 0, 0);
+```
+
+**Threshold**
+
+```javascript
+cv.threshold(gray, gray, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+```
+
+**Distance Transform**
+
+```javascript
+//cv.distanceTransform (src, dst, distanceType, maskSize, labelType = cv.CV_32F)
+cv.distanceTransform(opening, distTrans, cv.DIST_L2, 5);
+```
+
+**mage Watershed**
+
+```javascript
+//cv.connectedComponents (image, labels, connectivity = 8, ltype = cv.CV_32S)
+cv.connectedComponents(coinsFg, markers);
+
+//cv.watershed (image, markers)
+cv.watershed(src, markers);
+```
+
+**Foreground Extraction**
+
+```javascript
+//cv.grabCut (image, mask, rect, bgdModel, fgdModel, iterCount, mode = cv.GC_EVAL)
+cv.grabCut(src, mask, rect, bgdModel, fgdModel, 1, cv.GC_INIT_WITH_RECT);
+```
+
 **other**
 
 ```javascript
@@ -1212,8 +1270,8 @@ cv.VideoCapture();
 src.delete();
 
 cv.cvtColor();
-cv.threshold();
 cv.rectangle();
+cv.Canny();
 ```
 
 ## To Do List
