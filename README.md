@@ -697,14 +697,14 @@ mat.delete(); matVec.delete(); cnt.delete();
 **data**
 
 ```javascript
-[Data Properties]	[C++ Type]		[JavaScript Typed Array]	[Mat Type]
-data				uchar			Uint8Array					CV_8U
-data8S				char			Int8Array					CV_8S
-data16U				ushort			Uint16Array					CV_16U
-data16S				short			Int16Array					CV_16S
-data32S				int				Int32Array					CV_32S
-data32F				float			Float32Array				CV_32F
-data64F				double			Float64Array				CV_64F
+[Data Properties]	[C++ Type]	[JavaScript Typed Array]	[Mat Type]
+data				uchar		Uint8Array					CV_8U
+data8S				char		Int8Array					CV_8S
+data16U				ushort		Uint16Array					CV_16U
+data16S				short		Int16Array					CV_16S
+data32S				int			Int32Array					CV_32S
+data32F				float		Float32Array				CV_32F
+data64F				double		Float64Array				CV_64F
 
 // row = 3, col = 4, channels = 4
 let R = src.data[row * src.cols * src.channels() + col * src.channels()];
@@ -811,6 +811,397 @@ let point4 = vertices[3];
 let boundingRect = cv.RotatedRect.boundingRect(rotatedRect);
 ```
 
+**cvtColor**
+
+```javascript
+cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY, 0);
+```
+
+**inRange**
+
+```javascript
+cv.inRange(src, low, high, dst);
+```
+
+**Scaling**
+
+```javascript
+cv.resize (src, dst, dsize, fx = 0, fy = 0, interpolation = cv.INTER_LINEAR)
+```
+
+**Translation**
+
+```javascript
+cv.warpAffine (src, dst, M, dsize, flags = cv.INTER_LINEAR, borderMode = cv.BORDER_CONSTANT, borderValue = new cv.Scalar())
+```
+
+**Rotation**
+
+```javascript
+cv.getRotationMatrix2D (center, angle, scale)
+```
+
+**Affine Transformation**
+
+```javascript
+cv.getAffineTransform (src, dst)
+```
+
+**Perspective Transformation**
+
+```javascript
+let M = cv.getPerspectiveTransform(srcTri, dstTri);
+cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+```
+
+**Simple Thresholding**
+
+```javascript
+cv.threshold(src, dst, 177, 200, cv.THRESH_BINARY);
+```
+
+**Adaptive Thresholding**
+
+```javascript
+//cv.adaptiveThreshold (src, dst, maxValue, adaptiveMethod, thresholdType, blockSize, C)
+cv.adaptiveThreshold(src, dst, 200, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 3, 2);
+```
+
+**2D Convolution ( Image Filtering )**
+
+```javascript
+//cv.filter2D (src, dst, ddepth, kernel, anchor = new cv.Point(-1, -1), delta = 0, borderType = cv.BORDER_DEFAULT)
+cv.filter2D(src, dst, cv.CV_8U, M, anchor, 0, cv.BORDER_DEFAULT);
+```
+
+**Image Blurring (Image Smoothing)**
+
+```javascript
+//cv.blur (src, dst, ksize, anchor = new cv.Point(-1, -1), borderType = cv.BORDER_DEFAULT)
+cv.blur(src, dst, ksize, anchor, cv.BORDER_DEFAULT);
+
+//cv.boxFilter (src, dst, ddepth, ksize, anchor = new cv.Point(-1, -1), normalize = true, borderType = cv.BORDER_DEFAULT)
+cv.boxFilter(src, dst, -1, ksize, anchor, true, cv.BORDER_DEFAULT)
+
+//cv.GaussianBlur (src, dst, ksize, sigmaX, sigmaY = 0, borderType = cv.BORDER_DEFAULT)
+cv.GaussianBlur(src, dst, ksize, 0, 0, cv.BORDER_DEFAULT);
+
+//cv.medianBlur (src, dst, ksize)
+cv.medianBlur(src, dst, 5);
+
+//cv.bilateralFilter (src, dst, d, sigmaColor, sigmaSpace, borderType = cv.BORDER_DEFAULT)
+cv.bilateralFilter(src, dst, 9, 75, 75, cv.BORDER_DEFAULT);
+```
+
+**Erosion**
+
+```javascript
+//cv.erode (src, dst, kernel, anchor = new cv.Point(-1, -1), iterations = 1, borderType = cv.BORDER_CONSTANT, borderValue = cv.morphologyDefaultBorderValue())
+cv.erode(src, dst, M, anchor, 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+```
+
+**Dilation**
+
+```javascript
+//cv.dilate (src, dst, kernel, anchor = new cv.Point(-1, -1), iterations = 1, borderType = cv.BORDER_CONSTANT, borderValue = cv.morphologyDefaultBorderValue())
+cv.dilate(src, dst, M, anchor, 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+```
+
+**Opening**
+
+```javascript
+//cv.morphologyEx (src, dst, op, kernel, anchor = new cv.Point(-1, -1), iterations = 1, borderType = cv.BORDER_CONSTANT, borderValue = cv.morphologyDefaultBorderValue())
+cv.morphologyEx(src, dst, cv.MORPH_OPEN, M, anchor, 1, cv.BORDER_CONSTANT, cv.morphologyDefaultBorderValue());
+```
+
+**Closing**
+
+```javascript
+cv.morphologyEx(src, dst, cv.MORPH_CLOSE, M);
+```
+
+**Morphological Gradient**
+
+```javascript
+cv.morphologyEx(src, dst, cv.MORPH_GRADIENT, M);
+```
+
+**Top Hat**
+
+```javascript
+cv.morphologyEx(src, dst, cv.MORPH_TOPHAT, M);
+```
+
+**Black Hat**
+
+```javascript
+cv.morphologyEx(src, dst, cv.MORPH_BLACKHAT, M);
+```
+
+**Structuring Element**
+
+```javascript
+//cv.getStructuringElement (shape, ksize, anchor = new cv.Point(-1, -1))
+M = cv.getStructuringElement(cv.MORPH_CROSS, ksize);
+cv.morphologyEx(src, dst, cv.MORPH_GRADIENT, M);
+```
+
+**Sobel and Scharr Derivatives**
+
+```javascript
+//cv.Sobel (src, dst, ddepth, dx, dy, ksize = 3, scale = 1, delta = 0, borderType = cv.BORDER_DEFAULT)
+cv.Sobel(src, dstx, cv.CV_8U, 1, 0, 3, 1, 0, cv.BORDER_DEFAULT);
+
+//cv.Scharr (src, dst, ddepth, dx, dy, scale = 1, delta = 0, borderType = cv.BORDER_DEFAULT)
+cv.Scharr(src, dstx, cv.CV_8U, 1, 0, 1, 0, cv.BORDER_DEFAULT);
+```
+
+**Laplacian Derivatives**
+
+```javascript
+//cv.Laplacian (src, dst, ddepth, ksize = 1, scale = 1, delta = 0, borderType = cv.BORDER_DEFAULT)
+cv.Laplacian(src, dst, cv.CV_8U, 1, 1, 0, cv.BORDER_DEFAULT);
+```
+
+**Image AbsSobel**
+
+```javascript
+cv.Sobel(src, dstx, cv.CV_8U, 1, 0, 3, 1, 0, cv.BORDER_DEFAULT);
+cv.Sobel(src, absDstx, cv.CV_64F, 1, 0, 3, 1, 0, cv.BORDER_DEFAULT);
+cv.convertScaleAbs(absDstx, absDstx, 1, 0);
+```
+
+**draw the contours**
+
+```javascript
+//cv.findContours (image, contours, hierarchy, mode, method, offset = new cv.Point(0, 0))
+cv.findContours(src, contours, hierarchy, cv.RETR_CCOMP, cv.CHAIN_APPROX_SIMPLE);
+
+//cv.drawContours (image, contours, contourIdx, color, thickness = 1, lineType = cv.LINE_8, hierarchy = new cv.Mat(), maxLevel = INT_MAX, offset = new cv.Point(0, 0))
+cv.drawContours(dst, contours, i, color, 1, cv.LINE_8, hierarchy, 100);
+```
+
+**Moments**
+
+```javascript
+//cv.moments (array, binaryImage = false)
+let Moments = cv.moments(cnt, false);
+```
+
+**Contour Area**
+
+```javascript
+//cv.contourArea (contour, oriented = false)
+let area = cv.contourArea(cnt, false);
+```
+
+**Contour Perimeter**
+
+```javascript
+//cv.arcLength (curve, closed)
+let perimeter = cv.arcLength(cnt, true);
+```
+
+**Contour Approximation**
+
+```javascript
+//cv.approxPolyDP (curve, approxCurve, epsilon, closed)
+cv.approxPolyDP(cnt, tmp, 3, true);
+```
+
+**Convex Hull**
+
+```javascript
+//cv.convexHull (points, hull, clockwise = false, returnPoints = true)
+cv.convexHull(cnt, tmp, false, true);
+```
+
+**Checking Convexity**
+
+```javascript
+cv.isContourConvex(cnt);
+```
+
+**Straight Bounding Rectangle**
+
+```javascript
+//cv.boundingRect (points)
+let rect = cv.boundingRect(cnt);
+```
+
+**Rotated Rectangle**
+
+```javascript
+//cv.minAreaRect (points)
+let rotatedRect = cv.minAreaRect(cnt);
+```
+
+**Minimum Enclosing Circle**
+
+```javascript
+//cv.minEnclosingCircle (points)
+let circle = cv.minEnclosingCircle(cnt);
+
+//cv.circle (img, center, radius, color, thickness = 1, lineType = cv.LINE_8, shift = 0)
+cv.circle(dst, circle.center, circle.radius, circleColor);
+```
+
+**Fitting an Ellipse**
+
+```javascript
+//cv.fitEllipse (points)
+let rotatedRect = cv.fitEllipse(cnt);
+
+//cv.ellipse1 (img, box, color, thickness = 1, lineType = cv.LINE_8)
+cv.ellipse1(dst, rotatedRect, ellipseColor, 1, cv.LINE_8);
+```
+
+**Fitting a Line**
+
+```javascript
+//cv.fitLine (points, line, distType, param, reps, aeps)
+cv.fitLine(cnt, line, cv.DIST_L2, 0, 0.01, 0.01);
+
+//cv.line (img, pt1, pt2, color, thickness = 1, lineType = cv.LINE_8, shift = 0)
+cv.line(dst, point1, point2, lineColor, 2, cv.LINE_AA, 0);
+```
+
+**Aspect Ratio**
+
+```javascript
+let rect = cv.boundingRect(cnt);
+let aspectRatio = rect.width / rect.height;
+```
+
+**Extent**
+
+```javascript
+let area = cv.contourArea(cnt, false);
+let rect = cv.boundingRect(cnt));
+let rectArea = rect.width * rect.height;
+let extent = area / rectArea;
+```
+
+**Solidity**
+
+```javascript
+let area = cv.contourArea(cnt, false);
+cv.convexHull(cnt, hull, false, true);
+let hullArea = cv.contourArea(hull, false);
+let solidity = area / hullArea;
+```
+
+**Equivalent Diameter**
+
+```javascript
+let area = cv.contourArea(cnt, false);
+let equiDiameter = Math.sqrt(4 * area / Math.PI);
+```
+
+**Orientation**
+
+```javascript
+let rotatedRect = cv.fitEllipse(cnt);
+let angle = rotatedRect.angle;
+```
+
+**Mask and Pixel Points**
+
+```javascript
+//cv.transpose (src, dst)
+cv.transpose(src, dst);
+```
+
+**Maximum Value, Minimum Value and their locations**
+
+```javascript
+//cv.minMaxLoc(src, mask)
+let result = cv.minMaxLoc(src, mask);
+let minVal = result.minVal;
+let maxVal = result.maxVal;
+let minLoc = result.minLoc;
+let maxLoc = result.maxLoc;
+```
+
+**Mean Color or Mean Intensity**
+
+```javascript
+cv.mean (src, mask)
+```
+
+**Convexity Defects**
+
+```javascript
+//cv.convexityDefects (contour, convexhull, convexityDefect)
+cv.convexityDefects(cnt, hull, defect);
+```
+
+**Point Polygon Test**
+
+```javascript
+//cv.pointPolygonTest (contour, pt, measureDist)
+let dist = cv.pointPolygonTest(cnt, new cv.Point(50, 50), true);
+```
+
+**Match Shapes**
+
+```javascript
+//cv.matchShapes (contour1, contour2, method, parameter)
+let result = cv.matchShapes(contours.get(contourID0), contours.get(contourID1), 1, 0);
+```
+
+**Find Histogram**
+
+```javascript
+//cv.calcHist (image, channels, mask, hist, histSize, ranges, accumulate = false)
+cv.calcHist(srcVec, channels, mask, hist, histSize, ranges, accumulate);
+```
+
+**Histograms Equalization**
+
+```javascript
+cv.equalizeHist (src, dst)
+```
+
+**CLAHE (Contrast Limited Adaptive Histogram Equalization)**
+
+```javascript
+//cv.CLAHE (clipLimit = 40, tileGridSize = new cv.Size(8, 8))
+let clahe = new cv.CLAHE(40, tileGridSize);
+```
+
+**Backprojection**
+
+```javascript
+//cv.calcBackProject (images, channels, hist, dst, ranges, scale)
+cv.calcBackProject(dstVec, channels, hist, backproj, ranges, 1);
+
+//cv.normalize (src, dst, alpha = 1, beta = 0, norm_type = cv.NORM_L2, dtype = -1, mask = new cv.Mat())
+cv.normalize(hist, hist, 0, 255, cv.NORM_MINMAX, -1, none);
+```
+
+**Fourier Transform**
+
+```javascript
+//cv.dft (src, dst, flags = 0, nonzeroRows = 0)
+cv.dft(complexI, complexI);
+
+//cv.getOptimalDFTSize (vecsize)
+let optimalRows = cv.getOptimalDFTSize(src.rows);
+
+//cv.copyMakeBorder (src, dst, top, bottom, left, right, borderType, value = new cv.Scalar())
+cv.copyMakeBorder(src, padded, 0, optimalRows - src.rows, 0, optimalCols - src.cols, cv.BORDER_CONSTANT, s0);
+
+//cv.magnitude (x, y, magnitude)
+cv.magnitude(planes.get(0), planes.get(1), planes.get(0));
+
+//cv.split (m, mv)
+cv.split(complexI, planes);
+
+//cv.merge (mv, dst)
+cv.merge(planes, complexI);
+```
+
 **other**
 
 ```javascript
@@ -822,6 +1213,7 @@ src.delete();
 
 cv.cvtColor();
 cv.threshold();
+cv.rectangle();
 ```
 
 ## To Do List
