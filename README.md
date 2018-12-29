@@ -1260,18 +1260,70 @@ cv.watershed(src, markers);
 cv.grabCut(src, mask, rect, bgdModel, fgdModel, 1, cv.GC_INIT_WITH_RECT);
 ```
 
-**other**
+**Meanshift**
+
+```javascript
+//cv.meanShift (probImage, window, criteria)
+[, trackWindow] = cv.meanShift(dst, trackWindow, termCrit);
+```
+
+**Camshift**
+
+```javascript
+//cv.CamShift (probImage, window, criteria)
+[trackBox, trackWindow] = cv.CamShift(dst, trackWindow, termCrit);
+```
+
+**Lucas-Kanade Optical Flow**
+
+```javascript
+//cv.calcOpticalFlowPyrLK (prevImg, nextImg, prevPts, nextPts, status, err, winSize = new cv.Size(21, 21), maxLevel = 3, criteria = new cv.TermCriteria(cv.TermCriteria_COUNT+ cv.TermCriteria_EPS, 30, 0.01), flags = 0, minEigThreshold = 1e-4)
+let criteria = new cv.TermCriteria(cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT, 10, 0.03);
+cv.calcOpticalFlowPyrLK(oldGray, frameGray, p0, p1, st, err, winSize, maxLevel, criteria);
+
+```
+
+**Dense Optical Flow**
+
+```javascript
+//cv.calcOpticalFlowFarneback (prev, next, flow, pyrScale, levels, winsize, iterations, polyN, polySigma, flags)
+cv.calcOpticalFlowFarneback(prvs, next, flow, 0.5, 3, 15, 3, 5, 1.2, 0);
+```
+
+**BackgroundSubtractorMOG2**
+
+```javascript
+//cv.BackgroundSubtractorMOG2 (history = 500, varThreshold = 16, detectShadows = true)
+let fgbg = new cv.BackgroundSubtractorMOG2(500, 16, true);
+
+//cv.apply (image, fgmask, learningRate = -1)
+fgbg.apply(frame, fgmask);
+```
+
+**Haar-cascade Detection**
+
+```javascript
+//detectMultiScale (image, objects, scaleFactor = 1.1, minNeighbors = 3, flags = 0, minSize = new cv.Size(0, 0), maxSize = new cv.Size(0, 0))
+let faceCascade = new cv.CascadeClassifier();
+faceCascade.load('haarcascade_frontalface_default.xml');
+faceCascade.detectMultiScale(gray, faces, 1.1, 3, 0, msize, msize);
+```
+
+**image && video**
 
 ```javascript
 cv.imread();
 cv.imshow();
 cv.VideoCapture();
+```
 
-src.delete();
+**other**
 
-cv.cvtColor();
+```javascript
 cv.rectangle();
 cv.Canny();
+cv.goodFeaturesToTrack();
+cv.cartToPolar();
 ```
 
 ## To Do List
