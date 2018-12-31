@@ -24,8 +24,7 @@
 		// console.log("dst::" + dst.data32F);//dst::2,4,6,8,10,12,14,16,18
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		// let dst = new cv.Mat();
-		// cv.addConstant(mat1, 10, dst);
+		// let dst = mat1.addConstant(10);
 		// mat1.delete();
 		// console.log("dst::" + dst.data32F);//dst::11,12,13,14,15,16,17,18,19
 
@@ -37,18 +36,35 @@
 		// console.log("dst::" + dst.data32F);//dst::0,0,0,0,0,0,0,0,0
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		// let dst = new cv.Mat();
-		// cv.constantSubtract(10, mat1, dst);
+		// let dst = mat1.constantSubtract(10);
 		// mat1.delete();
 		// console.log("dst::" + dst.data32F);//dst::9,8,7,6,5,4,3,2,1
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 		// let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		// let dst = new cv.Mat();
-		// cv.mul(mat1, mat2, dst);
+		// // let dst = new cv.Mat();
+		// // cv.mul(mat1, mat2, dst);
+
+		// // let dst = cv.mul2(mat1, mat2);
+		// let dst = mat1.mul3(mat2);
+
+
 		// mat1.delete(), mat2.delete(); //Don't forget to delete cv.Mat when you don't want to use it any more.
 		// console.log("dst::" + dst.data32F);//dst::30,36,42,66,81,96,102,126,150
 
+
+
+		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// console.time("roi2");
+		// for (var i = 1; i < 1000000; i++) {
+		// 	// let dst = new cv.Mat();
+		// 	// cv.mul(mat1, mat2, dst);
+		// 	// let dst = cv.mul2(mat1, mat2);
+		// 	let dst = mat1.mul3(mat2);
+
+		// }
+		// console.timeEnd("roi2");
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 		// let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
@@ -70,19 +86,31 @@
 		// console.log("dst::" + dst.data32F);//dst::1,1,1,1,1,1,1,1,1
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		// let dst = new cv.Mat();
-		// cv.constantDivide(10, mat1, dst);
+		// let dst = mat1.constantDivide(10);
 		// mat1.delete();
 		// console.log("dst::" + dst.data32F);
-		// //dst::10,5,3.3333332538604736,2.5,2,1.6666666269302368,1.4285714626312256,1.25,1.1111111640930176
+		//dst::10,5,3.3333332538604736,2.5,2,1.6666666269302368,1.4285714626312256,1.25,1.1111111640930176
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		// let dst = cv.reshape(mat1, 1);
+		// let dst = mat1.reshape(1);
 		// mat1.delete();
 		// console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);//dst::1,2,3,4,5,6,7,8,9:::1:::9
 		// dst.delete();
 
+
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let sum = mat1.sum();
+		// console.log("mat111::" + sum);//dst::16.881943016134134
+
+		// let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// console.time("roi2");
+		// for (var i = 1; i < 10000000; i++) {
+		// 	// var dst2 = cv.sum2(mat2);
+		// 	var dst2 = mat2.sum();
+
+		// }
+		// console.timeEnd("roi2");
+
 		// let dst = cv.norm(mat1);
 		// mat1.delete();
 		// console.log("dst::" + dst);//dst::16.881943016134134
@@ -97,11 +125,32 @@
 		// let dst = cv.diag(mat1);
 		// console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);//dst::1,5,9:::3:::1
 
+
+
+
+
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		// let dst = new cv.Mat();
+		// console.log("dst::" + mat1.type());
+		// console.log("cvcvcv::" + cv.CV_32FC2);
+
+
+
+		// let rect1 = new cv.Rect(1, 1, 2, 2);
+		// let dst = mat1.Diag();
+
+		// // console.time("roi");
+		// // for (var i = 1; i < 100000; i++) {
+		// // 	let dst = cv.diag(mat1);
+		// // }
+		// // console.timeEnd("roi");
+		// console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+
+		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let dst = mat1.vconcat(mat1);
 		// cv.vconcat(mat1, mat1, dst);
 		// console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-		// //dst::1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9:::6:::3
+		//dst::1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9:::6:::3
+		// console.log("dst::" + mat1.PTR(1));
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 		// let dst = new cv.Mat();
@@ -110,10 +159,10 @@
 		// //dst::1,2,3,1,2,3,4,5,6,4,5,6,7,8,9,7,8,9:::3:::6
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		// let dst = cv.row(mat1, 2);
-		// mat1.delete();
+		// let dst = mat1.col(2);
+		// // mat1.delete();
 		// console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-		// //dst::7,8,9:::1:::3
+		//dst::7,8,9:::1:::3
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 		// let dst = cv.col(mat1, 2);
@@ -134,32 +183,32 @@
 		// //dst::5,6,8,9:::2:::2
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		// let s = cv.svd(mat1);
-		// mat1.delete();
+		// let s = mat1.svd();
 		// console.log("sssss::" + s.u.data32F + ":::" + s.w.data32F + "::::" + s.vt.data32F);
-		// //sssss::-0.2690670727222803,-0.6798212121523656,-0.6822360514399335,0.9620092303255996,-0.15566952916310073,-0.22428829318197974,-0.04627257443681115,0.7166659732384585,-0.6958798255856847:::817.7596679296927,2.4749744909160456,0.002964523081211532::::0.6822778524193859,-0.6671413517114333,-0.29903068226292867,0.22871202334807922,-0.19371852220929917,0.9540251278289649,0.6943973952097016,0.7193021277527875,-0.020413391102276603
-
+		//sssss::-0.2148372381925583,-0.8872306942939758,-0.40824830532073975,-0.5205873847007751,-0.2496439516544342,0.8164966106414795,-0.8263375163078308,0.3879427909851074,-0.40824830532073975:::16.848102569580078,1.0683695077896118,0::::-0.4796711802482605,-0.572367787361145,-0.6650643944740295,0.7766910195350647,0.07568646967411041,-0.6253180503845215,0.40824830532073975,-0.8164966106414795,0.40824830532073975
+		
+		
 		// let arr1 = [1,2,3,4,5,6,7,8,9];
 		// let dst = cv.RodriguesFromArray(arr1);
 		// console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-		// //dst::-0.694920539855957,0.7135210037231445,0.08929285407066345,-0.19200697541236877,-0.3037850260734558,0.9331923723220825,0.6929781436920166,0.6313496828079224,0.34810739755630493:::3:::3
+		//dst::-0.694920539855957,0.7135210037231445,0.08929285407066345,-0.19200697541236877,-0.3037850260734558,0.9331923723220825,0.6929781436920166,0.6313496828079224,0.34810739755630493:::3:::3
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		// let dst = cv.RodriguesFromMat(mat1);
+		// let dst = mat1.RodriguesFromMat();
 		// console.log("dst::" + dst);
 		// //dst::1.1046628653680794,1.738419705279746,2.372176486533247
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		// let dst = cv.dftSplit(mat1);
+		// let dst = mat1.dftSplit();
 		// console.log("dst::" + dst.r.data32F + ":::" + dst.i.data32F);
 		// //dst::1,3,0,4,6,0,0,8,0:::0,3,0,7,9,0,0,9,0
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 		// let rect1 = new cv.Rect(1, 1, 2, 2);
 		// let rectmat = cv.matFromArray(2,2,cv.CV_32FC1,[11,12,13,14]);
-		// cv.replaceMatOnRect(mat1, rectmat, rect1);
+		// mat1.replaceMatOnRect(rectmat, rect1);
 		// console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-		// //mat1::1,2,3,4,11,12,7,13,14:::3:::3
+		//mat1::1,2,3,4,11,12,7,13,14:::3:::3
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 		// cv.replaceMatOnRow(mat1, [11,12,13], 1);
@@ -167,9 +216,9 @@
 		// //mat1::1,2,3,11,12,13,7,8,9:::3:::3
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-		// cv.replaceMatOnCol(mat1, [11,12,13], 1);
+		// mat1.replaceMatOnCol([11,12,13], 1);
 		// console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-		// //mat1::1,11,3,4,12,6,7,13,9:::3:::3
+		//mat1::1,11,3,4,12,6,7,13,9:::3:::3
 
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 		// cv.replaceMatOnPoint(mat1, 30, {x:1,y:1});
@@ -188,6 +237,7 @@
 		// console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 		// //mat1::1,2,3,4,11,12,7,13,14:::3:::3
 
+		
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 		// let rect1 = new cv.Rect(1, 1, 2, 2);
 		// let rectmat = cv.matFromArray(2,2,cv.CV_32FC1,[11,12,13,14]);
@@ -200,6 +250,47 @@
 		// let dst = cv.mulSpectrums(mat1, mat2, true);
 		// mat1.delete(), mat2.delete();
 		// console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+		//dst::9,8.96831017167883e-44,66,153,4.624284932271896e-44,237,NaN,1.2534558711446916e-39,NaN:::3:::3
+
+		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let aaaa = mat1.channels();
+		// console.log("aaaa::" + aaaa);
+
+		let mat1_2channels = cv.matFromArray(3,3,cv.CV_32FC2,[1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9]);
+		let mat2_2channels = cv.matFromArray(3,3,cv.CV_32FC2,[9,10,11,12,13,14,15,16,17,9,10,11,12,13,14,15,16,17]);
+		let dst = cv.mulSpectrums2Channel(mat1_2channels, mat2_2channels, true);
+		console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols + ":::" + dst.channels());
+		//dst::29,8.96831017167883e-44,81,233,4.624284932271896e-44,162,NaN,1.2534558711446916e-39,NaN:::3:::3:::1
+
+
+		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let rect1 = new cv.Rect(1, 1, 2, 2);
+		// console.time("roi");
+		// for (var i = 1; i < 100000; i++) {
+		// 	var dst1 = mat1.roi(rect1);
+		// }
+		// console.timeEnd("roi");
+
+
+
+		// let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+		// let rect2 = new cv.Rect(1, 1, 2, 2);
+		// console.time("roi2");
+		// for (var i = 1; i < 10000; i++) {
+		// 	var dst2 = cv.roi2(mat2, rect2);
+		// }
+		// console.timeEnd("roi2");
+
+
+		// mat2.convertTo(mat2, cv.CV_32FC2);
+		// console.log("mat2::" + mat2.data32F + ":::" + mat2.rows + ":::" + mat2.cols);
+
+
+		// mat1.delete();
+		// console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+		//dst::5,6,8,9:::2:::2
+
+
     }
 </script>
 <script async src="opencv.js" onload="onOpenCVReady();" type="text/javascript"></script>

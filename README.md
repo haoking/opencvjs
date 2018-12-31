@@ -1,15 +1,15 @@
 # opencvjs
 ![OpenCV 4.0.0+](https://img.shields.io/badge/OpenCV-4.0.0%2B-green.svg)
 
-Complete opencvjs for single channel.(With the lastest OpenCV 4.0.0+)
+Complete opencvjs.(With the lastest OpenCV 4.0.0+)
 
-The official opencv.js stoped update. Moreover, it still has many errors from the last version.
+The official opencv.js stoped update. Moreover, it still has many errors from the last offical version.
 
 This project is inherited from official opencv.js.
 
-Which means all of the methods in opencv.js works here, also, fix most of the errors, especial for the single channel. As most of the project is using the gray image and cv.CV_32FC1.
+Which means all of the methods in opencv.js works here, also, fix most of the errors.
 
-Moreover, the version of the full channel and the full data type will come after the first release.
+But much more performance improved.
 
 ## Features
 
@@ -85,7 +85,7 @@ console.log("dst::" + dst.data32F);//dst::2,4,6,8,10,12,14,16,18
 
 **addConstant()**
 
-void cv.addConstant(src1, constant, dst)
+cv.Mat dst = src1.addConstant(constant)
 
 ( dst = src1 + constant )
 
@@ -97,8 +97,7 @@ dst			Output mat that has the same size and number of channels as the input mat
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = new cv.Mat();
-cv.addConstant(mat1, 10, dst);
+let dst = mat1.addConstant(10);
 mat1.delete();
 console.log("dst::" + dst.data32F);//dst::11,12,13,14,15,16,17,18,19
 ```
@@ -126,7 +125,7 @@ console.log("dst::" + dst.data32F);//dst::0,0,0,0,0,0,0,0,0
 
 **constantSubtract()**
 
-void cv.constantSubtract(constant, src1, dst)
+cv.Mat dst = src1.constantSubtract(constant)
 
 ( dst = constant - src1 )
 
@@ -138,17 +137,16 @@ dst			Output mat that has the same size and number of channels as the input mat
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = new cv.Mat();
-cv.constantSubtract(10, mat1, dst);
+let dst = mat1.constantSubtract(10);
 mat1.delete();
 console.log("dst::" + dst.data32F);//dst::9,8,7,6,5,4,3,2,1
 ```
 
-**mul()**
+**mmul()**
 
-void cv.mul(src1, src2, dst)
+cv.Mat dst = src1.mul(src2)
 
-( dst = src1 * src1 )
+( dst = src1 * src2 )
 
 src1		First input mat
 
@@ -159,15 +157,14 @@ dst		Output mat that has the same size and number of channels as the input mat
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = new cv.Mat();
-cv.mul(mat1, mat2, dst);
+let dst = mat1.mmul(mat2);
 mat1.delete(), mat2.delete();
 console.log("dst::" + dst.data32F);//dst::30,36,42,66,81,96,102,126,150
 ```
 
 **mul()**
 
-Cv.Mat dst = src1.mul(src2, scale)
+cv.Mat dst = src1.mul(src2, scale)
 
 ( dst = src1 • src2*scale )
 
@@ -189,7 +186,7 @@ console.log("dst::" + dst.data32F);//dst::2,8,18,32,50,72,98,128,162
 
 **mulConstant()**
 
-void cv.mulConstant(src1, constant, dst)
+cv.Mat dst = src1.mulConstant(constant)
 
 ( dst = src1 * constant )
 
@@ -201,8 +198,7 @@ dst			Output mat that has the same size and number of channels as the input mat
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = new cv.Mat();
-cv.mulConstant(mat1, 10, dst);
+let dst = mat1.mulConstant(10);
 mat1.delete();
 console.log("dst::" + dst.data32F);//dst::10,20,30,40,50,60,70,80,90
 ```
@@ -230,7 +226,7 @@ console.log("dst::" + dst.data32F);//dst::1,1,1,1,1,1,1,1,1
 
 **constantDivide()**
 
-void cv.constantDivide(constant, src1, dst)
+cv.Mat dst = src1.constantDivide(constant)
 
 ( dst = constant / src1 )
 
@@ -242,8 +238,7 @@ dst			Output mat that has the same size and number of channels as the input mat
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = new cv.Mat();
-cv.constantDivide(10, mat1, dst);
+let dst = mat1.constantDivide(10);
 mat1.delete();
 console.log("dst::" + dst.data32F);
 //dst::10,5,3.3333332538604736,2.5,2,1.6666666269302368,1.4285714626312256,1.25,1.1111111640930176
@@ -251,7 +246,7 @@ console.log("dst::" + dst.data32F);
 
 **reshape()**
 
-Cv.Mat dst = cv.reshape(src1, rows)
+Cv.Mat dst = src1.reshape(rows)
 
 src1		First input mat
 
@@ -261,7 +256,7 @@ dst		Output mat that has the same data of src1, but the row is equal to input ro
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = cv.reshape(mat1, 1);
+let dst = mat1.reshape(1);
 mat1.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::1,2,3,4,5,6,7,8,9:::1:::9
@@ -270,7 +265,7 @@ dst.delete();//Don't forget to delete cv.Mat when you don't want to use it any m
 
 **sum()**
 
-Float dst = sum.reshape(src1)
+Float dst = src1.sum()
 
 src1		First input mat
 
@@ -278,7 +273,7 @@ dst		Sum of src1 data
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = cv.sum(mat1);
+let sum = mat1.sum();
 mat1.delete();
 console.log("dst::" + dst);//dst::45
 ```
@@ -316,9 +311,9 @@ mat1.delete(), mat2.delete();
 console.log("dst2::" + dst2);//dst2::24
 ```
 
-**diag()**
+**Diag()**
 
-Cv.Mat dst = cv.diag(src1, d = 0)
+cv.Mat dst = src1.diag(d = 0)
 
 src1		First input mat
 
@@ -328,7 +323,7 @@ dst		Output mat that has the same data of src1, but the row is equal to input ro
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = cv.diag(mat1);
+let dst = mat1.Diag();
 mat1.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::1,5,9:::3:::1
@@ -336,7 +331,7 @@ console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 
 **vconcat()**
 
-void cv.vconcat(src1, src2, dst)
+cv.Mat dst = src1.vconcat(src2)
 
 src1		First input mat
 
@@ -346,8 +341,7 @@ dst		Output mat that has the same number of channels as the input mat
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = new cv.Mat();
-cv.vconcat(mat1, mat1, dst);
+let dst = mat1.vconcat(mat1);
 mat1.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9:::6:::3
@@ -355,7 +349,7 @@ console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 
 **hconcat()**
 
-void cv.hconcat(src1, src2, dst)
+cv.Mat dst = src1.hconcat(src2)
 
 src1		First input mat
 
@@ -365,8 +359,7 @@ dst		Output mat that has the same number of channels as the input mat
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = new cv.Mat();
-cv.hconcat(mat1, mat1, dst);
+let dst = mat1.hconcat(mat1);
 mat1.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::1,2,3,1,2,3,4,5,6,4,5,6,7,8,9,7,8,9:::3:::6
@@ -374,7 +367,7 @@ console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 
 **row()**
 
-Cv.Mat dst = cv.row(src1, row)
+cv.Mat dst = src1.row(row)
 
 src1		First input mat
 
@@ -384,7 +377,7 @@ dst		Output mat that has one row
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = cv.row(mat1, 2);
+let dst = mat1.row(2);
 mat1.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::7,8,9:::1:::3
@@ -392,7 +385,7 @@ console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 
 **col()**
 
-Cv.Mat dst = cv.col(src1, col)
+cv.Mat dst = src1.col(col)
 
 src1		First input mat
 
@@ -402,7 +395,7 @@ dst		Output mat that has one col
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = cv.col(mat1, 2);
+let dst = mat1.col(2);
 mat1.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::3,6,9:::3:::1
@@ -410,7 +403,7 @@ console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 
 **replaceMatOnRect()**
 
-void cv.replaceMatOnRect(src1, src2, rect)
+void src1.replaceMatOnRect(src2, rect)
 
 src1		First input mat will be changed as output
 
@@ -422,14 +415,14 @@ rect		rect input to replace
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 let rect1 = new cv.Rect(1, 1, 2, 2);
 let rectmat = cv.matFromArray(2,2,cv.CV_32FC1,[11,12,13,14]);
-cv.replaceMatOnRect(mat1, rectmat, rect1);
+mat1.replaceMatOnRect(rectmat, rect1);
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 //mat1::1,2,3,4,11,12,7,13,14:::3:::3
 ```
 
 **replaceMatOnRow()**
 
-void cv.replaceMatOnRow(src1, arr, row)
+void src1.replaceMatOnRow(arr, row)
 
 src1		First input mat will be changed as output
 
@@ -439,14 +432,14 @@ row		row input to replace
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-cv.replaceMatOnRow(mat1, [11,12,13], 1);
+mat1.replaceMatOnRow([11,12,13], 1);
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 //mat1::1,2,3,11,12,13,7,8,9:::3:::3
 ```
 
 **replaceMatOnCol()**
 
-void cv.replaceMatOnCol(src1, arr, col)
+void src1.replaceMatOnCol(arr, col)
 
 src1		First input mat will be changed as output
 
@@ -456,14 +449,14 @@ col		col input to replace
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-cv.replaceMatOnCol(mat1, [11,12,13], 1);
+mat1.replaceMatOnCol([11,12,13], 1);
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 //mat1::1,11,3,4,12,6,7,13,9:::3:::3
 ```
 
 **replaceMatOnPoint()**
 
-void cv.replaceMatOnPoint(src1, constant, point)
+void src1.replaceMatOnPoint(constant, point)
 
 src1			First input mat will be changed as output
 
@@ -473,14 +466,14 @@ point		Point location
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-cv.replaceMatOnPoint(mat1, 30, {x:1,y:1});
+mat1.replaceMatOnPoint(30, {x:1,y:1});
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 //mat1::1,11,3,4,12,6,7,13,9:::3:::3
 ```
 
 **addOnCol()**
 
-void cv.addOnCol(src1, constant, col)
+void src1.addOnCol(constant, col)
 
 src1			First input mat will be changed as output
 
@@ -490,14 +483,14 @@ col			Col location
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-cv.addOnCol(mat1, 30, 1);
+mat1.addOnCol(30, 1);
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 //mat1::1,11,3,4,12,6,7,13,9:::3:::3
 ```
 
 **rectAdd()**
 
-void cv.rectAdd(src1, src2, rect)
+void src1.rectAdd(src2, rect)
 
 src1		First input mat will be changed as output
 
@@ -509,14 +502,14 @@ rect		rect input to add location
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 let rect1 = new cv.Rect(1, 1, 2, 2);
 let rectmat = cv.matFromArray(2,2,cv.CV_32FC1,[11,12,13,14]);
-cv.rectAdd(mat1, rectmat, rect1);
+mat1.rectAdd(rectmat, rect1);
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 //mat1::1,2,3,4,11,12,7,13,14:::3:::3
 ```
 
 **rectSubtract()**
 
-void cv.rectSubtract(src1, src2, rect)
+void src1.rectSubtract(src2, rect)
 
 src1		First input mat will be changed as output
 
@@ -528,14 +521,14 @@ rect		rect input to subtract location
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 let rect1 = new cv.Rect(1, 1, 2, 2);
 let rectmat = cv.matFromArray(2,2,cv.CV_32FC1,[11,12,13,14]);
-cv.rectSubtract(mat1, rectmat, rect1);
+mat1.rectSubtract(rectmat, rect1);
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 //mat1::1,2,3,4,11,12,7,13,14:::3:::3
 ```
 
-**MDS()**
+**mds()**
 
-{m:Float, d:Array, s:Float} dst = cv.col(src1)
+{m:Float, d:Array, s:Float} dst = src1.mds()
 
 src1		First input mat
 
@@ -543,7 +536,7 @@ dst		Output with {mean, dev, stddev}
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = cv.MDS(mat1);
+let dst = mat1.mds();
 mat1.delete();
 console.log("dst::" + dst.m + ":::" + dst.d + ":::" + dst.s);
 //dst::5:::16,9,4,1,0,1,4,9,16:::2.581988897471611
@@ -551,7 +544,7 @@ console.log("dst::" + dst.m + ":::" + dst.d + ":::" + dst.s);
 
 **roi()**
 
-Cv.Mat dst = cv.roi(src1, rect)
+Cv.Mat dst = src1.roi(rect)
 
 src1		First input mat
 
@@ -562,7 +555,7 @@ dst		Output mat that has the same size and number of channels as the input rect
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 let rect1 = new cv.Rect(1, 1, 2, 2)
-let dst = cv.roi(mat1, rect1);
+let dst = mat1.roi(rect1);
 mat1.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::5,6,8,9:::2:::2
@@ -570,7 +563,7 @@ console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 
 **svd()**
 
-{u:cv.Mat, w:cv.Mat, vt:cv.Mat} dst = cv.svd(src1)
+{u:cv.Mat, w:cv.Mat, vt:cv.Mat} dst = src1.svd()
 
 src1		First input mat
 
@@ -578,7 +571,7 @@ dst		Output with {u, w, vt}
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let s = cv.svd(mat1);
+let s = mat1.svd();
 mat1.delete();
 console.log("sssss::" + s.u.data32F + ":::" + s.w.data32F + "::::" + s.vt.data32F);
 //sssss::-0.2690670727222803,-0.6798212121523656,-0.6822360514399335,0.9620092303255996,-0.15566952916310073,-0.22428829318197974,-0.04627257443681115,0.7166659732384585,-0.6958798255856847:::817.7596679296927,2.4749744909160456,0.002964523081211532::::0.6822778524193859,-0.6671413517114333,-0.29903068226292867,0.22871202334807922,-0.19371852220929917,0.9540251278289649,0.6943973952097016,0.7193021277527875,-0.020413391102276603
@@ -601,7 +594,7 @@ console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 
 **RodriguesFromMat()**
 
-[x, y, z] dst = cv.RodriguesFromMat(src1)
+[x, y, z] dst = src1.RodriguesFromMat()
 
 src1		First input mat
 
@@ -609,14 +602,14 @@ dst		the mat rodrigues from the input array
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = cv.RodriguesFromMat(mat1);
+let dst = mat1.RodriguesFromMat();
 console.log("dst::" + dst);
 //dst::1.1046628653680794,1.738419705279746,2.372176486533247
 ```
 
 **dftSplit()**
 
-{r:realMat, i:imagMat} dst = cv.dftSplit(src1)
+{r:realMat, i:imagMat} dst = src1.dftSplit()
 
 src1		First input mat
 
@@ -624,14 +617,14 @@ dst		the mat rodrigues from the input array
 
 ```javascript
 let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
-let dst = cv.dftSplit(mat1);
+let dst = mat1.dftSplit();
 console.log("dst::" + dst.r.data32F + ":::" + dst.i.data32F);
 //dst::1,3,0,4,6,0,0,8,0:::0,3,0,7,9,0,0,9,0
 ```
 
 **mulSpectrums()**
 
-cv.Mat dst = cv.dftSplit(src1, src2, conjB = false)
+cv.Mat dst = cv.mulSpectrums(src1, src2, conjB = false)
 
 src1		First input mat
 
@@ -647,6 +640,27 @@ let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[9,10,11,12,13,14,15,16,17]);
 let dst = cv.mulSpectrums(mat1, mat2, true);
 mat1.delete(), mat2.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+//dst::9,8.96831017167883e-44,66,153,4.624284932271896e-44,237,NaN,1.2534558711446916e-39,NaN:::3:::3
+```
+
+**mulSpectrums2Channel()**
+
+cv.Mat dst = cv.mulSpectrums2Channel(src1, src2, conjB = false)
+
+src1		First input mat
+
+src2		Second input mat
+
+conjB	Default is false
+
+dst		Result of mat
+
+```javascript
+let mat1_2channels = cv.matFromArray(3,3,cv.CV_32FC2,[1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9]);
+let mat2_2channels = cv.matFromArray(3,3,cv.CV_32FC2,[9,10,11,12,13,14,15,16,17,9,10,11,12,13,14,15,16,17]);
+let dst = cv.mulSpectrums2Channel(mat1_2channels, mat2_2channels, true);
+console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols + ":::" + dst.channels());
+//dst::29,8.96831017167883e-44,81,233,4.624284932271896e-44,162,NaN,1.2534558711446916e-39,NaN:::3:::3:::1
 ```
 
 ## 
@@ -1324,6 +1338,7 @@ cv.rectangle();
 cv.Canny();
 cv.goodFeaturesToTrack();
 cv.cartToPolar();
+cv.randu();
 ```
 
 ## To Do List
