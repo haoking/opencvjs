@@ -16,6 +16,11 @@
         // let classifier = new cv.CascadeClassifier();
         // classifier.load('haarcascade_frontalface_default.xml');
 
+		a = new cv.ORB()
+		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
+
+		// a = new cv.DMatchVector()
+		console.log("dst::" + a.getDefaultName());
 		// let mat1 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 		// let mat2 = cv.matFromArray(3,3,cv.CV_32FC1,[1,2,3,4,5,6,7,8,9]);
 		// let dst = new cv.Mat();
@@ -256,10 +261,10 @@
 		// let aaaa = mat1.channels();
 		// console.log("aaaa::" + aaaa);
 
-		let mat1_2channels = cv.matFromArray(3,3,cv.CV_32FC2,[1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9]);
-		let mat2_2channels = cv.matFromArray(3,3,cv.CV_32FC2,[9,10,11,12,13,14,15,16,17,9,10,11,12,13,14,15,16,17]);
-		let dst = cv.mulSpectrums2Channel(mat1_2channels, mat2_2channels, true);
-		console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols + ":::" + dst.channels());
+		// let mat1_2channels = cv.matFromArray(3,3,cv.CV_32FC2,[1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9]);
+		// let mat2_2channels = cv.matFromArray(3,3,cv.CV_32FC2,[9,10,11,12,13,14,15,16,17,9,10,11,12,13,14,15,16,17]);
+		// let dst = cv.mulSpectrums2Channel(mat1_2channels, mat2_2channels, true);
+		// console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols + ":::" + dst.channels());
 		//dst::29,8.96831017167883e-44,81,233,4.624284932271896e-44,162,NaN,1.2534558711446916e-39,NaN:::3:::3:::1
 
 

@@ -1339,6 +1339,7 @@ cv.Canny();
 cv.goodFeaturesToTrack();
 cv.cartToPolar();
 cv.randu();
+new cv.ORB();
 ```
 
 ## To Do List
