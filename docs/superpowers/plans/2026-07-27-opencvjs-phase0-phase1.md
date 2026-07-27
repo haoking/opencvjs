@@ -12,7 +12,7 @@
 
 - Node.js **>= 18**（`node:test` 需要）。
 - **测试栈零第三方依赖**——只用 `node:test` + `node:assert`。不引入 Jest / Vitest / Mocha。
-- emscripten 的 abort **抛出的是数字，不是 Error 实例**；`e.message` 为 `undefined`。任何捕获点必须用 `String(e?.message ?? e)` 提取信息，否则测试代码自身会崩溃并伪装成「cv 模块报废」。
+- emscripten 的 abort **抛出的是数字或字符串，不是 Error 实例**；`e.message` 为 `undefined`。任何捕获点必须经 `test/helpers.js` 的 `describeError(e)` 提取信息——它对数字、字符串、`null`、`undefined`、真 Error 均返回字符串且不抛异常。直接读 `e.message` 并对其做字符串操作会让测试代码自身崩溃，并把这个自伤伪装成「cv 模块报废」。
 - 该 abort **可被 try/catch 捕获，捕获后 cv 模块完全正常**（已实测 20 次连续触发）。**不需要子进程隔离。**
 - npm 包名 **`@haoking/opencvjs`**（`opencvjs` 与 `opencv-js` 均已被占用）。
 - 阶段 0 **保持现有 API 形状**（`roi`/`col` 仍覆盖原生方法）。撤销覆盖属于 2.0，不在本计划内。
