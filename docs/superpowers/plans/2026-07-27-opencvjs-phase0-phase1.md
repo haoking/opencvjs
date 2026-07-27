@@ -301,103 +301,78 @@ git commit -m "test: 区域操作的 84 组类型矩阵（当前失败）
 
 **Files:**
 
-- Modify: `opencv.js`（三处：`Diag` 约 177-185 行、`col` 约 217-226 行、`roi` 约 301-310 行）
+- Modify: `opencv.js`（四处：新增 `cloneAndRelease` helper；改写 `Diag` 约 177-185 行、`col` 约 217-226 行、`roi` 约 301-310 行）
 
 **Interfaces:**
 
 - Consumes: 无
-- Produces: `Mat.prototype.roi(rect)` / `Mat.prototype.col(d)` / `Mat.prototype.Diag(d=0)` 均返回**连续的新 Mat**，对全部 7 种深度 × 4 种通道有效。`_roi` / `_col` 仍指向原生实现，保持不变。
+- Produces:
+  - `cloneAndRelease(view: cv.Mat): cv.Mat` —— 扩展层内的局部函数（非导出），克隆视图并释放原视图
+  - `Mat.prototype.roi(rect)` / `Mat.prototype.col(d)` / `Mat.prototype.Diag(d=0)` 均返回**连续的新 Mat**，对全部 7 种深度 × 4 种通道有效
+  - `_roi` / `_col` 仍指向原生实现，保持不变
 
-- [ ] **Step 1: 替换 `Diag` 实现**
+> ⚠️ **本文档中展示的「原代码」经过 markdown 格式化器改写**（`function(d=0)` 变成
+> `function (d = 0)`，缩进由 4 空格变为 2 空格），**与 `opencv.js` 中的实际文本不一致**。
+> 直接拿本文的代码块去做字符串匹配会失败。**必须先 Read 实际行，按文件里的真实文本编辑。**
 
-找到（约 177-185 行）：
+- [ ] **Step 1: 读取三处待改代码的真实文本**
+
+Run:
+
+```bash
+grep -n "prototype.Diag = \|prototype._col = \|prototype.col = \|prototype._roi = \|prototype.roi = " opencv.js
+```
+
+Expected: 5 行输出，`Diag` 约在 177 行、`_col`/`col` 约 217-218、`_roi`/`roi` 约 301-302。
+
+然后 Read 这三段（各约 10 行）拿到精确文本。**以 Read 的结果为准做编辑，不要用本文档的代码块。**
+
+- [ ] **Step 2: 在扩展层开头插入共享 helper**
+
+在 `OpenCVJSModule.Mat.prototype.DATA = function()` 这一行**之前**插入：
+
+```js
+// 原生 roi()/col()/diag() 返回非连续视图，此时 .data* 会按连续内存直读，
+// 得到错误数据（3x3 CV_32FC2 上 col(2) 读出 5,6,7,8,9,10，正确值是 5,6,11,12,17,18）。
+// 旧实现用 cvtColor(GRAY2BGR→BGR2GRAY) 往返制造连续副本，代价是只支持
+// 8U/16U/32F（其余深度直接 abort），且比 clone 慢数倍（实测 roi 7.1x）。
+// clone() 正确、更快、支持全部深度，并顺带释放掉此前泄漏的中间 Mat。
+function cloneAndRelease(view) {
+  const dst = view.clone();
+  view.delete();
+  return dst;
+}
+```
+
+- [ ] **Step 3: 用 helper 改写三个函数**
+
+三处**只替换函数体**，`_col` / `_roi` 的赋值行保持不动；`roi` 上方那段已注释掉的旧实现也保持原样。
+
+`Diag`（约 177 行）改为：
 
 ```js
 OpenCVJSModule.Mat.prototype.Diag = function (d = 0) {
-  if (this.channels() > 1) {
-    return this.diag(d);
-  }
-  let dst = new cv.Mat();
-  cv.cvtColor(this, dst, cv.COLOR_GRAY2BGR);
-  cv.cvtColor(dst.diag(d), dst, cv.COLOR_BGR2GRAY);
-  return dst;
+  return cloneAndRelease(this.diag(d));
 };
 ```
 
-替换为：
+`col`（约 218 行，其上一行 `_col` 赋值保留）改为：
 
 ```js
-// 原生 diag() 返回非连续视图，此时 .data* 会按连续内存直读而得到错误数据。
-// 旧实现用 cvtColor(GRAY2BGR→BGR2GRAY) 往返制造连续副本，副作用是：
-// 只支持 8U/16U/32F（其余深度直接 abort），且比 clone 慢数倍。
-// clone() 正确、更快，且对全部深度有效。
-OpenCVJSModule.Mat.prototype.Diag = function (d = 0) {
-  let view = this.diag(d);
-  let dst = view.clone();
-  view.delete();
-  return dst;
-};
-```
-
-- [ ] **Step 2: 替换 `col` 实现**
-
-找到（约 217-226 行）：
-
-```js
-OpenCVJSModule.Mat.prototype._col = OpenCVJSModule.Mat.prototype.col;
 OpenCVJSModule.Mat.prototype.col = function (d) {
-  if (this.channels() > 1) {
-    return this._col(d);
-  }
-  let dst = new cv.Mat();
-  cv.cvtColor(this, dst, cv.COLOR_GRAY2BGR);
-  cv.cvtColor(dst._col(d), dst, cv.COLOR_BGR2GRAY);
-  return dst;
+  return cloneAndRelease(this._col(d));
 };
 ```
 
-替换为（保留 `_col` 赋值行不动）：
+`roi`（约 302 行，其上一行 `_roi` 赋值保留）改为：
 
 ```js
-OpenCVJSModule.Mat.prototype._col = OpenCVJSModule.Mat.prototype.col;
-// 见 Diag 的说明。
-OpenCVJSModule.Mat.prototype.col = function (d) {
-  let view = this._col(d);
-  let dst = view.clone();
-  view.delete();
-  return dst;
-};
-```
-
-- [ ] **Step 3: 替换 `roi` 实现**
-
-找到（约 301-310 行，注意其上方有一段已注释掉的旧 `roi` 实现，保持原样不动）：
-
-```js
-OpenCVJSModule.Mat.prototype._roi = OpenCVJSModule.Mat.prototype.roi;
 OpenCVJSModule.Mat.prototype.roi = function (rect) {
-  if (this.channels() > 1) {
-    return this._roi(rect);
-  }
-  var dst = new cv.Mat();
-  cv.cvtColor(this, dst, cv.COLOR_GRAY2BGR);
-  cv.cvtColor(dst._roi(rect), dst, cv.COLOR_BGR2GRAY);
-  return dst;
+  return cloneAndRelease(this._roi(rect));
 };
 ```
 
-替换为（保留 `_roi` 赋值行不动）：
-
-```js
-OpenCVJSModule.Mat.prototype._roi = OpenCVJSModule.Mat.prototype.roi;
-// 见 Diag 的说明。
-OpenCVJSModule.Mat.prototype.roi = function (rect) {
-  let view = this._roi(rect);
-  let dst = view.clone();
-  view.delete();
-  return dst;
-};
-```
+三个函数原有的 `if (this.channels() > 1) { return ... }` 分支**全部删除**——多通道走该分支正是静默返回错误数据的根因。
 
 - [ ] **Step 4: 运行测试，确认 84 个全绿**
 
