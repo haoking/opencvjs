@@ -1,6 +1,6 @@
 {
   "name": "@haoking/opencvjs",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "OpenCV for JavaScript with extended Mat operations",
   "main": "opencv.js",
   "scripts": {
