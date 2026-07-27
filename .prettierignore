@@ -1,0 +1,11 @@
+# opencv.js 是 13.9MB 的 Emscripten 产物：第 1-41 行是压缩的 asm.js，
+# 其中单行最长 1,945,468 字符。prettier 会把它展开——实测 582 行变成
+# 1,245,000+ 行，produces 一个无法审阅的 diff，且极易在提交时被忽略。
+#
+# 这不是理论风险：本仓库在 2026-07-27 的一次 Edit 中真实触发过一次，
+# 靠实施者检查 git diff --stat 才发现并回滚。
+opencv.js
+
+# CI 构建产物（阶段 1 起由 GitHub Actions 产出，不入 git）
+dist/
+build/out/
