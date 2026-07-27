@@ -24,7 +24,7 @@ README 首页的三条核心宣称（修复了官方的 bug、支持全部 1–4
 - **全网无任何预编译的 SIMD 版本。** 官方 4.x/5.x、`@techstark/opencv-js`、`@opencvjs/web` 四个产物经 bytecode 级验证，声明 `v128` 的函数数量均为 0。
 - **无任何包使用 `--disable_single_file`。** 所有产物都把 wasm 以 base64 内联进 JS，体积膨胀 33%，且强制按 JS 字符串字面量解析而非流式编译。
 - **OpenCV 5.x 移除了一批 JS API**：`CascadeClassifier`、`HOGDescriptor`、`AKAZE`/`BRISK`/`KAZE`、`readNetFromCaffe`/`readNetFromDarknet`。且 5.0 体积 gzip 后比 4.13 大 32%，无性能补偿。
-- **官方质量参照**：[PR #26643](https://github.com/opencv/opencv/pull/26643)（2024-12）导致 `mat.clone()` 静默退化为浅拷贝约 12 个月，2025-07 才由外部用户发现。该仓库总共约 10 个 CI 测试。
+- **官方质量参照**（已逐条核对 GitHub 原始记录）：[PR #26643](https://github.com/opencv/opencv/pull/26643)「js: Rename Mat::clone binding because it is used in Emscripten」2024-12-19 合入 4.11.0。它的**意图**是修复 emscripten 3.1.71+ 的 `ClassHandle.clone()` 与 `Mat::clone` 的命名冲突（改动仅 2 行）；**副作用**是 JS 侧 `mat.clone()` 转而落到 embind 基类那个引用计数式的浅拷贝上。外部用户 7 个月后才报告（[issue #27572](https://github.com/opencv/opencv/issues/27572)，2025-07-24，标题即「最新版本4.12.x中，clone似乎成了浅拷贝，我不得不使用copyTo」），2025-12-09 关闭于 4.13.0——退化共存续约 12 个月。该仓库总共约 10 个 CI 测试。
 - **体积实测**：4.13.0 = 10.46 MB raw / 3.38 MB gzip / 2.43 MB brotli；5.0 = 15.46 MB / 4.45 MB / 3.13 MB。
 - **裁剪天花板很低**：[opencv#21431](https://github.com/opencv/opencv/issues/21431) 显示白名单只留 10 个函数，single-file 仍有 1.6 MB。
 - **SIMD 真实收益**（[opencv#18068](https://github.com/opencv/opencv/pull/18068)，2020）：resize 1.77×、pyrDown 3.09×、gaussianBlur 3.36×，但 **blur CV_32FC1 为 0.519×（比 scalar 慢一倍）**。
