@@ -1,0 +1,11 @@
+# src/config/opencv_js.config.py 是从 OpenCV 上游逐字拷贝的白名单，
+# 只有两处有意改动（顶部注释 + 移除 dnn）。格式化它会破坏与上游的可比性：
+# 跟进新版本时 diff 会被风格差异淹没，看不出真正的白名单变化。
+#
+# 这不是理论风险：本仓库 2026-07-27 的 Task 7 中，全局 ruff format 钩子
+# 真实把它从上游的紧凑单引号风格重排成了 ruff 默认风格。
+#
+# force-exclude 是必需的——没有它，ruff 在被显式传入文件路径时会忽略 exclude，
+# 而格式化钩子正是显式传路径的。
+extend-exclude = ["src/config/opencv_js.config.py"]
+force-exclude = true
