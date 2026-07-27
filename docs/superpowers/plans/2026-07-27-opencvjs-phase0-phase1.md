@@ -755,7 +755,7 @@ dnn 是当前 13.9MB 产物的体积大头，数据段含 TensorFlow protobuf。
 **Interfaces:**
 
 - Consumes: `src/config/opencv_js.config.py`、`build/opencv-version.txt`
-- Produces: `build/out/opencv.js` 与 `build/out/opencv.wasm`（`--disable_single_file` 下为两个文件）
+- Produces: `build/out/opencv.js` 与 `build/out/opencv_js.wasm`（`--disable_single_file` 下为两个文件）
 
 - [ ] **Step 1: 创建 `.dockerignore`**
 
@@ -789,7 +789,7 @@ WORKDIR /work
 #
 # 用法: build/build.sh [--simd]
 #
-# 产物: build/out/opencv.js + build/out/opencv.wasm
+# 产物: build/out/opencv.js + build/out/opencv_js.wasm
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -824,7 +824,7 @@ docker run --rm \
       --emscripten_dir \$EMSDK/upstream/emscripten \
       ${SIMD_FLAG}
     cp /work/build_js/bin/opencv.js  /out/
-    cp /work/build_js/bin/opencv.wasm /out/
+    cp /work/build_js/bin/opencv_js.wasm /out/
   "
 
 echo "==> 产物:"
@@ -928,7 +928,7 @@ Node 18/20/22 三版本跑测试；性能门禁只在 22 上跑，
 **Interfaces:**
 
 - Consumes: `build/build.sh`、`build/opencv-version.txt`
-- Produces: GitHub Actions artifact `opencv-wasm-baseline`，含 `opencv.js` + `opencv.wasm`
+- Produces: GitHub Actions artifact `opencv-wasm-baseline`，含 `opencv.js` + `opencv_js.wasm`
 
 - [ ] **Step 1: 写冒烟测试**
 
@@ -949,7 +949,7 @@ test(
   { skip: !artifact ? "未设置 OPENCV_ARTIFACT" : false },
   async () => {
     const jsPath = path.resolve(artifact, "opencv.js");
-    const wasmPath = path.resolve(artifact, "opencv.wasm");
+    const wasmPath = path.resolve(artifact, "opencv_js.wasm");
 
     assert.ok(fs.existsSync(jsPath), `缺少 ${jsPath}`);
     assert.ok(
@@ -1024,7 +1024,7 @@ jobs:
       - name: 报告体积
         run: |
           cd build/out/baseline
-          for f in opencv.js opencv.wasm; do
+          for f in opencv.js opencv_js.wasm; do
             raw=$(stat -c%s "$f")
             gz=$(gzip -c "$f" | wc -c)
             br=$(brotli -c "$f" | wc -c)
@@ -1091,7 +1091,7 @@ CascadeClassifier 仍在（钉 4.x 的理由）、dnn 已裁掉。"
 3. `v1.0.1` tag 已打。
 4. README 中不再有与实现不符的宣称，且带「Known Issues」清单。
 
-**Part B（阶段 1）：** 5. `Build WASM` 工作流成功产出 `opencv.js` + **独立的** `opencv.wasm`。6. 冒烟测试四项断言全过：文件已拆分、`clone()` 深拷贝、`CascadeClassifier` 在、`dnn` 已裁。7. 体积报告已记录（raw / gzip / brotli），作为后续 SIMD 变体与阶段 2 的对比基准。
+**Part B（阶段 1）：** 5. `Build WASM` 工作流成功产出 `opencv.js` + **独立的** `opencv_js.wasm`。6. 冒烟测试四项断言全过：文件已拆分、`clone()` 深拷贝、`CascadeClassifier` 在、`dnn` 的 JS 绑定已裁（注意：dnn 的 C++ 代码仍在产物中，白名单管不到 CMake）。7. 体积报告已记录（raw / gzip / brotli），作为后续 SIMD 变体与阶段 2 的对比基准。
 
 ## 不在本计划内
 
