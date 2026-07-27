@@ -45,6 +45,18 @@ README 首页的三条核心宣称（修复了官方的 bug、支持全部 1–4
 | `roi()` / `col()` / `Diag()` 对 `CV_8S`/`CV_16S`/`CV_32S`/`CV_64F` 全部崩溃 | 根因：`opencv.js:302-310` 等用 `cvtColor(GRAY2BGR)` → 操作 → `cvtColor(BGR2GRAY)` 绕开单通道限制，而 cvtColor 只支持 8U/16U/32F。崩溃形式为 emscripten 的 `Exception catching is disabled`，**无法 try/catch，整个 cv 模块实例随之报废**。与 commit `1d9d51b` 宣称的「support for all 1,2,3,4 channels」直接矛盾 |
 | `mds()` 100% 不可用                                                         | `opencv.js:282` 写的是 `this.DATA` 而非 `this.DATA()`，取到函数对象，立即 `src1Array.reduce is not a function`。README:529 仍将其文档化为公开 API                                                                                                                                                                |
 
+### P0 — 多通道路径静默返回错误数据（比崩溃更危险）
+
+`roi()` / `col()` / `Diag()` 在 `channels() > 1` 时走「直接返回原生视图」分支（`opencv.js:303-305`、`219-221`、`178-180`），不崩溃、不报错，但因视图非连续而**返回错误数据**。3×3 `CV_32FC2` 实测：
+
+| 调用                 | 正确值                   | 当前返回                 |
+| -------------------- | ------------------------ | ------------------------ |
+| `roi(Rect(1,1,2,2))` | `9,10,11,12,15,16,17,18` | `9,10,11,12,13,14,15,16` |
+| `col(2)`             | `5,6,11,12,17,18`        | `5,6,7,8,9,10`           |
+| `Diag()`             | `1,2,9,10,17,18`         | `1,2,3,4,5,6`            |
+
+与单通道崩溃同根同源（非连续视图被按连续内存直读），同一个 `.clone()` 修复一并解决。因其无任何报错信号，实际危害高于 P0 崩溃。
+
 ### P1 — 静默产出错误结果
 
 - `mulSpectrums()` 返回 `NaN`，且 **README:272 的示例注释里就写着 NaN**——错误输出被当作预期结果写进了文档。
@@ -134,7 +146,7 @@ opencvjs/
 │   ├── Dockerfile                    # 锁死 emsdk 版本
 │   └── build.sh                      # 参数：OpenCV tag、白名单路径、--simd、--disable_single_file
 ├── test/
-│   ├── runner.js                     # 子进程隔离调度器（见 7.1）
+│   ├── helpers.js                    # Mat 构造、期望值独立计算、安全的异常提取（见 7.1）
 │   ├── unit/                         # JS 层单元测试
 │   ├── types/                        # 类型 × 通道矩阵测试
 │   └── readme-examples/              # 从 README 抽取的可执行断言
@@ -254,11 +266,17 @@ import 入口
 
 当前项目最大的缺口。三条非常规要求，均由实测逼出。
 
-### 7.1 必须用子进程隔离每个类型的测试
+### 7.1 abort 可捕获，但抛出物不是 Error 实例
 
-emscripten 的 `Exception catching is disabled` 异常**无法 try/catch，会带走整个模块实例**。本机做类型矩阵测试时已复现：一个 `CV_32SC1` 崩溃后，同进程内后续全部失效。
+在异常被编译掉的构建下，emscripten 把 C++ 异常表现为抛出一个**数字**（如 `6446944`），附带消息 `Exception catching is disabled, this exception cannot be caught`。
 
-`test/runner.js` 必须为每个（类型 × API）组合 fork 一个子进程，以退出码判定结果。否则第一个崩溃会伪装成「全线失败」，使测试结果不可读。
+实测结论（本机连续触发 20 次验证）：
+
+- 该 abort **可以被 JS 的 try/catch 捕获**；
+- 捕获后 **cv 模块完全正常**，后续 `roi()`、`add()` 等调用不受影响；
+- 因此**不需要子进程隔离**，Node 内置的 `node:test` 足够，测试栈保持零依赖。
+
+**关键陷阱**：抛出物不是 `Error` 实例，`e.message` 为 `undefined`。测试辅助函数必须用 `String(e?.message ?? e)` 提取信息——否则测试代码自身会因 `undefined.split` 之类报错而中断，并把这个自伤伪装成「模块已报废」。本设计的早期版本正是据此误判，要求了不必要的子进程隔离架构。
 
 ### 7.2 必须显式断言 `clone()` 的深拷贝语义
 
