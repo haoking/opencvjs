@@ -21,16 +21,7 @@ jobs:
       # 测试栈零依赖，无需 npm install
 
       - name: 运行测试
-        # 不直接 `run: npm test`：package.json 里该脚本把 glob 加引号交给
-        # node 自己展开（"test/**/*.test.js"），但 `node --test` 的 CLI glob
-        # 支持是 Node 21 才引入的（nodejs/node#50658）。实测 Node 18.20.8 /
-        # 20.20.2 上会报 `Could not find '.../test/**/*.test.js'`，退出码 1，
-        # 只有 Node 22 能跑通——矩阵里 2/3 的版本会必然失败，与代码是否正确无关。
-        # 这里改为让 shell 的 globstar 展开通配符，把具体文件路径交给 node，
-        # 三个版本行为一致，选中的文件集合与 npm test 相同（113 个测试）。
-        run: |
-          shopt -s globstar
-          node --test test/**/*.test.js
+        run: npm test
 
       - name: 性能门禁
         # 只在一个 Node 版本上跑，避免 CI runner 抖动导致误报

@@ -892,16 +892,7 @@ jobs:
       # 测试栈零依赖，无需 npm install
 
       - name: 运行测试
-        # 不直接 `run: npm test`：package.json 里该脚本把 glob 加引号交给
-        # node 自己展开（"test/**/*.test.js"），但 `node --test` 的 CLI glob
-        # 支持是 Node 21 才引入的（nodejs/node#50658）。实测 Node 18.20.8 /
-        # 20.20.2 上会报 `Could not find '.../test/**/*.test.js'`，退出码 1，
-        # 只有 Node 22 能跑通——矩阵里 2/3 的版本会必然失败，与代码是否正确无关。
-        # 这里改为让 shell 的 globstar 展开通配符，把具体文件路径交给 node，
-        # 三个版本行为一致，选中的文件集合与 npm test 相同（113 个测试）。
-        run: |
-          shopt -s globstar
-          node --test test/**/*.test.js
+        run: npm test
 
       - name: 性能门禁
         # 只在一个 Node 版本上跑，避免 CI runner 抖动导致误报
@@ -915,10 +906,20 @@ Run: `npm test 2>&1 | tail -5 && npm run bench 2>&1 | tail -3`
 
 Expected: `# fail 0` 且 `✅ 性能达标`
 
-注：以上本地验证命令用的是开发机上单一 Node 版本（通常是最新版），不会
-触发上面 `运行测试` 步骤注释里说的 Node 18/20 glob 问题。若要在本地复现
-矩阵的三个版本，需要用 nvm/n 等工具切到对应 Node 版本后分别跑
-`shopt -s globstar && node --test test/**/*.test.js`。
+注（根因已在 `package.json` 修复，这里记录背景）：`node --test` 的 CLI glob
+支持是 Node 21 才引入的（nodejs/node#50658），Node 18/20 上跑不了引号包住的
+`"test/**/*.test.js"`。`package.json` 的 `test` 脚本已改为不加引号的
+`node --test test/*/*.test.js`——单层 `*` 由 npm 调用的 sh 展开，成具体文件
+路径后才交给 node，三个 Node 版本因此行为一致（已实测 18.20.8/20.20.2/22.22.2
+均 113 pass/0 fail），CI 这里可以放心直接 `run: npm test`，与开发者本地跑的
+命令完全一致。
+
+**已知限制（记入待办，不阻塞本任务）**：`test/*/*.test.js` 只匹配**恰好一层**
+子目录（`test/types/`、`test/unit/` 满足，Task 10 计划新增的 `test/smoke/` 也
+满足）。若未来在 `test/` 下新增两层以上嵌套的测试文件（如
+`test/unit/foo/bar.test.js`）或把测试文件直接放在 `test/` 根下，这个 glob
+会静默漏掉，`npm test` 不会报错、只是少跑几个文件。`package.json` 里没法写
+注释说明这一点，只能记录在此处。
 
 - [ ] **Step 3: 提交**
 
