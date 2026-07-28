@@ -1,6 +1,10 @@
 # 相对上游 platforms/js/opencv_js.config.py 的改动只有两处：本段注释，以及
 # 文件末尾 makeWhiteList([...]) 的参数里去掉了 dnn。其余逐字同步，便于跟进新版本。
 #
+# 相对上游还多放行了 core 的 mulSpectrums 与 SVDecomp（紧邻 dft）：扩展层原本用
+# 手写 JS 模拟这两者——mulSpectrums 的 DFT 布局算错导致返回 NaN，svd 则内联了一份
+# numeric.js 的纯 JS Golub-Reinsch。放行原生实现后两者都可删除。
+#
 # 去掉 dnn 是为了收窄暴露给 JS 的 API 面，**不是体积优化**——这一点极易搞反：
 # 白名单只控制 embind 绑定的生成，不影响 CMake 是否编译该模块。上游
 # platforms/js/build_js.py:126 硬编码 -DBUILD_opencv_dnn=ON 且没有 --disable_dnn
@@ -17,7 +21,7 @@
 core = {
     '': [
         'absdiff', 'add', 'addWeighted', 'bitwise_and', 'bitwise_not', 'bitwise_or', 'bitwise_xor', 'cartToPolar',
-        'compare', 'convertScaleAbs', 'copyMakeBorder', 'countNonZero', 'determinant', 'dft', 'divide', 'eigen',
+        'compare', 'convertScaleAbs', 'copyMakeBorder', 'countNonZero', 'determinant', 'dft', 'mulSpectrums', 'SVDecomp', 'divide', 'eigen',
         'exp', 'flip', 'getOptimalDFTSize','gemm', 'hconcat', 'inRange', 'invert', 'kmeans', 'log', 'magnitude',
         'max', 'mean', 'meanStdDev', 'merge', 'min', 'minMaxLoc', 'mixChannels', 'multiply', 'norm', 'normalize',
         'perspectiveTransform', 'polarToCart', 'pow', 'randn', 'randu', 'reduce', 'repeat', 'rotate', 'setIdentity', 'setRNGSeed',

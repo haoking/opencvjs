@@ -12,8 +12,7 @@
 # build.sh 的 EXTRA_CMAKE_OPTIONS 环境变量补上 -DCMAKE_CXX_STANDARD=17。
 FROM emscripten/emsdk:3.1.64
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 git cmake \
-    && rm -rf /var/lib/apt/lists/*
+# 基础镜像 emscripten/emsdk 的 stage_deploy 层已预装 python3 / git / cmake，
+# 此处不再重复安装。若将来换基础镜像，需重新确认这三者存在。
 
 WORKDIR /work

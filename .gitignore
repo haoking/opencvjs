@@ -3,3 +3,8 @@ dist/
 build/out/
 *.log
 .DS_Store
+
+# 本地凭据，绝不入库
+.env
+.env.*
+!.env.example
