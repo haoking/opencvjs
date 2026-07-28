@@ -11,7 +11,14 @@ const artifact = process.env.OPENCV_ARTIFACT;
 
 test(
   "新构建的 wasm 产物冒烟验证",
-  { skip: !artifact ? "未设置 OPENCV_ARTIFACT" : false },
+  {
+    skip: !artifact ? "未设置 OPENCV_ARTIFACT" : false,
+    // 有限超时：wasm 实例化正常应在秒级完成；若 onRuntimeInitialized 因
+    // 加载失败而从不触发，不加超时会一直挂到 workflow 180 分钟的硬限才被
+    // 杀掉——把本该秒级失败的问题变成最昂贵的失败方式。60s 对正常情况绰绰
+    // 有余，对真正的挂起也能快速止损。
+    timeout: 60000,
+  },
   async () => {
     const jsPath = path.resolve(artifact, "opencv.js");
     const wasmPath = path.resolve(artifact, "opencv_js.wasm");
