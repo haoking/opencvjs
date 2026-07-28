@@ -84,10 +84,10 @@ extension layer as separate modules under `src/js/`.
     `build/build.sh --single-file` 能产出 1.x 那样的单文件形态（wasm base64 内联，
     约 11 MB），但它只作为 CI artifact 存在、不进 npm 包，且同样没有做过浏览器验证。
     本仓库的测试只覆盖 Node（CI 矩阵 18 / 20 / 22）。
-- **SIMD 变体的实测收益尚无数据。** 探测、分目录、双产物一致性、构建矩阵都已就位，
-  但 `--simd` 至今**没有真正构建过**（首次真实构建要等 CI 跑一次 `build-wasm.yml`）。
-  `npm run simd:compare` 会打印实测加速比，包括 SIMD 更慢的项——上游 2020 年那组
-  逐 kernel 数据里 `blur CV_32FC1` 只有 **0.519x**，SIMD 不是无脑赢。
+- **SIMD 在部分算子上更慢。** 实测（真实产物，node v22.22.2 / darwin-arm64）
+  `dft CV_32FC1` 是 **0.91x** —— 比 baseline 慢 9%。`cvtColor RGBA2GRAY` 与
+  `roiClone` 是 1.00x（无变化）。SIMD 不是无脑赢，`npm run simd:compare` 会把
+  这些数字连同有利的一并打出来。这些是 arm64 上的数字，CI 跑在 x86-64，会不同。
 
 ## Requirements
 
@@ -163,7 +163,39 @@ loadCV.detectSimd(); // boolean：当前引擎支不支持 SIMD
 > 正常用法不受影响；确实要对比两个变体请开两个进程（`test/simd-compare.js` 就是这么做的）。
 
 SIMD 的浏览器覆盖率是 **93.57%**（Chrome 91+ / Firefox 89+ / Safari 16.4+），所以
-baseline 是必需的回退，两份都会随包发布——代价是包体积翻倍（解包约 17.5 MB）。
+baseline 是必需的回退，两份都会随包发布——代价是包体积从 8.3 MB 涨到 **19.4 MB**
+（解包；tarball 6.0 MB）。SIMD 那份 wasm 本身就比 baseline 大 21.7%
+（10,363,503 B vs 8,515,975 B；brotli 后 2.25 MB vs 1.99 MB）。
+
+### SIMD 实测加速比
+
+真实产物，node v22.22.2 / darwin-arm64，每个变体独立进程、启动顺序前后各一趟取最小值
+（`npm run simd:compare`）。同一套测量用两份**相同**的二进制标定过噪声底：±3%，
+所以 0.97–1.03 之间的比值不代表真实差异。
+
+| 操作                            | baseline | simd     | 加速比     | 上游 2020 年数据 |
+| ------------------------------- | -------- | -------- | ---------- | ---------------- |
+| `absdiff` 8UC3 256²             | 18.2 ms  | 1.4 ms   | **12.81x** | —                |
+| `add` 8UC1 256²                 | 7.7 ms   | 0.7 ms   | **10.37x** | —                |
+| `resize` 8UC4 256²→128²         | 6.4 ms   | 1.5 ms   | **4.37x**  | 1.77x            |
+| `GaussianBlur` 8UC1 256² k=5    | 21.6 ms  | 6.5 ms   | **3.32x**  | 3.36x            |
+| `pyrDown` 32FC4 256²            | 9.2 ms   | 2.8 ms   | **3.27x**  | 3.09x            |
+| `Sobel` 32FC1 256²              | 6.9 ms   | 3.3 ms   | 2.07x      | —                |
+| `warpAffine` 8UC1 256²          | 28.1 ms  | 17.1 ms  | 1.65x      | —                |
+| `blur` 32FC1 256² k=5           | 10.3 ms  | 6.6 ms   | 1.55x      | **0.519x**       |
+| `cvtColor` RGBA2GRAY 8UC4 256²  | 8.5 ms   | 8.6 ms   | 1.00x      | —                |
+| `roiClone` 64² 取 32²（扩展层） | 14.7 ms  | 14.7 ms  | 1.00x      | —                |
+| `replaceMatOnRect`（扩展层）    | 263.1 ms | 275.9 ms | 0.95x      | —                |
+| `dft` 32FC1 256²                | 11.8 ms  | 13.0 ms  | **0.91x**  | —                |
+
+两处值得注意：
+
+- **`dft` 更慢（0.91x）**，超出噪声底，是真实的退化。两个扩展层用例是 1.00x /
+  0.95x —— 它们是 JS 侧的逐像素循环，不走 wasm 内核，本来就不该有变化。
+- **上游那个反例没有复现。** 上游 2020 年测得 `blur CV_32FC1` 是 0.519x（慢一倍），
+  这里是 1.55x（快）。而 `GaussianBlur` 3.32x vs 3.36x、`pyrDown` 3.27x vs 3.09x
+  两项几乎吻合。结论是上游那组逐 kernel 数据**不能整体照搬**——六年过去，
+  OpenCV 的 SIMD 内核与 emscripten 的代码生成都变了，具体到某个算子只能实测。
 
 ### TypeScript
 
