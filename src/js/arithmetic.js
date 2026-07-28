@@ -35,17 +35,24 @@ module.exports = function applyArithmetic(cv) {
   };
 
   /**
-   * 逐元素求 constant / x，返回新 Mat。
+   * 逐元素求 constant / x，返回新 Mat。全部 1–4 通道均正确。
    *
-   * ⚠️ 单通道语义。多通道时被除数由 new cv.Scalar(constant) 构造，只有通道 0
-   * 取到 constant，其余通道为 0 —— 与 1.x 行为一致，未在本次改动中变更。
+   * 被除数必须四个分量都填 constant。1.x 写的是 new cv.Scalar(constant)，而
+   * Scalar 的缺省分量是 0，所以多通道时只有通道 0 拿到 constant，其余通道被
+   * 0 除（实测 CV_32FC3 的填充结果是 7,0,0,7,0,0）。2.0 修掉。
+   *
+   * 不用 cv.Scalar.all(constant)：它在 opencv.js 的 glue 里是
+   *   cv.Scalar.all = function (v) { return Scalar(v, v, v, v); };
+   * —— 漏了 new，Scalar 构造函数体里的 this.push 因而打在 undefined 上，调用
+   * 即抛 TypeError: this.push is not a function。这是 glue 自带的 JS 辅助函数
+   * 的缺陷（Scalar 不是 embind 绑定，与白名单无关），任何产物上都一样。
    */
   cv.Mat.prototype.constantDivide = function constantDivide(constant) {
     const dst = new cv.Mat(
       this.rows,
       this.cols,
       this.type(),
-      new cv.Scalar(constant),
+      new cv.Scalar(constant, constant, constant, constant),
     );
     cv.divide(dst, this, dst);
     return dst;
