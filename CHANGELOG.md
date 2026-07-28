@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+### 参数前置校验（`src/js/guards.js`）
+
+扩展层的每个方法现在都在**调用 wasm 之前**校验参数，失败时抛标准
+`TypeError` / `RangeError`，消息里带函数名、参数名、实际收到的值和期望的范围。
+覆盖：Rect / 行列 / 对角线下标越界、两个 Mat 的尺寸与类型不匹配、`src` 装不下
+`rect`、数组长度不足、非有限的常数、非 Mat 参数、已被 `delete()` 的 Mat，以及
+`cv.matFromArray` 的元素个数。
+
+这解决的是两类都很难查的故障（均本机实测）：
+
+1. **abort 抛出的不是 `Error` 实例。** 本产物在异常被编译掉的配置下构建，C++ 的
+   `CV_Assert` 失败走 abort，emscripten 转成 `throw <裸数字>`——`mat.roi(Rect(1,1,10,10))`
+   抛出 `1914504`，`e instanceof Error` 为 `false`、`e.message` 为 `undefined`。
+2. **越界的行列号根本不会 abort。** embind 的 `*Ptr(row, col)` 不查边界：3×3 `CV_32FC1`
+   （36 字节）上 `PTR(9, 9)` 返回 base+144 字节处的视图，读写落在别人的堆上、不报错。
+   `replaceMatOnRect` 等 7 个就地写入方法全由 `PTR()` 逐像素驱动。
+
+**行为变更**（此前这些调用要么 abort、要么静默产出错误数据，因此不认为是回归）：
+
+| 调用                                         | 此前                     | 现在         |
+| -------------------------------------------- | ------------------------ | ------------ |
+| `mat.addConstant(undefined)` / `NaN` / `"2"` | 整片 NaN / 静默截断      | `TypeError`  |
+| `mat.colClone(1.5)`                          | 静默取第 1 列            | `TypeError`  |
+| `mat.replaceMatOnRow([1], 0)`（数组短）      | 缺的位置写成 NaN / 0     | `RangeError` |
+| `mat.addOnCol(1, 7)`（列越界）               | 静默改写堆内存           | `RangeError` |
+| `cv.matFromArray(3, 3, CV_32FC1, [1, 2, 3])` | 剩余部分是未初始化堆内存 | `RangeError` |
+| `mat.dftSplit()`（多通道）                   | 只读通道 0，静默返回垃圾 | `TypeError`  |
+
+校验只做在**函数入口**，不做在逐像素循环里：一次 rows/cols 边界检查约 19 ns、
+`PTR()` 自身约 54 ns，塞进 `PTR()` 就是 +35% 且每个像素都要付。实测
+`npm run bench`（20000 次 `roiClone`）13.8–14.1 ms → 14.6–14.8 ms（+5%，门禁阈值是
+基准的 1.5 倍）；`replaceMatOnCol` / `addOnCol` 反而快了约 11%（`this.rows` 由每轮
+读取改为循环外读一次）。`DATA()` / `PTR()` 保持裸访问器语义，不查边界。
+
+### 测试
+
+135 项 → 173 项（172 pass / 1 skip / 0 fail）：新增 38 项参数校验用例。
+
 ## 2.0.0 — 2026-07-28
 
 **换产物 + 重写扩展层。** 发布产物由仓库里那份 2018 年的 asm.js 单文件

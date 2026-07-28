@@ -48,6 +48,16 @@ module.exports = function applyTypedAccess(cv) {
   /**
    * PTR(row)      → 第 row 行的全部元素（cols × channels 个）
    * PTR(row, col) → (row, col) 处像素的各通道（channels 个）
+   *
+   * ⚠️ **裸访问器，不查边界**，与 C++ 的 `Mat::ptr` 在 release 构建下一致。
+   * 越界下标不会报错：3×3 CV_32FC1（36 字节）上 `PTR(9, 9)` 返回 base+144 字节处的
+   * Float32Array，读写都落在别人的堆上；小数下标会被静默截断（`PTR(1.5, 0)` 取第 1 行）。
+   *
+   * 之所以不在这里加校验：一次 rows/cols 边界检查约 19 ns，而本函数自身约 54 ns
+   * （实测数据见 guards.js 顶部），加上去就是 +35%，且这笔开销要由
+   * replaceMatOnRect 那类双重循环里的**每个像素**来付。扩展层的每个操作都已在
+   * 入口把下标校验掉，因此循环内调用本函数是安全的；直接调用 PTR() 的代码需要
+   * 自己保证下标合法。
    */
   cv.Mat.prototype.PTR = function PTR(row, col = -1) {
     const method = PTR_BY_DEPTH[this.depth()];

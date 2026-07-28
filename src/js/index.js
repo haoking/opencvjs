@@ -13,6 +13,7 @@
  * 会恒真 —— 首次 wasm 构建的冒烟测试就栽在这上面。
  */
 
+const applyGuards = require("./guards");
 const applyTypedAccess = require("./typed-access");
 const applyMatRegion = require("./mat-region");
 const applyArithmetic = require("./arithmetic");
@@ -27,10 +28,14 @@ module.exports = async function loadOpenCV() {
     );
   }
 
+  // guards 先装：它要读 cv 的类型常量建表，并给 cv.matFromArray 套上长度校验；
+  // 返回的校验器由后面三个模块在各自的函数入口使用。
+  const guards = applyGuards(cv);
+
   applyTypedAccess(cv);
-  applyMatRegion(cv);
-  applyArithmetic(cv);
-  applyDft(cv);
+  applyMatRegion(cv, guards);
+  applyArithmetic(cv, guards);
+  applyDft(cv, guards);
 
   return cv;
 };

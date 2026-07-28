@@ -6,6 +6,10 @@
  * 分两组：
  *  1. roiClone / colClone / diagClone —— 取子区域的**独立副本**
  *  2. replaceMatOn* / rectAdd / rectSubtract / addOnCol —— 就地改写调用者自身
+ *
+ * 第 2 组全部由 PTR() 逐像素驱动，而 embind 的 *Ptr() 不查边界（越界即静默改写
+ * 别人的堆内存）。所以每个函数在**入口**先过一遍 guards 校验，循环里不再有任何
+ * 校验 —— 为什么必须这样分工，见 guards.js 顶部那组实测耗时。
  */
 
 /**
@@ -25,24 +29,38 @@ function cloneAndRelease(view) {
   }
 }
 
-module.exports = function applyMatRegion(cv) {
+module.exports = function applyMatRegion(cv, guards) {
   /** 子矩形的独立副本（原生 roi() 的可安全直读版本）。 */
   cv.Mat.prototype.roiClone = function roiClone(rect) {
+    const where = "Mat.roiClone(rect)";
+    guards.mat(this, "接收者 Mat", where);
+    guards.rect(this, rect, where);
     return cloneAndRelease(this.roi(rect));
   };
 
   /** 第 d 列的独立副本（原生 col() 的可安全直读版本）。 */
   cv.Mat.prototype.colClone = function colClone(d) {
+    const where = "Mat.colClone(col)";
+    guards.mat(this, "接收者 Mat", where);
+    guards.index(d, this.cols, "col", where);
     return cloneAndRelease(this.col(d));
   };
 
   /** 第 d 条对角线的独立副本（原生 diag() 的可安全直读版本）。 */
   cv.Mat.prototype.diagClone = function diagClone(d = 0) {
+    const where = "Mat.diagClone(d)";
+    guards.mat(this, "接收者 Mat", where);
+    guards.diagIndex(this, d, where);
     return cloneAndRelease(this.diag(d));
   };
 
   /** 把 src1 的通道 0 拷进 this 由 rect 指定的矩形区域（就地）。 */
   cv.Mat.prototype.replaceMatOnRect = function replaceMatOnRect(src1, rect) {
+    const where = "Mat.replaceMatOnRect(src, rect)";
+    guards.mat(this, "接收者 Mat", where);
+    guards.mat(src1, "src", where);
+    guards.rect(this, rect, where);
+    guards.covers(src1, rect, "src", where);
     for (let i = 0; i < rect.height; i += 1) {
       for (let j = 0; j < rect.width; j += 1) {
         this.PTR(i + rect.y, j + rect.x)[0] = src1.PTR(i, j)[0];
@@ -57,7 +75,11 @@ module.exports = function applyMatRegion(cv) {
    * 7 种深度全部可用。
    */
   cv.Mat.prototype.replaceMatOnRow = function replaceMatOnRow(arr, d) {
+    const where = "Mat.replaceMatOnRow(arr, row)";
+    guards.mat(this, "接收者 Mat", where);
+    guards.index(d, this.rows, "row", where);
     const row = this.PTR(d);
+    guards.arrayLike(arr, row.length, "arr", where);
     for (let i = 0; i < row.length; i += 1) {
       row[i] = arr[i];
     }
@@ -65,7 +87,12 @@ module.exports = function applyMatRegion(cv) {
 
   /** 用 arr 覆盖第 d 列的通道 0（就地）。 */
   cv.Mat.prototype.replaceMatOnCol = function replaceMatOnCol(arr, d) {
-    for (let i = 0; i < this.rows; i += 1) {
+    const where = "Mat.replaceMatOnCol(arr, col)";
+    guards.mat(this, "接收者 Mat", where);
+    guards.index(d, this.cols, "col", where);
+    const rows = this.rows;
+    guards.arrayLike(arr, rows, "arr", where);
+    for (let i = 0; i < rows; i += 1) {
       this.PTR(i, d)[0] = arr[i];
     }
   };
@@ -85,27 +112,45 @@ module.exports = function applyMatRegion(cv) {
     rowOrPoint,
     col,
   ) {
+    const where = "Mat.replaceMatOnPoint(value, row, col)";
+    guards.mat(this, "接收者 Mat", where);
+    guards.number(value, "value", where);
+
+    let row = rowOrPoint;
+    let column = col;
     if (rowOrPoint !== null && typeof rowOrPoint === "object") {
-      this.PTR(rowOrPoint.y, rowOrPoint.x)[0] = value;
-      return;
-    }
-    if (col === undefined) {
+      row = rowOrPoint.y;
+      column = rowOrPoint.x;
+    } else if (col === undefined) {
+      // 这条消息 README 里逐字引用过，改动前先改文档。
       throw new TypeError(
         "replaceMatOnPoint(value, row, col) 或 replaceMatOnPoint(value, point)：缺少 col",
       );
     }
-    this.PTR(rowOrPoint, col)[0] = value;
+    guards.index(row, this.rows, "row", where);
+    guards.index(column, this.cols, "col", where);
+    this.PTR(row, column)[0] = value;
   };
 
   /** 给第 d 列的通道 0 逐行加上 constant（就地）。 */
   cv.Mat.prototype.addOnCol = function addOnCol(constant, d) {
-    for (let i = 0; i < this.rows; i += 1) {
+    const where = "Mat.addOnCol(constant, col)";
+    guards.mat(this, "接收者 Mat", where);
+    guards.number(constant, "constant", where);
+    guards.index(d, this.cols, "col", where);
+    const rows = this.rows;
+    for (let i = 0; i < rows; i += 1) {
       this.PTR(i, d)[0] += constant;
     }
   };
 
   /** 把 src1 的通道 0 累加到 this 由 rect 指定的矩形区域（就地）。 */
   cv.Mat.prototype.rectAdd = function rectAdd(src1, rect) {
+    const where = "Mat.rectAdd(src, rect)";
+    guards.mat(this, "接收者 Mat", where);
+    guards.mat(src1, "src", where);
+    guards.rect(this, rect, where);
+    guards.covers(src1, rect, "src", where);
     for (let i = 0; i < rect.height; i += 1) {
       for (let j = 0; j < rect.width; j += 1) {
         this.PTR(rect.y + i, rect.x + j)[0] += src1.PTR(i, j)[0];
@@ -115,6 +160,11 @@ module.exports = function applyMatRegion(cv) {
 
   /** 把 src1 的通道 0 从 this 由 rect 指定的矩形区域中减去（就地）。 */
   cv.Mat.prototype.rectSubtract = function rectSubtract(src1, rect) {
+    const where = "Mat.rectSubtract(src, rect)";
+    guards.mat(this, "接收者 Mat", where);
+    guards.mat(src1, "src", where);
+    guards.rect(this, rect, where);
+    guards.covers(src1, rect, "src", where);
     for (let i = 0; i < rect.height; i += 1) {
       for (let j = 0; j < rect.width; j += 1) {
         this.PTR(rect.y + i, rect.x + j)[0] -= src1.PTR(i, j)[0];

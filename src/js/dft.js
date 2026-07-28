@@ -25,13 +25,23 @@
  * 实现逐字搬运自 1.x。
  */
 
-module.exports = function applyDft(cv) {
+module.exports = function applyDft(cv, guards) {
   /**
    * @deprecated 正确性未经验证，且已无消费者。需要复数谱相乘请用原生
    *   cv.mulSpectrums()。详见本文件顶部的说明。
    * @returns {{r: cv.Mat, i: cv.Mat}} 实部与虚部（调用方负责 delete）
    */
   cv.Mat.prototype.dftSplit = function dftSplit() {
+    const where = "Mat.dftSplit()";
+    guards.mat(this, "接收者 Mat", where);
+    // CCS 是 cv.dft() 不带 DFT_COMPLEX_OUTPUT 时的**单通道**输出格式，而下面的实现
+    // 也只读写通道 0。多通道输入上它会丢掉除通道 0 以外的全部数据，静默返回垃圾
+    // （实测 CV_32FC2 的 [1..8] 得到 1,0,3,0,5,0,7,0）。
+    guards.channels(this, [1], where);
+    // 注意：这里**不**校验行列数为偶数。M/2、N/2 在奇数尺寸上是小数，embind 会把它
+    // 截断（3×3 上 PTR(1.5, 0) 落到第 1 行）—— 但 README 里那个唯一的示例正是 3×3，
+    // 其输出被逐字记录在文档里。这个函数的展开约定本来就没有任何证据支撑（见文件
+    // 顶部），此处不借校验之名去改一个已发布的输出。
     const M = this.rows;
     const N = this.cols;
 

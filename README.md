@@ -39,13 +39,20 @@ extension layer as separate modules under `src/js/`.
       `build/opencv-version.txt`); the export whitelist lives in `src/config/opencv_js.config.py`
       and additionally exposes `mulSpectrums` and `SVDecomp`, which the upstream tutorial build
       does not
+- [x] **Arguments are checked before they reach wasm** (`src/js/guards.js`): out-of-range rects
+      and indices, mismatched sizes/types, non-finite constants and already-`delete()`d Mats all
+      raise a standard `TypeError` / `RangeError` naming the function, the argument, the value
+      received and the range expected. Without that layer a bad `Rect` aborts inside C++ and
+      emscripten rethrows it as a **bare number** (`throw 1914504` — not an `Error`, `e.message`
+      is `undefined`), while a bad row/column index does not fail at all and silently writes past
+      the end of the Mat
 - [x] Zero runtime dependencies, zero test dependencies (`node:test` only)
-- [x] `npm test` runs 135 assertions (134 pass / 1 skip / 0 fail, node v22.22.2): 84 region-op
+- [x] `npm test` runs 173 assertions (172 pass / 1 skip / 0 fail, node v22.22.2): 84 region-op
       correctness cases across 7 depths × 4 channel counts × 3 APIs, 29 `clone()` deep-copy and
-      copy-semantics cases, 21 regression cases for the defects 2.0 fixed, and 1 wasm-artifact
-      smoke test that is skipped unless `OPENCV_ARTIFACT` is set
-- [x] `npm run bench` gates region-op performance: `roiClone()` 14.3 ms vs the native
-      `roi()` + `clone()` it wraps 14.0 ms (20000 iterations, 64×64 `CV_32FC1`,
+      copy-semantics cases, 21 regression cases for the defects 2.0 fixed, 38 argument-validation
+      cases, and 1 wasm-artifact smoke test that is skipped unless `OPENCV_ARTIFACT` is set
+- [x] `npm run bench` gates region-op performance: `roiClone()` 14.6–14.8 ms vs the native
+      `roi()` + `clone()` it wraps 13.7–14.3 ms (20000 iterations, 64×64 `CV_32FC1`,
       `Rect(1, 1, 32, 32)`, node v22.22.2 / darwin-arm64)
 
 ## Known Issues
@@ -94,7 +101,7 @@ const loadCV = require("@haoking/opencvjs");
 > 本项目第一次 CI 冒烟测试就是这么挂掉的。
 
 包里的 `dist/` 是扁平布局：`index.js`（入口）、`opencv.js`（emscripten glue）、
-`opencv_js.wasm`，以及四个扩展模块。glue 在 Node 下按 `__dirname` 定位 `.wasm`，
+`opencv_js.wasm`，以及五个扩展模块。glue 在 Node 下按 `__dirname` 定位 `.wasm`，
 所以三者必须留在同一个目录里，文件名也不能改。
 
 ### Build from source
@@ -104,7 +111,7 @@ const loadCV = require("@haoking/opencvjs");
 ```bash
 ./build/build.sh          # Docker + emsdk 构建 OpenCV → build/out/baseline/
 npm run assemble          # build/out/baseline + src/js/ → dist/
-npm test                  # 135 项
+npm test                  # 173 项
 npm run bench             # 性能门禁
 ```
 
@@ -124,6 +131,58 @@ const cv = await require("@haoking/opencvjs")();
 ```
 
 示例里注释掉的输出值都是在 2.0 的产物上实际跑出来的（node v22.22.2）。
+
+### Argument validation
+
+本项目的每个扩展方法都会在**调用 wasm 之前**校验参数，失败时抛标准
+`TypeError` / `RangeError`，消息里带上函数名、参数名、实际收到的值和期望的范围：
+
+```javascript
+let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+try {
+  mat1.roiClone(new cv.Rect(1, 1, 10, 10));
+} catch (e) {
+  console.log(e instanceof RangeError); //true
+  console.log(e.message);
+  //Mat.roiClone(rect): Rect(x=1, y=1, width=10, height=10) 超出 3×3（行×列）的 Mat —— 要求 0 ≤ x 且 x+width ≤ cols=3，0 ≤ y 且 y+height ≤ rows=3
+}
+mat1.delete();
+```
+
+其余几条的实际消息（同样逐字实测）：
+
+```text
+Mat.addOnCol(constant, col): col = 7 越界，有效范围 0..2
+
+cv.matFromArray(rows, cols, type, array): CV_32FC1(5) 的 3×3 Mat 需要 9 个元素
+（3×3×1 通道），实际收到 3 个 —— 元素不足时 TypedArray.set() 不报错，Mat 剩余
+部分是未初始化的堆内存
+
+cv.norm2(src1, src2, normType): src1 是 CV_32FC1(5)，src2 是 CV_8UC1(0)
+—— 两者类型必须一致
+
+Mat.sum(): 接收者 Mat 已被 delete() —— 释放后的 Mat 不能再使用
+```
+
+这层校验解决的是两类都很难查的故障：
+
+1. **abort 抛出的不是 `Error` 实例。** 本产物在异常被编译掉的配置下构建，C++ 侧的
+   `CV_Assert` 失败会走 abort，emscripten 把它转成 `throw <裸数字>`——实测
+   `mat.roi(new cv.Rect(1, 1, 10, 10))` 抛出 `1914504`。`e instanceof Error` 是 `false`、
+   `e.message` 是 `undefined`，调用方想「记条日志再降级」都会让自己再崩一次，而那个
+   数字对定位问题毫无帮助。（模块本身在 abort 之后仍可继续使用。）
+2. **越界的行列号根本不会 abort。** embind 生成的 `*Ptr(row, col)` 不做边界检查：
+   3×3 `CV_32FC1`（共 36 字节）上 `mat.PTR(9, 9)` 返回 base+144 字节处的
+   `Float32Array`，读写都落在别人的堆上，不报任何错。`replaceMatOnRect` /
+   `rectAdd` / `rectSubtract` / `replaceMatOnCol` / `addOnCol` / `replaceMatOnPoint` /
+   `replaceMatOnRow` 全都由 `PTR()` 逐像素驱动，所以一个越界的 `Rect` 或列号就是一次
+   静默的堆破坏。这类比第 1 类危险得多。
+
+> ⚠️ **`DATA()` / `PTR()` 本身是裸访问器，不查边界**（与 C++ 的 `Mat::ptr` 在 release
+> 构建下一致）。校验只做在**每个操作的入口**，不做在逐像素的循环里：一次 rows/cols
+> 边界检查约 19 ns，而 `PTR()` 自身约 54 ns，塞进去就是 +35%，且要由双重循环里的
+> 每个像素来付。放在入口只付一次——20000 次 `roiClone` 的性能门禁实测无退化。
+> 直接调用 `PTR()` 的代码需要自己保证下标合法。
 
 ### Commonly
 

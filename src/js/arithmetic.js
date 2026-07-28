@@ -12,9 +12,22 @@
  *  - norm2() 是 ‖src1 − src2‖₂；见下方注释，这个产物里没有原生的双 Mat norm
  */
 
-module.exports = function applyArithmetic(cv) {
+module.exports = function applyArithmetic(cv, guards) {
+  /**
+   * 四个标量运算的入口校验是同一组：接收者必须是活着的 Mat，常数必须是有限数。
+   *
+   * 常数一项不是形式主义：`addWeighted` 会把 undefined / NaN 一路算进去，实测
+   * `mat.addConstant(undefined)` 返回一整个 NaN 的 Mat，不报任何错。整型 Mat 上
+   * 更隐蔽 —— NaN 被截断成 0。
+   */
+  function checkScalarOp(mat, constant, where) {
+    guards.mat(mat, "接收者 Mat", where);
+    guards.number(constant, "constant", where);
+  }
+
   /** 逐元素加常数，返回新 Mat。 */
   cv.Mat.prototype.addConstant = function addConstant(constant) {
+    checkScalarOp(this, constant, "Mat.addConstant(constant)");
     const dst = new cv.Mat();
     cv.addWeighted(this, 1, this, 0, constant, dst);
     return dst;
@@ -22,6 +35,7 @@ module.exports = function applyArithmetic(cv) {
 
   /** 逐元素求 constant − x，返回新 Mat。 */
   cv.Mat.prototype.constantSubtract = function constantSubtract(constant) {
+    checkScalarOp(this, constant, "Mat.constantSubtract(constant)");
     const dst = new cv.Mat();
     cv.addWeighted(this, -1, this, 0, constant, dst);
     return dst;
@@ -29,6 +43,7 @@ module.exports = function applyArithmetic(cv) {
 
   /** 逐元素乘常数，返回新 Mat。 */
   cv.Mat.prototype.mulConstant = function mulConstant(constant) {
+    checkScalarOp(this, constant, "Mat.mulConstant(constant)");
     const dst = new cv.Mat();
     cv.addWeighted(this, constant, this, 0, 0, dst);
     return dst;
@@ -48,6 +63,7 @@ module.exports = function applyArithmetic(cv) {
    * 的缺陷（Scalar 不是 embind 绑定，与白名单无关），任何产物上都一样。
    */
   cv.Mat.prototype.constantDivide = function constantDivide(constant) {
+    checkScalarOp(this, constant, "Mat.constantDivide(constant)");
     const dst = new cv.Mat(
       this.rows,
       this.cols,
@@ -66,6 +82,7 @@ module.exports = function applyArithmetic(cv) {
    * 删除，这里改为纯 JS 累加，行为不变。
    */
   cv.Mat.prototype.sum = function sum() {
+    guards.mat(this, "接收者 Mat", "Mat.sum()");
     const data = this.DATA();
     let total = 0;
     for (let i = 0; i < data.length; i += 1) {
@@ -83,6 +100,7 @@ module.exports = function applyArithmetic(cv) {
    * reshape() 返回共享内存的新 header，这里返回的是副本。
    */
   cv.Mat.prototype.reshapeRows = function reshapeRows(rows) {
+    guards.mat(this, "接收者 Mat", "Mat.reshapeRows(rows)");
     const total = this.rows * this.cols;
     if (!Number.isInteger(rows) || rows <= 0 || total % rows !== 0) {
       throw new RangeError(
@@ -105,6 +123,14 @@ module.exports = function applyArithmetic(cv) {
    * 因此这个 helper 保留，不能按“改用原生 cv.norm(a, b, normType)”迁移。
    */
   cv.norm2 = function norm2(src1, src2, normType = cv.NORM_L2) {
+    // cv.subtract 在尺寸或类型不一致时 abort，抛出的是裸数字（实测 3×3 减 3×4
+    // 得 `throw 1914528`）—— 这两条校验就是把那个数字换成一句话。
+    const where = "cv.norm2(src1, src2, normType)";
+    guards.mat(src1, "src1", where);
+    guards.mat(src2, "src2", where);
+    guards.sameSizeAndType(src1, src2, "src1", "src2", where);
+    guards.integer(normType, "normType", where);
+
     const diff = new cv.Mat();
     try {
       cv.subtract(src1, src2, diff);
