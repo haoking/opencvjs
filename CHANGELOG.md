@@ -1,5 +1,83 @@
 # Changelog
 
+## 3.0.0 — 未发布
+
+**基线由 OpenCV 4.14.0 升到 5.0.0**（上游 2026-06-06 发布）。这是一次真正的破坏性
+升级：OpenCV 5 从 **C++ API 里**删掉了一批类，用到它们的代码会直接抛
+`TypeError`，没有降级路径。
+
+> ⚠️ **本条目尚未经过构建验证。** 源码改动（白名单、版本号、测试、文档）已完成，
+> 但 `dist/` 里仍是 4.14.0 的产物。触发 `build-wasm.yml` 需要改动先到达远端
+> （`workflow_dispatch` 配 `actions/checkout` 取的是**远端 ref**，读不到本地工作区），
+> 而本次作业不允许 push。因此**体积、SIMD 加速比、符号总数三组数字都还是空的**，
+> 下方凡标「待实测」处均需构建跑通后回填。
+
+### 破坏性变更
+
+#### 这些 `cv.*` 不再存在
+
+| 符号                                                | 4.14.0 | 5.0.0 | 替代                                                       |
+| --------------------------------------------------- | ------ | ----- | ---------------------------------------------------------- |
+| `CascadeClassifier`                                 | 有     | 无    | `FaceDetectorYN`（DNN，需 ONNX 模型；**本项目未验证**）    |
+| `HOGDescriptor`                                     | 有     | 无    | 无                                                         |
+| `AKAZE` / `BRISK` / `KAZE` / `AgastFeatureDetector` | 有     | 无    | `ORB` / `MSER` / `FastFeatureDetector` / `GFTTDetector` 等 |
+| `groupRectangles`                                   | 有     | 无    | 无                                                         |
+
+**关键：这不是本项目的白名单取舍，是上游把它们从 C++ 里删了。** 已逐条核对
+5.0.0 的头文件——`modules/objdetect/include/opencv2/objdetect.hpp` 里
+`CascadeClassifier` / `HOGDescriptor` / `groupRectangles` 一个都不剩，
+`modules/features/include/opencv2/features.hpp` 里
+`AKAZE` / `BRISK` / `KAZE` / `AgastFeatureDetector` 也全部消失（4.14.0 的
+`features2d.hpp` 里它们还都在）。整棵 5.0.0 源码树里也没有任何 haarcascade 数据文件。
+所以**加白名单救不回来**，手写更不现实（等于自己实现一遍 Haar 级联 / AKAZE）。
+
+随这些类一起消失的还有它们的枚举常量（`CASCADE_*`、`AKAZE_*`、`KAZE_*`、
+`HOGDescriptor_*`、`AgastFeatureDetector_*` 等）。确切清单待实测。
+
+#### 为什么这次是 major，而 2.1.0 那次是 minor
+
+2.1.0 的语义变更全都是「原本静默出错 → 现在显式抛出」，没有正确的代码会依赖被改掉
+的行为，所以按文档写的代码一行都不用改。这次不同：`new cv.CascadeClassifier()` 是
+**上一版文档里写着的、能正常工作的用法**，升级后它直接崩。这正是 semver 里 major
+要保护的那条线，没有任何解释空间。
+
+### 变更
+
+- **白名单基线换成上游 5.0.0 的 `platforms/js/opencv_js.config.py`**（逐字拷贝）。
+  相对上游仍只有三处有意改动，见 `src/config/opencv_js.config.py` 顶部注释与
+  `ruff.toml` 里的自检方法：
+  1. 顶部注释块；
+  2. `makeWhiteList([...])` 去掉 `dnn`（沿用 2.0 的理由：收窄 JS API 面，**不是**
+     体积优化）；
+  3. `core` 放行 `mulSpectrums` 与 `SVDecomp`。
+- **`mulSpectrums` / `SVDecomp` 继续走原生实现。** 两者在 5.0.0 的 `core.hpp` 里
+  声明完好，且与 4.14.0 **逐字节相同**（`SVDecomp` 2084 行、`mulSpectrums` 2284 行，
+  均带 `CV_EXPORTS_W`），放行即可。2.0 删掉的那两份手写实现（返回 `NaN` 的
+  `mulSpectrums`、内联 numeric.js 的 `svd`）不会回来。
+- 上游自身的变化（非本项目改动）：模块字典 `features2d → features`、
+  `calib3d → _3d + calib`；`divSpectrums` 从 `imgproc` 挪到 `core`；objdetect 新增
+  `mcc_CheckerDetector` / `mcc_DetectorParameters` / `mcc_Checker`（由 contrib 并入）。
+  `photo` 模块**没有**消失。
+- `build/opencv-version.txt` → `5.0.0`。构建脚本 `build/build.sh` 与
+  `build/Dockerfile` 均无需改动：`build_js.py` 的命令行选项在 4.14.0 与 5.0.0 之间
+  没有任何差异（它内部的 CMake 开关改了名，但那些本项目不传）。
+
+### 尚未验证 / 待实测
+
+- 构建本身能否跑通（emsdk 3.1.64 × OpenCV 5.0.0 未经组合验证）。已核对的是：
+  `modules/js/CMakeLists.txt` 的 C++17 `FATAL_ERROR` 只在 emscripten **≥ 4.0.20**
+  时触发，3.1.64 在线以下；CMake 最低版本要求由 3.7 升到 3.13，emsdk 镜像满足。
+- 体积（raw / gzip / brotli，baseline 与 simd 两个变体）。
+  4.14.0 实测基准：baseline wasm 8,515,975 B（gzip 2,729,282 / brotli 1,992,519），
+  simd wasm 10,363,503 B（gzip 3,109,590 / brotli 2,255,141），glue 143,365 B。
+  设计文档里「5.0 gzip 后比 4.13 大 32%」那条**不能直接套用**——它比的是官方
+  文档 nightly 构建，白名单与模块集都和本项目不同。
+- SIMD 加速比是否仍是 `dft` 0.91× / `cvtColor` 0.84×。
+- 符号总数（4.14.0 实测 `Object.keys(cv)` = 1450，Mat 成员 75）。
+- `dist/index.d.ts` 需在新产物上重新生成（`build/assemble.sh` 会自动做）。
+- `src/js/guards.js` 顶部那批行为实测（abort 抛裸数字、`*Ptr()` 不做边界检查）
+  是在 4.14.0 产物上测的，需在 5.0.0 上复验。
+
 ## 2.1.0 — 2026-07-28
 
 **运行时 SIMD 探测 + 双 wasm 产物**，外加自 2.0.0 发布以来积压的一批参数前置校验与

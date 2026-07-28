@@ -1,7 +1,7 @@
 {
   "name": "@haoking/opencvjs",
-  "version": "2.1.0",
-  "description": "OpenCV 4.14.0 WebAssembly build with an extended Mat operation layer",
+  "version": "3.0.0",
+  "description": "OpenCV 5.0.0 WebAssembly build with an extended Mat operation layer",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

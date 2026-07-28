@@ -1,12 +1,13 @@
 # opencvjs
 
-![OpenCV 4.14.0](https://img.shields.io/badge/OpenCV-4.14.0-green.svg)
+![OpenCV 5.0.0](https://img.shields.io/badge/OpenCV-5.0.0-green.svg)
 ![WebAssembly](https://img.shields.io/badge/target-WebAssembly-blue.svg)
 
 `opencv.js` plus a layer of extra `cv.Mat` convenience methods.
-Baseline: **OpenCV 4.14.0, WebAssembly** (self-built — see [Build from source](#build-from-source)).
+Baseline: **OpenCV 5.0.0, WebAssembly** (self-built — see [Build from source](#build-from-source)).
 
-OpenCV upstream is actively maintained — 4.14.0 shipped on 2026-07-19. What upstream does _not_
+OpenCV upstream is actively maintained — 5.0.0 shipped on 2026-06-06, and the 4.x line is still
+receiving releases in parallel (4.14.0 on 2026-07-19). What upstream does _not_
 ship is a standalone, production-oriented `opencv.js`: the official build is a reduced-function
 tutorial build, bundled inside `opencv-{VERSION}-docs.zip` on each release and mirrored at
 `docs.opencv.org/{VERSION}/opencv.js`. An OpenCV maintainer states it plainly in
@@ -18,6 +19,18 @@ Up to 1.x this project shipped a 13.9 MB asm.js file derived from the official O
 build, patched in place and never rebased. **2.0 builds the artifact from source** (Docker +
 emsdk, pinned to `build/opencv-version.txt`) with its own export whitelist, and keeps the
 extension layer as separate modules under `src/js/`.
+
+## What changed in 3.0
+
+- **Baseline moved from OpenCV 4.14.0 to 5.0.0.** This is a genuinely breaking upgrade.
+- **`cv.CascadeClassifier`, `cv.HOGDescriptor`, `cv.AKAZE`, `cv.BRISK`, `cv.KAZE`,
+  `cv.AgastFeatureDetector` and `cv.groupRectangles` are gone.** Not a whitelist choice —
+  OpenCV 5 deleted them from the **C++ API**, so they cannot be whitelisted back. Code using
+  them throws `TypeError`. See [Known Issues](#known-issues) for what replaces what.
+- `cv.SVDecomp` and `cv.mulSpectrums` are **unaffected** — still native, still whitelisted;
+  their 5.0.0 declarations are byte-identical to 4.14.0's.
+- Everything else in the API — the 20 extra `Mat` methods, `cv.norm2`, the SIMD/baseline
+  runtime probe, the entry point — is unchanged.
 
 ## What changed in 2.1
 
@@ -99,6 +112,24 @@ extension layer as separate modules under `src/js/`.
 
 ## Known Issues
 
+- **`cv.CascadeClassifier` / `HOGDescriptor` / `AKAZE` / `BRISK` / `KAZE` /
+  `AgastFeatureDetector` / `groupRectangles` 在 3.0 起不存在。** 用到它们的代码会
+  直接 `TypeError`（不是静默降级）。
+  这**不是本项目的白名单取舍**——OpenCV 5 把它们从 **C++ API** 里删了：5.0.0 的
+  `modules/objdetect/include/opencv2/objdetect.hpp` 里已无 `CascadeClassifier` /
+  `HOGDescriptor` / `groupRectangles`，`modules/features/include/opencv2/features.hpp`
+  里也已无 `AKAZE` / `BRISK` / `KAZE` / `AgastFeatureDetector`，整棵源码树里连
+  haarcascade 数据文件都不剩。**加白名单救不回来。**
+  - **人脸检测**的替代是 `cv.FaceDetectorYN`（DNN 路径，模型是 YuNet ONNX）。
+    绑定确实在产物里，但它**不是 `create()` 静态方法**——embind 把 OpenCV 的
+    静态工厂映射成了构造函数，实际写法是
+    `new cv.FaceDetectorYN(modelPath, configPath, size, ...)`（3–9 个参数）。
+    `modelPath` 指向 emscripten 虚拟文件系统里的路径，模型得先自己写进去。
+    ⚠️ **本项目没有验证过这条路径**（仓库里没有模型文件，测试也没覆盖），
+    上面这段只描述绑定形状，不构成「能用」的保证。
+  - **特征点**：`AKAZE`/`BRISK`/`KAZE`/`AgastFeatureDetector` 没有等价替代。
+    产物里仍有 `ORB`、`MSER`、`FastFeatureDetector`、`GFTTDetector`、
+    `SimpleBlobDetector`。
 - **`dftSplit()` 的正确性没有任何证据支撑**（已标 `@deprecated`，代码保留）。它把
   `cv.dft()` 的 CCS 紧凑输出拆成实部/虚部两个 Mat，但这个展开约定从未被独立验证过；
   1.x 时代它唯一的消费者是那个返回 `NaN` 的手写 `mulSpectrums()`，所以也不存在
@@ -1883,14 +1914,13 @@ let fgbg = new cv.BackgroundSubtractorMOG2(500, 16, true);
 fgbg.apply(frame, fgmask);
 ```
 
-**Haar-cascade Detection**
+**Face Detection**
 
-```javascript
-//detectMultiScale (image, objects, scaleFactor = 1.1, minNeighbors = 3, flags = 0, minSize = new cv.Size(0, 0), maxSize = new cv.Size(0, 0))
-let faceCascade = new cv.CascadeClassifier();
-faceCascade.load("haarcascade_frontalface_default.xml");
-faceCascade.detectMultiScale(gray, faces, 1.1, 3, 0, msize, msize);
-```
+Haar-cascade 检测（`cv.CascadeClassifier`）**在 3.0 起不再存在**——OpenCV 5 把它
+连同 `HOGDescriptor` / `AKAZE` / `BRISK` / `KAZE` 一起从 C++ API 里删除了。
+本产物保留的是基于 DNN 的 `cv.FaceDetectorYN`，但它需要一个 ONNX 模型文件，
+用法与 Haar 不是一一对应的替换，且本项目**没有验证过**它——详见
+[Known Issues](#known-issues)。
 
 **image && video**
 
