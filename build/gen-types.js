@@ -286,10 +286,39 @@ function render(cv) {
   push(0, "");
   push(0, `// 符号数: cv 顶层 ${cvKeys.length}，Mat 成员 ${matKeys.length}`);
   push(0, "");
-  push(0, "declare function loadOpenCV(): Promise<loadOpenCV.CV>;");
+  push(
+    0,
+    "declare function loadOpenCV(options?: loadOpenCV.LoadOptions): Promise<loadOpenCV.CV>;",
+  );
   push(0, "");
   push(0, "declare namespace loadOpenCV {");
 
+  push(2, "/** loadOpenCV() 的可选参数。 */");
+  push(2, "interface LoadOptions {");
+  push(4, "/**");
+  push(
+    4,
+    " * 强制选择 wasm 变体。缺省时按 WebAssembly SIMD 运行时探测自动选择",
+  );
+  push(4, " * （环境变量 OPENCV_SIMD 的优先级介于两者之间）。");
+  push(4, " *");
+  push(4, " * 明确指定的变体若不存在会**抛错**，不会悄悄回落到另一个——那会让");
+  push(4, " * 「强制某变体跑一遍」变成谎报。");
+  push(4, " */");
+  push(4, "simd?: boolean;");
+  push(2, "}");
+  push(0, "");
+  push(2, "/**");
+  push(2, " * 当前运行时是否支持 WebAssembly SIMD。");
+  push(2, " *");
+  push(
+    2,
+    " * 只反映引擎能力，不反映最终加载了哪个变体：OPENCV_SIMD=0 时引擎照样",
+  );
+  push(2, " * 支持 SIMD，但加载的是 baseline。");
+  push(2, " */");
+  push(2, "function detectSimd(): boolean;");
+  push(0, "");
   push(2, "/** 未逐条标注签名的原生绑定：既可当函数调用，也可当类 new。 */");
   push(2, "interface OpenCVBinding {");
   push(4, "(...args: any[]): any;");
@@ -471,7 +500,12 @@ async function main() {
   if (!fs.existsSync(entry)) {
     throw new Error(`找不到 ${entry} —— 先跑 build/assemble.sh`);
   }
-  const cv = await require(entry)();
+  // 固定用 baseline 变体生成（{ simd: false }，而不是靠环境变量——手动跑本脚本
+  // 时没人会记得设）。声明只有一份，而它必须同时描述两个变体；来源必须确定，
+  // 否则同一份源码在装了/没装 SIMD 产物的机器上会生成不同的 .d.ts。
+  // 两个变体的 API 面是否一致由测试来对：CI 带 OPENCV_SIMD=1 再跑一遍整套测试，
+  // 其中 test/types/dts-consistency.test.js 会拿 SIMD 运行时的符号集来对这份声明。
+  const cv = await require(entry)({ simd: false });
   if (typeof cv.Mat !== "function") {
     throw new Error("cv.Mat 不是构造函数 —— wasm 运行时未就绪");
   }
