@@ -1,8 +1,10 @@
 # opencvjs
 
-![OpenCV 4.0.0+](https://img.shields.io/badge/OpenCV-4.0.0%2B-green.svg)
+![OpenCV 4.14.0](https://img.shields.io/badge/OpenCV-4.14.0-green.svg)
+![WebAssembly](https://img.shields.io/badge/target-WebAssembly-blue.svg)
 
-`opencv.js` plus a layer of extra `cv.Mat` convenience methods. Baseline: OpenCV 4.0.1, asm.js.
+`opencv.js` plus a layer of extra `cv.Mat` convenience methods.
+Baseline: **OpenCV 4.14.0, WebAssembly** (self-built — see [Build from source](#build-from-source)).
 
 OpenCV upstream is actively maintained — 4.14.0 shipped on 2026-07-19. What upstream does _not_
 ship is a standalone, production-oriented `opencv.js`: the official build is a reduced-function
@@ -12,46 +14,56 @@ tutorial build, bundled inside `opencv-{VERSION}-docs.zip` on each release and m
 is provided here (size vs functionality compromise). Due to this there is no official OpenCV JS
 release. We don't recommend to use that file directly in your projects."_
 
-This project is derived from the official `opencv.js` (baseline: OpenCV 4.0.1, asm.js) and adds
-a layer of extra `cv.Mat` methods on top of it. It has diverged from upstream since 2018 and has
-**not** been rebased onto any newer OpenCV release — see [Known Issues](#known-issues) for the
-list of methods in this layer that are currently broken.
+Up to 1.x this project shipped a 13.9 MB asm.js file derived from the official OpenCV 4.0.1
+build, patched in place and never rebased. **2.0 builds the artifact from source** (Docker +
+emsdk, pinned to `build/opencv-version.txt`) with its own export whitelist, and keeps the
+extension layer as separate modules under `src/js/`.
+
+## What changed in 2.0
+
+- Artifact: asm.js / OpenCV 4.0.1 → **WebAssembly / OpenCV 4.14.0**, built by
+  `build/build.sh` and verified in CI.
+- Entry point is **async**: `const cv = await require("@haoking/opencvjs")()`.
+- **Native OpenCV methods are no longer overridden.** `roi` / `col` / `diag` / `reshape` are
+  back to their upstream behaviour; this project's fixed versions moved to `roiClone` /
+  `colClone` / `diagClone` / `reshapeRows`.
+- 8 hand-written methods deleted in favour of native equivalents (three of them were broken:
+  `mds()` always threw, `mulSpectrums()` returned `NaN`).
+- Full list with before/after code: **[`docs/MIGRATION-2.0.md`](docs/MIGRATION-2.0.md)**.
 
 ## Features
 
-- [x] OpenCVJS writen by native JS which means this project can be used directly in the browser or JS project, or node.js
-- [x] OpenCVJS is the easiest to install as one .js file
-- [x] OpenCVJS has achieved most of the OpenCV C++ functions
-- [x] Region operations (`roi`/`col`/`Diag`) are covered by 84 correctness cases spanning all 7 depths × 4 channel counts × 3 APIs, plus 29 cases asserting `clone()` deep-copy and copy semantics — 113 executable assertions in total (`npm test`; a 114th smoke test for freshly built wasm artifacts is skipped unless `OPENCV_ARTIFACT` is set)
-- [x] On **single-channel** Mats, `roi()` runs **5.8–8.6× faster** than the previous `cvtColor`-round-trip implementation — a range across independent measurements on a 64×64 `CV_32FC1` image with `Rect(1, 1, 32, 32)` over 15000–20000 iterations. `col()` and `Diag()` have never been benchmarked, so no claim is made for them. On **multi-channel** Mats the change goes the other way: `roi()` is now ~41× _slower_ than the raw view it used to return, because it must copy. See the breaking-change note under [Known Issues](#known-issues) for why, and how to opt back into view semantics
+- [x] 20 extra `cv.Mat` methods plus `cv.norm2` on top of a stock OpenCV build — region copies,
+      in-place writes, scalar arithmetic, and type-dispatching accessors (`DATA()` / `PTR()`)
+- [x] Reproducible build from OpenCV source (Docker + emsdk, version pinned in
+      `build/opencv-version.txt`); the export whitelist lives in `src/config/opencv_js.config.py`
+      and additionally exposes `mulSpectrums` and `SVDecomp`, which the upstream tutorial build
+      does not
+- [x] Zero runtime dependencies, zero test dependencies (`node:test` only)
+- [x] `npm test` runs 135 assertions (134 pass / 1 skip / 0 fail, node v22.22.2): 84 region-op
+      correctness cases across 7 depths × 4 channel counts × 3 APIs, 29 `clone()` deep-copy and
+      copy-semantics cases, 21 regression cases for the defects 2.0 fixed, and 1 wasm-artifact
+      smoke test that is skipped unless `OPENCV_ARTIFACT` is set
+- [x] `npm run bench` gates region-op performance: `roiClone()` 14.3 ms vs the native
+      `roi()` + `clone()` it wraps 14.0 ms (20000 iterations, 64×64 `CV_32FC1`,
+      `Rect(1, 1, 32, 32)`, node v22.22.2 / darwin-arm64)
 
 ## Known Issues
 
-以下问题已知存在，修复排期见 `docs/superpowers/specs/2026-07-27-opencvjs-rebuild-design.md`：
-
-- **【1.0.0 破坏性变更】多通道 Mat 上 `roi()` / `col()` / `Diag()` 返回的是独立副本，不再是原生视图。**
-  此前 `channels() > 1` 时这三个方法直接返回 OpenCV 原生视图（与源 Mat 共享内存、O(1)），
-  但视图非连续，读它的 `.data*` 会得到错误数据——改为 `clone()` 正是为了修掉这个。
-  代价是 `mat.roi(rect).setTo(...)` 一类「通过返回值写回源 Mat」的写法**不再影响源 Mat，
-  且不会报任何错**；性能上，256×256 `CV_32FC2` 取 `Rect(0, 0, 128, 128)` 5000 次，
-  原生视图 1.4 ms vs 现在的副本 57.0 ms，慢约 41×（node v22.22.2 / darwin-arm64，
-  4 次独立测量 40.7–41.7×；另一次独立测量得 48.5×）。
-  需要视图语义请改用未被覆盖的原生方法 `_roi()` / `_col()` / `diag()`，
-  但只用它写回源 Mat——对多通道 Mat 读视图的 `.data*` 仍然是错的。
-  单通道路径此前走 cvtColor 往返，本来就产出副本，语义不变。
-- `mds()` 不可用（内部取到函数对象而非数据）。
-- `mulSpectrums()` / `mulSpectrums2Channel()` 返回无效结果：部分元素恒为 `NaN`，
-  另一部分**每次运行都不同**（读到了未初始化的堆内存）。
-- `replaceMatOnPoint()` 的实际签名是 `(value, x, y)`，与本文档中的 `(value, point)` 不符；
-  且内部是 `PTR(x, y)`——`x` 是行号、`y` 是列号，与参数名相反。
-- `replaceMatOnRow()` 仅支持 `CV_32F` 类型。
-- `reshape(rows)` 覆盖了 OpenCV 原生的 `reshape(cn, rows)` 签名。
-- 产物为 asm.js 而非 WebAssembly，基线为 OpenCV 4.0.1。
+- **`dftSplit()` 的正确性没有任何证据支撑**（已标 `@deprecated`，代码保留）。它把
+  `cv.dft()` 的 CCS 紧凑输出拆成实部/虚部两个 Mat，但这个展开约定从未被独立验证过；
+  1.x 时代它唯一的消费者是那个返回 `NaN` 的手写 `mulSpectrums()`，所以也不存在
+  「端到端跑通过」这回事。需要复数谱相乘请直接用原生 `cv.mulSpectrums()`——它在 CCS
+  格式上直接做乘法，根本不需要先拆分。
+- **浏览器用法没有 1.x 那样的单文件形态。** 产物是 `opencv.js`（约 143 KB 的 glue）
+  - `opencv_js.wasm`（约 8.5 MB）两个文件，必须同目录同名；扩展层是 CommonJS 模块，
+    `<script>` 直接引 `dist/opencv.js` 只能拿到原生 OpenCV，要用扩展层得走打包器。
+    本仓库的测试只覆盖 Node（CI 矩阵 18 / 20 / 22），浏览器路径未做验证。
 
 ## Requirements
 
-- Native JS
-- OpenCV 4.0.0+
+- Node.js >= 18（CI 覆盖 18 / 20 / 22）
+- 从源码构建产物还需要 Docker（`build/build.sh` 在 emsdk 容器里跑，宿主机不需要工具链）
 
 ## Communication
 
@@ -61,34 +73,57 @@ list of methods in this layer that are currently broken.
 
 ## Installation
 
-### Javascript
-
-Async invoke opencv.js:
+```bash
+npm install @haoking/opencvjs
+```
 
 ```javascript
-<script
-  async
-  src="opencv.js"
-  onload="onOpenCVReady();"
-  type="text/javascript"
-></script>
+const loadCV = require("@haoking/opencvjs");
+
+(async () => {
+  const cv = await loadCV();
+  const mat = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  console.log("mat::" + mat.data32F); //mat::1,2,3,4,5,6,7,8,9
+  mat.delete(); //Don't forget to delete cv.Mat when you don't want to use it any more.
+})();
 ```
 
-Do coding after `onOpenCVReady`:
+> ⚠️ **就绪判据只能看 `typeof cv.Mat === "function"`。**
+> `await` 之后 `cv.onRuntimeInitialized` 这个属性**依然存在**（实测 `typeof` 为
+> `function`）。拿它判断「还没就绪」会恒真，于是去等一个永不再触发的回调——
+> 本项目第一次 CI 冒烟测试就是这么挂掉的。
 
-```ruby
-<script type="text/javascript">
-    function onOpenCVReady()
-	{
-        //...
-      	//do something...
-   	}
-</script>
+包里的 `dist/` 是扁平布局：`index.js`（入口）、`opencv.js`（emscripten glue）、
+`opencv_js.wasm`，以及四个扩展模块。glue 在 Node 下按 `__dirname` 定位 `.wasm`，
+所以三者必须留在同一个目录里，文件名也不能改。
+
+### Build from source
+
+产物不入 git。本地要跑测试或自己出包：
+
+```bash
+./build/build.sh          # Docker + emsdk 构建 OpenCV → build/out/baseline/
+npm run assemble          # build/out/baseline + src/js/ → dist/
+npm test                  # 135 项
+npm run bench             # 性能门禁
 ```
+
+`npm run assemble` 也接受一个目录参数（例如 CI 下载下来的产物目录）：
+`npm run assemble -- /path/to/artifact`。
+
+CI 里 `build-wasm.yml` 负责构建并上传产物，`ci.yml` 取它最近一次成功运行的产物再组装。
 
 ---
 
 ## Usage
+
+下面所有示例都假定 `cv` 已经拿到：
+
+```javascript
+const cv = await require("@haoking/opencvjs")();
+```
+
+示例里注释掉的输出值都是在 2.0 的产物上实际跑出来的（node v22.22.2）。
 
 ### Commonly
 
@@ -151,7 +186,6 @@ let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 let dst = new cv.Mat();
 cv.subtract(mat1, mat2, dst);
 (mat1.delete(), mat2.delete());
-//Don't forget to delete cv.Mat when you don't want to use it any more.
 console.log("dst::" + dst.data32F); //dst::0,0,0,0,0,0,0,0,0
 ```
 
@@ -174,31 +208,27 @@ mat1.delete();
 console.log("dst::" + dst.data32F); //dst::9,8,7,6,5,4,3,2,1
 ```
 
-**mmul()**
+**~~mmul()~~ → cv.gemm()**
 
-cv.Mat dst = src1.mul(src2)
-
-( dst = src1 \* src2 )
-
-src1 First input mat
-
-src2 Second input mat
-
-dst Output mat that has the same size and number of channels as the input mat
+> 🔀 **2.0 起 `mat.mmul(b)` 已删除**，改用原生 `cv.gemm(src1, src2, alpha, src3, beta, dst, flags)`。
+> `beta = 0` 时 `src3` 不参与计算，传一个空 Mat 即可。
 
 ```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.mmul(mat2);
-(mat1.delete(), mat2.delete());
-console.log("dst::" + dst.data32F); //dst::30,36,42,66,81,96,102,126,150
+let mat1 = cv.matFromArray(2, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6]);
+let mat2 = cv.matFromArray(3, 2, cv.CV_32FC1, [7, 8, 9, 10, 11, 12]);
+let noop = new cv.Mat();
+let dst = new cv.Mat();
+cv.gemm(mat1, mat2, 1, noop, 0, dst, 0);
+(mat1.delete(), mat2.delete(), noop.delete());
+console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+//dst::58,64,139,154:::2:::2
 ```
 
 **mul()**
 
 cv.Mat dst = src1.mul(src2, scale)
 
-( dst = src1 • src2\*scale )
+( dst = src1 • src2\*scale ) —— 逐元素乘，OpenCV 原生方法。
 
 src1 First input mat
 
@@ -224,7 +254,7 @@ cv.Mat dst = src1.mulConstant(constant)
 
 src1 First input mat
 
-constant Constant added to each element.
+constant Constant multiplied with each element.
 
 dst Output mat that has the same size and number of channels as the input mat
 
@@ -239,7 +269,7 @@ console.log("dst::" + dst.data32F); //dst::10,20,30,40,50,60,70,80,90
 
 void cv.divide(src1, src2, dst)
 
-( dst = src1 / src1 )
+( dst = src1 / src2 )
 
 src1 First input mat
 
@@ -262,7 +292,7 @@ cv.Mat dst = src1.constantDivide(constant)
 
 ( dst = constant / src1 )
 
-constant Constant subtract each element.
+constant Constant divided by each element.
 
 src1 First input mat
 
@@ -276,43 +306,69 @@ console.log("dst::" + dst.data32F);
 //dst::10,5,3.3333332538604736,2.5,2,1.6666666269302368,1.4285714626312256,1.25,1.1111111640930176
 ```
 
-**reshape()**
+> ✅ **2.0 修复**：1.x 在多通道 Mat 上把通道 1+ 除以 0（被除数用 `new cv.Scalar(c)`
+> 填充，而 Scalar 缺省分量是 0——实测填 `CV_32FC3` 得 `16,0,0,16,0,0`）。
 
-Cv.Mat dst = src1.reshape(rows)
+```javascript
+let mat3 = new cv.Mat(1, 2, cv.CV_32FC3, new cv.Scalar(2, 2, 2, 2));
+console.log("dst::" + mat3.constantDivide(16).data32F); //dst::8,8,8,8,8,8
+```
+
+**reshapeRows()** （1.x 名为 `reshape()`）
+
+cv.Mat dst = src1.reshapeRows(rows)
 
 src1 First input mat
 
 rows Reshape to rows
 
-dst Output mat that has the same data of src1, but the row is equal to input rows
+dst **A new copy** whose data equals src1's, laid out with the requested row count
 
 ```javascript
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.reshape(1);
-mat1.delete();
+let dst = mat1.reshapeRows(1);
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::1,2,3,4,5,6,7,8,9:::1:::9
-dst.delete(); //Don't forget to delete cv.Mat when you don't want to use it any more.
+mat1.reshapeRows(4);
+//RangeError: reshapeRows(4)：3×3 的 9 个像素无法整除为 4 行
+mat1.delete();
+dst.delete();
 ```
+
+> 🔀 **改名理由与其它几个不同**：这个产物的 embind 绑定里**根本没有** `Mat::reshape`
+> （实测 `typeof cv.Mat.prototype.reshape === "undefined"`），1.x 并没有覆盖任何东西。
+> 改名是为腾出这个名字，同时把语义差异摆明——OpenCV 原生的 `reshape()` 返回共享内存的
+> 新 header，这里返回的是**副本**。整除校验是 2.0 新加的（1.x 静默产出错误形状）。
 
 **sum()**
 
-Float dst = src1.sum()
+Number dst = src1.sum()
 
 src1 First input mat
 
-dst Sum of src1 data
+dst 所有元素（含各通道）的标量和
 
 ```javascript
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let sum = mat1.sum();
+console.log("sum::" + mat1.sum()); //sum::45
 mat1.delete();
-console.log("sum::" + sum); //sum::45
+
+let mat2 = cv.matFromArray(
+  2,
+  2,
+  cv.CV_32FC3,
+  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+);
+console.log("sum::" + mat2.sum()); //sum::78
+mat2.delete();
 ```
+
+> ℹ️ 与 OpenCV 的 `cv.sum()` 语义不同——后者返回逐通道的 Scalar，且**不在本产物的
+> 白名单里**（实测 `typeof cv.sum === "undefined"`）。
 
 **norm()**
 
-Float dst = cv.norm(src1)
+Number dst = cv.norm(src1)
 
 src1 First input mat
 
@@ -327,84 +383,78 @@ console.log("dst::" + dst); //dst::16.881943016134134
 
 **norm2()**
 
-Float dst = cv.norm(src1, src2)
+Number dst = cv.norm2(src1, src2, normType = cv.NORM_L2)
 
 src1 First input mat
 
 src2 Second input mat
 
-dst Norm of src1 and src2
+dst ‖src1 − src2‖
 
 ```javascript
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let mat2 = cv.matFromArray(
-  3,
-  3,
-  cv.CV_32FC1,
-  [9, 10, 11, 12, 13, 14, 15, 16, 17],
-);
+// prettier-ignore
+let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [9, 10, 11, 12, 13, 14, 15, 16, 17]);
 let dst2 = cv.norm2(mat1, mat2);
 (mat1.delete(), mat2.delete());
 console.log("dst2::" + dst2); //dst2::24
 ```
 
-**Diag()**
+> ℹ️ **不要改用原生 `cv.norm(a, b, normType)`——这个产物里没有那个重载。**
+> embind 只按参数个数分发，而 C++ 的两组 `norm` 重载（`norm(src, normType, mask)` 与
+> `norm(src1, src2, normType, mask)`）在 2 参和 3 参上撞车，绑定生成器只保留了前一组。
+> 实测 `cv.norm(a, b, cv.NORM_L2)` 抛 `BindingError: Cannot pass "4" as a Mat`；更糟的是
+> `cv.norm(a, b)` **不报类型错**，而是把 Mat 的 wire 指针当整数 `normType` 传进 C++，
+> 到 OpenCV 内部的断言处才炸。
 
-cv.Mat dst = src1.diag(d = 0)
+**diagClone()** （1.x 名为 `Diag()`）
+
+cv.Mat dst = src1.diagClone(d = 0)
 
 src1 First input mat
 
 d Index of the diagonal
 
-dst Output mat that has the same data of src1, but the row is equal to input rows
+dst **A continuous copy** of the diagonal
 
 ```javascript
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.Diag();
+let dst = mat1.diagClone();
 mat1.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::1,5,9:::3:::1
 ```
 
-**vconcat()**
+> 🔀 OpenCV 原生的 `mat.diag(d)` 仍然可用，返回的是**视图**（非连续，读它的 `.data*`
+> 会得到错误数据；但写它会写回源 Mat）。2.0 不再覆盖它。
 
-cv.Mat dst = src1.vconcat(src2)
+**~~vconcat()~~ / ~~hconcat()~~ → cv.vconcat() / cv.hconcat()**
 
-src1 First input mat
-
-src2 Second input mat has the same cols as the first input mat
-
-dst Output mat that has the same number of channels as the input mat
+> 🔀 **2.0 起 `mat.vconcat(b)` / `mat.hconcat(b)` 已删除**，改用原生同名函数，
+> 参数由 Mat 变成 MatVector。
 
 ```javascript
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.vconcat(mat1);
-mat1.delete();
-console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//dst::1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9:::6:::3
-```
+let vec = new cv.MatVector();
+vec.push_back(mat1);
+vec.push_back(mat1);
 
-**hconcat()**
+let dstV = new cv.Mat();
+cv.vconcat(vec, dstV);
+console.log("dstV::" + dstV.data32F + ":::" + dstV.rows + ":::" + dstV.cols);
+//dstV::1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9:::6:::3
 
-cv.Mat dst = src1.hconcat(src2)
+let dstH = new cv.Mat();
+cv.hconcat(vec, dstH);
+console.log("dstH::" + dstH.data32F + ":::" + dstH.rows + ":::" + dstH.cols);
+//dstH::1,2,3,1,2,3,4,5,6,4,5,6,7,8,9,7,8,9:::3:::6
 
-src1 First input mat
-
-src2 Second input mat has the same rows as the first input mat
-
-dst Output mat that has the same number of channels as the input mat
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.hconcat(mat1);
-mat1.delete();
-console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//dst::1,2,3,1,2,3,4,5,6,4,5,6,7,8,9,7,8,9:::3:::6
+(mat1.delete(), vec.delete());
 ```
 
 **row()**
 
-cv.Mat dst = src1.row(row)
+cv.Mat dst = src1.row(row) —— OpenCV 原生方法，返回**视图**。
 
 src1 First input mat
 
@@ -415,28 +465,73 @@ dst Output mat that has one row
 ```javascript
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 let dst = mat1.row(2);
-mat1.delete();
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::7,8,9:::1:::3
+(mat1.delete(), dst.delete());
 ```
 
-**col()**
+> ℹ️ 单独一行本来就是连续的（实测 `isContinuous() === true`），所以直读 `.data*` 没问题。
+> 列和矩形区域不是，见下面的 `colClone()` / `roiClone()`。
 
-cv.Mat dst = src1.col(col)
+**colClone()** （1.x 名为 `col()`）
+
+cv.Mat dst = src1.colClone(col)
 
 src1 First input mat
 
 col Index of the cols
 
-dst Output mat that has one col
+dst **A continuous copy** of that column
 
 ```javascript
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.col(2);
+console.log("colClone::" + mat1.colClone(2).data32F); //colClone::3,6,9
+console.log("col::" + mat1.col(2).data32F); //col::3,4,5   ← 原生视图，非连续，直读是错的
 mat1.delete();
-console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//dst::3,6,9:::3:::1
 ```
+
+多通道上差得更远（3×3 `CV_32FC2`，值 1..18）：
+
+```javascript
+// prettier-ignore
+let mat2 = cv.matFromArray(3, 3, cv.CV_32FC2,
+  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+console.log("colClone::" + mat2.colClone(2).data32F); //colClone::5,6,11,12,17,18
+console.log("col::" + mat2.col(2).data32F); //col::5,6,7,8,9,10   ← 错的
+mat2.delete();
+```
+
+> 🔀 **2.0 不再覆盖原生 `col()`。** 要读数据用 `colClone()`，要写回源 Mat 用原生
+> `col()`（视图）。
+
+**roiClone()** （1.x 名为 `roi()`）
+
+cv.Mat dst = src1.roiClone(rect)
+
+src1 First input mat
+
+rect a rect
+
+dst **A continuous copy** of that sub-rectangle
+
+```javascript
+let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+let rect1 = new cv.Rect(1, 1, 2, 2);
+let dst = mat1.roiClone(rect1);
+console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
+//dst::5,6,8,9:::2:::2
+
+// 原生 roi() 仍是视图：写它会写回源 Mat
+let view = mat1.roi(rect1);
+view.setTo(new cv.Scalar(0, 0, 0, 0));
+console.log("mat1::" + mat1.data32F); //mat1::1,2,3,4,0,0,7,0,0
+
+(mat1.delete(), dst.delete(), view.delete());
+```
+
+> ℹ️ **副本是有代价的**：256×256 `CV_32FC2` 上取 `Rect(0, 0, 128, 128)`、5000 次，
+> 原生视图 1.2–1.9 ms vs `roiClone()` 20.8–23.3 ms（node v22.22.2 / darwin-arm64，
+> 3 次独立测量各取第 2–4 轮）。只需要写回源 Mat 时别用 `*Clone`。
 
 **replaceMatOnRect()**
 
@@ -474,13 +569,18 @@ console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 //mat1::1,2,3,11,12,13,7,8,9:::3:::3
 ```
 
+> ✅ **2.0 修复**：1.x 硬编码 `this.floatPtr(d)`，在非 `CV_32F` 的 Mat 上**静默写坏内存
+> 并越界**（embind 的 `floatPtr` 不做类型校验：`CV_8UC1` 的 2×3 Mat 只有 6 字节，
+> `floatPtr(0)` 却返回长度 3 的 `Float32Array`，即 12 字节）。实测 1.x 在该 Mat 上把
+> 数据改成 `0,0,32,65,0,0`。2.0 改走 `PTR()`，七种深度实测全部得到 `10,20,30,4,5,6`。
+
 **replaceMatOnCol()**
 
 void src1.replaceMatOnCol(arr, col)
 
 src1 First input mat will be changed as output
 
-arr Second input Array as row array
+arr Second input Array as col array
 
 col col input to replace
 
@@ -493,36 +593,33 @@ console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 
 **replaceMatOnPoint()**
 
-> ⚠️ **本节记录的签名与实现不符，下面第一段照抄必然抛异常。** 见 [Known Issues](#known-issues)。
-> 实测：`mat1.replaceMatOnPoint(30, {x: 1, y: 1})` 抛
-> `TypeError: Cannot convert "[object Object]" to int`。
-> 实现的真实签名是 `replaceMatOnPoint(constant, x, y)`，而且内部是
-> `this.PTR(x, y)[0] = constant`——`x` 其实是**行号**、`y` 是**列号**，
-> 与参数名给人的印象相反（实测 `replaceMatOnPoint(99, 0, 2)` 改的是
-> 第 0 行第 2 列）。
+void src1.replaceMatOnPoint(value, row, col)
 
-void src1.replaceMatOnPoint(constant, point)
+void src1.replaceMatOnPoint(value, point) —— `cv.Point` 约定 x = 列、y = 行
 
 src1 First input mat will be changed as output
 
-constant Second input constant tp replace at the point
-
-point Point location
-
-```javascript
-// ⚠️ 不可用：下面这行抛 TypeError: Cannot convert "[object Object]" to int
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-mat1.replaceMatOnPoint(30, { x: 1, y: 1 });
-```
-
-当前实现的可用写法（`x` = 行、`y` = 列）：
+value The value to write
 
 ```javascript
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 mat1.replaceMatOnPoint(30, 1, 1);
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 //mat1::1,2,3,4,30,6,7,8,9:::3:::3
+
+let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+mat2.replaceMatOnPoint(30, new cv.Point(2, 0)); // x=2 列、y=0 行
+console.log("mat2::" + mat2.data32F); //mat2::1,2,30,4,5,6,7,8,9
+
+mat2.replaceMatOnPoint(1, 0);
+//TypeError: replaceMatOnPoint(value, row, col) 或 replaceMatOnPoint(value, point)：缺少 col
 ```
+
+> ✅ **2.0 修复**：1.x 的形参名是 `(constant, x, y)` 而实现是 `PTR(x, y)`——`x` 其实是
+> 行号；文档里记的 `(value, point)` 重载则根本不存在（传对象抛
+> `TypeError: Cannot convert "[object Object]" to int`）。
+> **位置参数的行为与 1.x 逐字相同**（第 2 个参数一直是行、第 3 个一直是列），
+> 已经在跑的三参调用不用改。
 
 **addOnCol()**
 
@@ -530,7 +627,7 @@ void src1.addOnCol(constant, col)
 
 src1 First input mat will be changed as output
 
-constant Second input constant tp replace at the point
+constant Constant added to each element of that column
 
 col Col location
 
@@ -579,199 +676,122 @@ console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 //mat1::1,2,3,4,-6,-6,7,-5,-5:::3:::3
 ```
 
-**mds()**
+**DATA() / PTR()**
 
-> ⚠️ **当前不可用，下面这段照抄必然抛异常。** 见 [Known Issues](#known-issues)。
-> 实测抛 `TypeError: src1Array.reduce is not a function`——实现里写的是
-> `this.DATA` 而非 `this.DATA()`，取到的是函数对象而不是数据。
-> 注释里的期望值是这个 bug 存在之前留下的，从未被验证过。
+TypedArray dst = src1.DATA() —— 覆盖整个 Mat，按元素类型定型
 
-{m:Float, d:Array, s:Float} dst = src1.mds()
+TypedArray dst = src1.PTR(row) —— 第 row 行的全部元素（cols × channels 个）
 
-src1 First input mat
-
-dst Output with {mean, dev, stddev}
+TypedArray dst = src1.PTR(row, col) —— 该像素的各通道（channels 个）
 
 ```javascript
-// ⚠️ 不可用：抛 TypeError: src1Array.reduce is not a function
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.mds();
+let mat1 = cv.matFromArray(3, 3, cv.CV_8UC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+console.log("DATA::" + mat1.DATA()); //DATA::1,2,3,4,5,6,7,8,9
+console.log("PTR(1)::" + mat1.PTR(1)); //PTR(1)::4,5,6
+console.log("PTR(1,2)::" + mat1.PTR(1, 2)); //PTR(1,2)::6
 mat1.delete();
-console.log("dst::" + dst.m + ":::" + dst.d + ":::" + dst.s);
 ```
 
-**roi()**
+按 `depth()` 分发到对应的 `data*` / `*Ptr`，省掉调用方自己挑访问器（挑错不报错、
+结果全错）。⚠️ `DATA()` 只对连续 Mat 有意义——原生 `roi()`/`col()`/`diag()` 返回的
+视图上它会按连续内存直读，得到错误数据。
 
-Cv.Mat dst = src1.roi(rect)
+**~~mds()~~ → cv.meanStdDev()**
 
-src1 First input mat
-
-rect a rect
-
-dst Output mat that has the same size and number of channels as the input rect
+> 🔀 **2.0 起 `mat.mds()` 已删除。** 1.x 版本 100% 抛
+> `TypeError: src1Array.reduce is not a function`（实现里写的是 `this.DATA` 而非
+> `this.DATA()`，取到的是函数对象），不存在「以前能用」这回事。
 
 ```javascript
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let rect1 = new cv.Rect(1, 1, 2, 2);
-let dst = mat1.roi(rect1);
-mat1.delete();
-console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//dst::5,6,8,9:::2:::2
+let mean = new cv.Mat();
+let stddev = new cv.Mat();
+cv.meanStdDev(mat1, mean, stddev);
+console.log("mean::" + mean.data64F[0] + " stddev::" + stddev.data64F[0]);
+//mean::5 stddev::2.5819888974716108
+(mat1.delete(), mean.delete(), stddev.delete());
 ```
 
-**svd()**
+**~~svd()~~ → cv.SVDecomp()**
 
-{u:cv.Mat, w:cv.Mat, vt:cv.Mat} dst = src1.svd()
-
-src1 First input mat
-
-dst Output with {u, w, vt}
+> 🔀 **2.0 起 `mat.svd()` 已删除。** 1.x 走的是当年内联进产物的 numeric.js 库；
+> 那份库随 2.0 一起删掉，改用原生 `cv.SVDecomp(src, w, u, vt, flags)`。
+> （注意：只有函数式的 `SVDecomp`，`cv.SVD` 这个类不在白名单里。）
 
 ```javascript
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let s = mat1.svd();
-mat1.delete();
-console.log(
-  "sssss::" + s.u.data32F + ":::" + s.w.data32F + "::::" + s.vt.data32F,
-);
-//sssss::-0.2148372381925583,-0.8872306942939758,-0.40824830532073975,-0.5205873847007751,-0.2496439516544342,0.8164966106414795,-0.8263375163078308,0.3879427909851074,-0.40824830532073975:::16.848102569580078,1.0683695077896118,0::::-0.4796711802482605,-0.572367787361145,-0.6650643944740295,0.7766910195350647,0.07568646967411041,-0.6253180503845215,0.40824830532073975,-0.8164966106414795,0.40824830532073975
+let w = new cv.Mat();
+let u = new cv.Mat();
+let vt = new cv.Mat();
+cv.SVDecomp(mat1, w, u, vt, 0);
+console.log("w::" + w.data32F);
+//w::16.848102569580078,1.0683696269989014,1.1560786106201704e-8
+(mat1.delete(), w.delete(), u.delete(), vt.delete());
 ```
 
-（注：`w` 是奇异值，此矩阵为 `16.85, 1.07, 0`——第三个是 0，因为 `[[1,2,3],[4,5,6],[7,8,9]]` 秩为 2。
-本文档此前给的 `817.76, 2.47, 0.0030` 与实现无关，是伪造值。）
+奇异值与 1.x 的 `numeric.svd` 一致；第三个是 0——`[[1,2,3],[4,5,6],[7,8,9]]` 秩为 2。
 
-**RodriguesFromArray()**
+**~~RodriguesFromArray()~~ / ~~RodriguesFromMat()~~ → cv.Rodrigues()**
 
-cv.Mat dst = cv.RodriguesFromArray(arr1)
-
-arr1 First input array
-
-dst the mat rodrigues from the input array
+> 🔀 **2.0 起两者都已删除**，改用原生 `cv.Rodrigues(src, dst)`——双向都走同一个函数，
+> 按输入形状自动判断方向。
 
 ```javascript
-let arr1 = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-let dst = cv.RodriguesFromArray(arr1);
-console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//dst::-0.694920539855957,0.7135210037231445,0.08929285407066345,-0.19200697541236877,-0.3037850260734558,0.9331923723220825,0.6929781436920166,0.6313496828079224,0.34810739755630493:::3:::3
-```
+let rvec = cv.matFromArray(3, 1, cv.CV_32FC1, [0.1, 0.2, 0.3]);
+let R = new cv.Mat();
+cv.Rodrigues(rvec, R); // 3×3 旋转矩阵
 
-**RodriguesFromMat()**
-
-[x, y, z] dst = src1.RodriguesFromMat()
-
-src1 First input mat
-
-dst the mat rodrigues from the input array
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.RodriguesFromMat();
-console.log("dst::" + dst);
-//dst::1.1046628653680794,1.738419705279746,2.372176486533247
+let back = new cv.Mat();
+cv.Rodrigues(R, back);
+console.log("back::" + back.data32F);
+//back::0.10000000149011612,0.20000000298023224,0.30000004172325134
+(rvec.delete(), R.delete(), back.delete());
 ```
 
 **dftSplit()**
 
-{r:realMat, i:imagMat} dst = src1.dftSplit()
+> ⚠️ **`@deprecated`——正确性没有任何证据支撑，请勿在新代码里使用。**
+> 它的 CCS 展开约定从未被独立验证过；1.x 时代唯一的消费者是那个返回 `NaN` 的手写
+> `mulSpectrums()`，所以也不存在端到端参照。需要复数谱相乘请直接用原生
+> `cv.mulSpectrums()`。保留只是因为它属于 1.x 的公开 API。
 
-src1 First input mat
-
-dst the mat rodrigues from the input array
+{r: cv.Mat, i: cv.Mat} dst = src1.dftSplit()
 
 ```javascript
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 let dst = mat1.dftSplit();
 console.log("dst::" + dst.r.data32F + ":::" + dst.i.data32F);
 //dst::1,3,0,4,6,0,0,8,0:::0,3,0,7,9,0,0,9,0
+(mat1.delete(), dst.r.delete(), dst.i.delete());
 ```
 
-**mulSpectrums()**
+**mulSpectrums()** （原生；取代 1.x 的 `cv.mulSpectrums` 与 `cv.mulSpectrums2Channel`）
 
-> ⚠️ **当前产出无效结果，不要照着注释的期望值使用。** 见 [Known Issues](#known-issues)。
-> 输出里第 7、9 个元素恒为 `NaN`，第 2、5、8 个元素**每次运行都不同**——
-> 那是未初始化的堆内存被当作数据读出来了。同一份代码连跑 3 次实测：
->
-> ```
-> 9,0,66,153,0,237,NaN,9.016077633730734e-39,NaN
-> 9,9.010506071036578e-39,66,153,1.2662301079454766e-39,237,NaN,6.389920997321166e-43,NaN
-> 9,0,66,153,1.0229478789571165e-43,237,NaN,1.2663085806594788e-39,NaN
-> ```
->
-> 只有第 1、3、4、6 个元素（`9, 66, 153, 237`）是稳定的。
-
-cv.Mat dst = cv.mulSpectrums(src1, src2, conjB = false)
-
-src1 First input mat
-
-src2 Second input mat
-
-conjB Default is false
-
-dst Result of mat
+> 🔀 **签名变了**：`cv.mulSpectrums(src1, src2, dst, flags, conjB)`。
+> 1.x 的两个手写版都返回无效结果——部分元素恒为 `NaN`，另一部分每次运行都不同
+> （读到了未初始化的堆内存）。2.0 在构建白名单里放行了原生 `mulSpectrums`。
 
 ```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let mat2 = cv.matFromArray(
-  3,
-  3,
-  cv.CV_32FC1,
-  [9, 10, 11, 12, 13, 14, 15, 16, 17],
-);
-let dst = cv.mulSpectrums(mat1, mat2, true);
-(mat1.delete(), mat2.delete());
-console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//⚠️ 输出不稳定，形如 dst::9,<垃圾>,66,153,<垃圾>,237,NaN,<垃圾>,NaN:::3:::3
+// CCS 紧凑格式：cv.dft() 不带 DFT_COMPLEX_OUTPUT 时的单通道输出
+let mat1 = cv.matFromArray(1, 4, cv.CV_32FC1, [1, 2, 3, 4]);
+let mat2 = cv.matFromArray(1, 4, cv.CV_32FC1, [5, 6, 7, 8]);
+let dst = new cv.Mat();
+cv.mulSpectrums(mat1, mat2, dst, 0, false);
+console.log("dst::" + dst.data32F); //dst::5,-9,32,32
+
+// 双通道复数格式（取代 mulSpectrums2Channel）
+let c1 = cv.matFromArray(1, 2, cv.CV_32FC2, [1, 2, 3, 4]); // 1+2i, 3+4i
+let c2 = cv.matFromArray(1, 2, cv.CV_32FC2, [5, 6, 7, 8]); // 5+6i, 7+8i
+let dst2 = new cv.Mat();
+cv.mulSpectrums(c1, c2, dst2, 0, false);
+console.log("dst2::" + dst2.data32F + ":::channels=" + dst2.channels());
+//dst2::-7,16,-11,52:::channels=2      ← (1+2i)(5+6i) = -7+16i, (3+4i)(7+8i) = -11+52i
+
+cv.mulSpectrums(c1, c2, dst2, 0, true);
+console.log("dst2::" + dst2.data32F); //dst2::17,4,53,4      ← conjB
 ```
 
-**mulSpectrums2Channel()**
-
-> ⚠️ **与 `mulSpectrums()` 同一个缺陷，当前产出无效结果。** 见 [Known Issues](#known-issues)。
-> 第 7、9 个元素恒为 `NaN`，第 2、5、8 个元素每次运行都不同。连跑 3 次实测：
->
-> ```
-> 29,1.401298464324817e-45,81,233,1.5414283107572988e-44,162,NaN,0,NaN
-> 29,7.658264263350844e-40,81,233,0,162,NaN,2.1019476964872256e-43,NaN
-> 29,9.053284910555486e-39,81,233,9.053531539085207e-39,162,NaN,9.053778167614928e-39,NaN
-> ```
->
-> 另注：输入是 `CV_32FC2`，但返回的 Mat `channels()` 为 `1`。
-
-cv.Mat dst = cv.mulSpectrums2Channel(src1, src2, conjB = false)
-
-src1 First input mat
-
-src2 Second input mat
-
-conjB Default is false
-
-dst Result of mat
-
-```javascript
-let mat1_2channels = cv.matFromArray(
-  3,
-  3,
-  cv.CV_32FC2,
-  [1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 3, 4, 5, 6, 7, 8, 9],
-);
-let mat2_2channels = cv.matFromArray(
-  3,
-  3,
-  cv.CV_32FC2,
-  [9, 10, 11, 12, 13, 14, 15, 16, 17, 9, 10, 11, 12, 13, 14, 15, 16, 17],
-);
-let dst = cv.mulSpectrums2Channel(mat1_2channels, mat2_2channels, true);
-console.log(
-  "dst::" +
-    dst.data32F +
-    ":::" +
-    dst.rows +
-    ":::" +
-    dst.cols +
-    ":::" +
-    dst.channels(),
-);
-//⚠️ 输出不稳定，形如 dst::29,<垃圾>,81,233,<垃圾>,162,NaN,<垃圾>,NaN:::3:::3:::1
-```
+原生版返回的 `channels()` 与输入一致（1.x 手写版对 `CV_32FC2` 输入返回 `channels() === 1`）。
 
 ##
 
