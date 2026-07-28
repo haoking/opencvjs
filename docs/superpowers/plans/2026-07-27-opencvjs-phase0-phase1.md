@@ -1049,7 +1049,7 @@ jobs:
       - name: 冒烟测试
         env:
           OPENCV_ARTIFACT: ${{ github.workspace }}/build/out/baseline
-        run: node --test "test/smoke/*.test.js"
+        run: ls test/smoke/*.test.js >/dev/null && node --test test/smoke/*.test.js
 
       - uses: actions/upload-artifact@v4
         with:
@@ -1060,7 +1060,7 @@ jobs:
 
 - [ ] **Step 3: 确认冒烟测试在无产物时被跳过**
 
-Run: `node --test "test/smoke/*.test.js" 2>&1 | tail -6`
+Run: `ls test/smoke/*.test.js >/dev/null && node --test test/smoke/*.test.js 2>&1 | tail -6`
 
 Expected: `# skipped 1`、`# fail 0`（未设 `OPENCV_ARTIFACT` 时应跳过而非失败）
 
