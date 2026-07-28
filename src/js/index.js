@@ -32,8 +32,11 @@ module.exports = async function loadOpenCV() {
   // 返回的校验器由后面三个模块在各自的函数入口使用。
   const guards = applyGuards(cv);
 
-  applyTypedAccess(cv);
-  applyMatRegion(cv, guards);
+  // access.rawPtr 是给逐像素循环用的原生访问器查表：那些循环的下标已经由各自的
+  // 入口校验证明合法，不必再逐像素走一遍 PTR() 的边界检查（实测那样慢 38%）。
+  const access = applyTypedAccess(cv, guards);
+
+  applyMatRegion(cv, guards, access);
   applyArithmetic(cv, guards);
   applyDft(cv, guards);
 

@@ -352,6 +352,57 @@ const CASES = [
     error: TypeError,
     needs: ["array 必须是数组或 TypedArray", "number 5"],
   },
+  // —— PTR 自己的边界（它是文档化的公开 API，用户会绕开上面那些方法直接调）——
+  {
+    name: "PTR(row, col) 行列都越界",
+    call: (cv, m) => m.PTR(9, 9),
+    error: RangeError,
+    needs: ["Mat.PTR(row, col)", "row = 9", "0..2"],
+  },
+  {
+    name: "PTR(row) 行形式越界",
+    call: (cv, m) => m.PTR(9),
+    error: RangeError,
+    needs: ["Mat.PTR(row, col)", "row = 9", "0..2"],
+  },
+  {
+    name: "PTR 只有列越界",
+    call: (cv, m) => m.PTR(0, 3),
+    error: RangeError,
+    needs: ["col = 3", "0..2"],
+  },
+  {
+    name: "PTR 的负行号",
+    call: (cv, m) => m.PTR(-1, 0),
+    error: RangeError,
+    needs: ["row = -1"],
+  },
+  {
+    // 1.x 到 2.0 之间，col 的缺省值是 -1、判据是 col < 0，于是 PTR(0, -1) 被当成
+    // 「取整行」而不是报错。缺省值已改为 undefined，负列号一律如实报越界。
+    name: "PTR 的负列号（旧实现把 -1 当成取整行的哨兵）",
+    call: (cv, m) => m.PTR(0, -1),
+    error: RangeError,
+    needs: ["col = -1", "0..2"],
+  },
+  {
+    name: "PTR 的小数行号（原本被静默截断成第 1 行）",
+    call: (cv, m) => m.PTR(1.5, 0),
+    error: TypeError,
+    needs: ["row 必须是整数", "number 1.5"],
+  },
+  {
+    name: "PTR 的小数列号",
+    call: (cv, m) => m.PTR(0, 1.5),
+    error: TypeError,
+    needs: ["col 必须是整数", "number 1.5"],
+  },
+  {
+    name: "空 Mat 上的 PTR",
+    call: (cv) => new cv.Mat().PTR(0, 0),
+    error: RangeError,
+    needs: ["Mat.PTR(row, col)", "该 Mat 在这个方向上是空的"],
+  },
 ];
 
 for (const c of CASES) {
@@ -446,13 +497,106 @@ test("guards: 贴边但合法的输入不受影响", async () => {
     assert.strictEqual(kept[1].rows, 0, "空 Rect 应得到空 Mat");
     // colClone 是在下面那次 replaceMatOnRow 之前取的副本，因此仍是原始的第 2 列
     assert.deepStrictEqual(Array.from(kept[2].DATA()), [3, 6, 9]);
+
+    // PTR 的两种合法形式，以及贴边的下标。
+    // 此刻 mat 的第 2 行是上面 replaceMatOnRow([1,2,3], 2) 写进去的，随后
+    // replaceMatOnPoint(0, 2, 2) 把 (2,2) 改成了 0；addConstant / mulConstant
+    // 返回新 Mat，不动源。
+    assert.deepStrictEqual(Array.from(mat.PTR(2)), [1, 2, 0]);
+    assert.deepStrictEqual(Array.from(mat.PTR(2, 2)), [0]);
+    assert.deepStrictEqual(Array.from(mat.PTR(0, 0)), [1]);
+    // 显式传 undefined 与省略参数等价（行形式）
+    assert.deepStrictEqual(Array.from(mat.PTR(2, undefined)), [1, 2, 0]);
   } finally {
     mat.delete();
     for (const m of kept) m.delete();
   }
 });
 
-test("guards: 重复加载不会把 matFromArray 一层层包起来", async () => {
+// ---------------------------------------------------------------------------
+// 就地写入的那批方法在**入口**就把下标校验掉了，循环里走的是 access.rawPtr() 取到
+// 的原生访问器，不再逐像素过 PTR()。这两条守卫钉住这个分工的两端。
+// ---------------------------------------------------------------------------
+test("guards: 就地写入方法报的是自己的函数名，不是 Mat.PTR", async () => {
+  const cv = await getCv();
+  const mat = mat3(cv);
+  const src = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
+  try {
+    // 入口校验必须先于任何 PTR 调用触发——否则错误消息会退化成 Mat.PTR(...)，
+    // 调用方就看不出到底是哪个 API 用错了。
+    const cases = [
+      ["Mat.addOnCol(constant, col)", () => mat.addOnCol(1, 7)],
+      [
+        "Mat.replaceMatOnCol(arr, col)",
+        () => mat.replaceMatOnCol([1, 2, 3], 7),
+      ],
+      [
+        "Mat.replaceMatOnRow(arr, row)",
+        () => mat.replaceMatOnRow([1, 2, 3], 7),
+      ],
+      [
+        "Mat.replaceMatOnPoint(value, row, col)",
+        () => mat.replaceMatOnPoint(1, 7, 7),
+      ],
+      [
+        "Mat.replaceMatOnRect(src, rect)",
+        () => mat.replaceMatOnRect(src, new cv.Rect(2, 2, 2, 2)),
+      ],
+      [
+        "Mat.rectAdd(src, rect)",
+        () => mat.rectAdd(src, new cv.Rect(2, 2, 2, 2)),
+      ],
+      [
+        "Mat.rectSubtract(src, rect)",
+        () => mat.rectSubtract(src, new cv.Rect(2, 2, 2, 2)),
+      ],
+    ];
+    for (const [where, fn] of cases) {
+      const e = assertGuard(fn, RangeError, [where], where);
+      assert.ok(
+        !e.message.includes("Mat.PTR"),
+        `${where}: 错误来自 PTR 而不是入口校验 —— 消息: ${e.message}`,
+      );
+    }
+  } finally {
+    mat.delete();
+    src.delete();
+  }
+});
+
+test("guards: 逐像素循环不经过 PTR()（经过就是每像素多两次 embind 调用）", async () => {
+  const cv = await getCv();
+  const mat = mat3(cv);
+  const src = cv.matFromArray(2, 2, cv.CV_32FC1, [10, 20, 30, 40]);
+  const realPTR = cv.Mat.prototype.PTR;
+  // 把 PTR 换成地雷：循环里只要碰它一次就炸。这是唯一能观察到「循环走没走
+  // rawPtr」的办法，而这正是最容易被后来的改动悄悄改回去的地方——实测走 PTR
+  // 会让 replaceMatOnRect 慢 82%（同进程轮换 6 轮、丢首轮、取最小值）。
+  cv.Mat.prototype.PTR = function () {
+    throw new Error("循环里调了 PTR()");
+  };
+  try {
+    mat.replaceMatOnRect(src, new cv.Rect(1, 1, 2, 2));
+    mat.rectAdd(src, new cv.Rect(1, 1, 2, 2));
+    mat.rectSubtract(src, new cv.Rect(1, 1, 2, 2));
+    mat.replaceMatOnCol([1, 2, 3], 0);
+    mat.addOnCol(1, 0);
+    // 手算：[1..9] → replaceMatOnRect 把 (1,1)(1,2)(2,1)(2,2) 换成 10,20,30,40
+    // → rectAdd 再加一遍 → rectSubtract 再减回去 → replaceMatOnCol 把第 0 列
+    // 写成 1,2,3 → addOnCol 第 0 列各加 1。
+    assert.deepStrictEqual(
+      Array.from(mat.DATA()),
+      [2, 2, 3, 3, 10, 20, 4, 30, 40],
+      "绕开 PTR 之后写入结果不对",
+    );
+  } finally {
+    cv.Mat.prototype.PTR = realPTR;
+    mat.delete();
+    src.delete();
+  }
+});
+
+test("guards: 重复加载不会把 matFromArray 一层层包起来，PTR 也不会被重复包装", async () => {
   const path = require("path");
   const { DIST } = require("../helpers");
   // loadOpenCV() 可以被调用多次（两个模块各写一句 await require(...)() 就够了），
@@ -461,6 +605,7 @@ test("guards: 重复加载不会把 matFromArray 一层层包起来", async () =
   const loadCV = require(path.join(DIST, "index.js"));
   const cv = await loadCV();
   const first = cv.matFromArray;
+  const firstPTR = cv.Mat.prototype.PTR;
   await loadCV();
   assert.strictEqual(
     cv.matFromArray,
@@ -468,6 +613,23 @@ test("guards: 重复加载不会把 matFromArray 一层层包起来", async () =
     "第二次加载又包了一层 matFromArray",
   );
   assert.strictEqual(cv.matFromArray.guarded, true);
+  // PTR 的校验是写在函数体里的、不是包裹上去的，所以重装只是重新赋一次值，
+  // 天然幂等：既不会叠加校验，行为也完全一致。
+  assert.strictEqual(
+    typeof cv.Mat.prototype.PTR,
+    "function",
+    "重复加载后 PTR 丢了",
+  );
+  assert.throws(
+    () => cv.matFromArray(2, 2, cv.CV_8UC1, [1, 2, 3, 4]).PTR(9, 9),
+    RangeError,
+    "重复加载后 PTR 的边界校验失效",
+  );
+  assert.strictEqual(
+    firstPTR.length,
+    cv.Mat.prototype.PTR.length,
+    "重复加载后 PTR 的形参个数变了 —— 可能被包了一层",
+  );
   // 包装仍然生效，且合法调用照常
   assert.throws(() => cv.matFromArray(2, 2, cv.CV_8UC1, [1]), RangeError);
   const m = cv.matFromArray(2, 2, cv.CV_8UC1, [1, 2, 3, 4]);

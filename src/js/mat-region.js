@@ -7,9 +7,14 @@
  *  1. roiClone / colClone / diagClone —— 取子区域的**独立副本**
  *  2. replaceMatOn* / rectAdd / rectSubtract / addOnCol —— 就地改写调用者自身
  *
- * 第 2 组全部由 PTR() 逐像素驱动，而 embind 的 *Ptr() 不查边界（越界即静默改写
- * 别人的堆内存）。所以每个函数在**入口**先过一遍 guards 校验，循环里不再有任何
- * 校验 —— 为什么必须这样分工，见 guards.js 顶部那组实测耗时。
+ * 第 2 组全部是逐像素写入，而 embind 的 *Ptr() 不查边界（越界即静默改写别人的
+ * 堆内存）。所以每个函数在**入口**先过一遍 guards 校验，把整个循环的下标范围
+ * 一次性证明掉；循环内不再有任何校验，直接用 access.rawPtr() 在循环外取到的原生
+ * 访问器名。
+ *
+ * 为什么不在循环里调 PTR()（它自己也查边界）：那是重复校验，而且不便宜——它要
+ * 逐像素多读 this.rows / this.cols 两个 embind getter，实测让 replaceMatOnRect
+ * 慢 38%。数据见 typed-access.js 里 PTR() 上方的注释。
  */
 
 /**
@@ -29,7 +34,7 @@ function cloneAndRelease(view) {
   }
 }
 
-module.exports = function applyMatRegion(cv, guards) {
+module.exports = function applyMatRegion(cv, guards, access) {
   /** 子矩形的独立副本（原生 roi() 的可安全直读版本）。 */
   cv.Mat.prototype.roiClone = function roiClone(rect) {
     const where = "Mat.roiClone(rect)";
@@ -61,9 +66,11 @@ module.exports = function applyMatRegion(cv, guards) {
     guards.mat(src1, "src", where);
     guards.rect(this, rect, where);
     guards.covers(src1, rect, "src", where);
+    const dstPtr = access.rawPtr(this);
+    const srcPtr = access.rawPtr(src1);
     for (let i = 0; i < rect.height; i += 1) {
       for (let j = 0; j < rect.width; j += 1) {
-        this.PTR(i + rect.y, j + rect.x)[0] = src1.PTR(i, j)[0];
+        this[dstPtr](i + rect.y, j + rect.x)[0] = src1[srcPtr](i, j)[0];
       }
     }
   };
@@ -92,8 +99,9 @@ module.exports = function applyMatRegion(cv, guards) {
     guards.index(d, this.cols, "col", where);
     const rows = this.rows;
     guards.arrayLike(arr, rows, "arr", where);
+    const ptr = access.rawPtr(this);
     for (let i = 0; i < rows; i += 1) {
-      this.PTR(i, d)[0] = arr[i];
+      this[ptr](i, d)[0] = arr[i];
     }
   };
 
@@ -139,8 +147,9 @@ module.exports = function applyMatRegion(cv, guards) {
     guards.number(constant, "constant", where);
     guards.index(d, this.cols, "col", where);
     const rows = this.rows;
+    const ptr = access.rawPtr(this);
     for (let i = 0; i < rows; i += 1) {
-      this.PTR(i, d)[0] += constant;
+      this[ptr](i, d)[0] += constant;
     }
   };
 
@@ -151,9 +160,11 @@ module.exports = function applyMatRegion(cv, guards) {
     guards.mat(src1, "src", where);
     guards.rect(this, rect, where);
     guards.covers(src1, rect, "src", where);
+    const dstPtr = access.rawPtr(this);
+    const srcPtr = access.rawPtr(src1);
     for (let i = 0; i < rect.height; i += 1) {
       for (let j = 0; j < rect.width; j += 1) {
-        this.PTR(rect.y + i, rect.x + j)[0] += src1.PTR(i, j)[0];
+        this[dstPtr](rect.y + i, rect.x + j)[0] += src1[srcPtr](i, j)[0];
       }
     }
   };
@@ -165,9 +176,11 @@ module.exports = function applyMatRegion(cv, guards) {
     guards.mat(src1, "src", where);
     guards.rect(this, rect, where);
     guards.covers(src1, rect, "src", where);
+    const dstPtr = access.rawPtr(this);
+    const srcPtr = access.rawPtr(src1);
     for (let i = 0; i < rect.height; i += 1) {
       for (let j = 0; j < rect.width; j += 1) {
-        this.PTR(rect.y + i, rect.x + j)[0] -= src1.PTR(i, j)[0];
+        this[dstPtr](rect.y + i, rect.x + j)[0] -= src1[srcPtr](i, j)[0];
       }
     }
   };

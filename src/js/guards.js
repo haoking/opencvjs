@@ -28,20 +28,25 @@
  *    ——它是 Error 实例、消息可读。这里仍然校验，是为了补上 embind 说不出的那半句：
  *    是哪个函数的哪个参数。
  *
- * ⚠️ **校验只放在函数入口，绝不放进逐像素的循环里。** 实测单次调用成本
+ * ⚠️ **每个下标只校验一次，绝不逐像素重复校验。** 实测单次调用成本
  * （node v22.22.2 / darwin-arm64，各 200 万次、取 3 轮最小值）：
  *
  *     mat.isDeleted()             2.1 ns      mat.rows（embind getter）   11.0 ns
  *     Number.isInteger ×2         2.6 ns      mat.rows + mat.cols         18.8 ns
- *     mat.floatPtr(r, c)         45.6 ns      mat.PTR(r, c)               53.7 ns
+ *     mat.floatPtr(r, c)         45.6 ns      mat.depth()                  5.7 ns
  *
- * 也就是说，把一次 rows/cols 边界检查塞进 `PTR()` 会让它慢约 35%，而这正是
- * `replaceMatOnRect` 双重循环里**每个像素**都要付的成本。放在入口只付一次：
- * 一次 roiClone 的校验合计约 26 ns，对照该函数本身约 700 ns 的耗时不足 4%，
- * 性能门禁（npm run bench，20000 次 roiClone）实测无可测退化。
+ * 关键在于 `rows` / `cols` **是 embind getter，不是普通属性**——每读一次都是一次
+ * 跨语言调用。所以职责这样分：
  *
- * 因此 `PTR()` / `DATA()` 保持裸访问器语义（与 C++ 的 `Mat::ptr` 一致，release 构建下
- * 同样不查边界），边界由调用它们的每个操作在入口保证。
+ *   - `PTR()` 自己查边界（它是文档化的公开 API，用户会直接调）。代价是真实的：
+ *     实测 +49%（+23.7 ns/次）。
+ *   - 扩展层内部的逐像素循环**不走 PTR()**，而是在入口用 guards 一次性证明整个
+ *     循环的下标范围合法，循环里直接用 typed-access 的 rawPtr() 取到的原生访问器。
+ *     不这么做的话，`replaceMatOnRect` 实测慢 82%（同进程轮换 6 轮、丢首轮、取最小
+ *     值），因为每个像素都要多付两次 embind getter。
+ *
+ * 入口校验本身很便宜：一次 roiClone 的校验合计约 26 ns，对照该函数本身约 700 ns
+ * 不足 4%，性能门禁（npm run bench，20000 次 roiClone）实测无可测退化。
  */
 
 /** 描述任意值，供错误消息使用。本身绝不抛出。 */

@@ -38,12 +38,18 @@ module.exports = function applyDft(cv, guards) {
     // 也只读写通道 0。多通道输入上它会丢掉除通道 0 以外的全部数据，静默返回垃圾
     // （实测 CV_32FC2 的 [1..8] 得到 1,0,3,0,5,0,7,0）。
     guards.channels(this, [1], where);
-    // 注意：这里**不**校验行列数为偶数。M/2、N/2 在奇数尺寸上是小数，embind 会把它
-    // 截断（3×3 上 PTR(1.5, 0) 落到第 1 行）—— 但 README 里那个唯一的示例正是 3×3，
-    // 其输出被逐字记录在文档里。这个函数的展开约定本来就没有任何证据支撑（见文件
-    // 顶部），此处不借校验之名去改一个已发布的输出。
+    // 注意：这里**不**校验行列数为偶数。这个实现在奇数尺寸上依赖「M/2 被截断成
+    // 整数」——3×3 上 M/2 = 1.5，1.x 与 2.0 一路靠 embind 悄悄截成第 1 行，而
+    // README 里那个唯一的示例正好就是 3×3、其输出被逐字记录在文档里。
+    //
+    // PTR() 现在会拒绝小数下标，所以下面把截断写成显式的 Math.trunc：**输出逐字
+    // 不变**（embind 也是向零截断，已在 1×4 / 2×2 / 3×3 / 4×4 上逐元素比对过），
+    // 只是把原来藏在 embind 里的行为摆到源码表面。这个函数的展开约定本来就没有
+    // 任何证据支撑（见文件顶部），此处不借加校验之名去改一个已发布的输出。
     const M = this.rows;
     const N = this.cols;
+    const midRow = Math.trunc(M / 2);
+    const midCol = Math.trunc(N / 2);
 
     const colOneArray = [];
     const colLastArray = [];
@@ -61,15 +67,15 @@ module.exports = function applyDft(cv, guards) {
     }
 
     realMat.PTR(0, 0)[0] = colOneArray[0];
-    realMat.PTR(M / 2, 0)[0] = colOneArray[M - 1];
-    realMat.PTR(0, N / 2)[0] = colLastArray[0];
-    realMat.PTR(M / 2, N / 2)[0] = colLastArray[M - 1];
+    realMat.PTR(midRow, 0)[0] = colOneArray[M - 1];
+    realMat.PTR(0, midCol)[0] = colLastArray[0];
+    realMat.PTR(midRow, midCol)[0] = colLastArray[M - 1];
     for (let m = 1, i = 1; m <= M - 2; m += 2, i += 1) {
       realMat.PTR(i, 0)[0] = colOneArray[m];
       imagMat.PTR(i, 0)[0] = colOneArray[m + 1];
 
-      realMat.PTR(i, N / 2)[0] = colLastArray[m];
-      imagMat.PTR(i, N / 2)[0] = colLastArray[m + 1];
+      realMat.PTR(i, midCol)[0] = colLastArray[m];
+      imagMat.PTR(i, midCol)[0] = colLastArray[m + 1];
     }
 
     return { r: realMat, i: imagMat };

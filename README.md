@@ -39,22 +39,22 @@ extension layer as separate modules under `src/js/`.
       `build/opencv-version.txt`); the export whitelist lives in `src/config/opencv_js.config.py`
       and additionally exposes `mulSpectrums` and `SVDecomp`, which the upstream tutorial build
       does not
-- [x] **Arguments are checked before they reach wasm** (`src/js/guards.js`): out-of-range rects
-      and indices, mismatched sizes/types, non-finite constants and already-`delete()`d Mats all
-      raise a standard `TypeError` / `RangeError` naming the function, the argument, the value
-      received and the range expected. Without that layer a bad `Rect` aborts inside C++ and
-      emscripten rethrows it as a **bare number** (`throw 1914504` — not an `Error`, `e.message`
-      is `undefined`), while a bad row/column index does not fail at all and silently writes past
-      the end of the Mat
+- [x] **Arguments are checked before they reach wasm** (`src/js/guards.js`) — on every extension
+      method **and on `PTR()` itself**: out-of-range rects and row/column indices, mismatched
+      sizes/types, non-finite constants and already-`delete()`d Mats all raise a standard
+      `TypeError` / `RangeError` naming the function, the argument, the value received and the
+      range expected. Without that layer a bad `Rect` aborts inside C++ and emscripten rethrows it
+      as a **bare number** (`throw 1914504` — not an `Error`, `e.message` is `undefined`), while a
+      bad row/column index does not fail at all and silently writes past the end of the Mat
 - [x] **TypeScript declarations generated from the artifact itself**, not hand-written:
       `dist/index.d.ts` dumps `Object.keys(cv)` and Mat's prototype chain, and a test asserts the
       declared symbol set equals the runtime one **in both directions**. The `.d.ts` files in the
       ecosystem declare `SIFT` / `PCA` / `FlannBasedMatcher`, which this build does not have, and
       omit `FaceDetectorYN`, which it does — so code type-checks and then throws at runtime
 - [x] Zero runtime dependencies, zero test dependencies (`node:test` only)
-- [x] `npm test` runs 179 assertions (178 pass / 1 skip / 0 fail, node v22.22.2): 84 region-op
+- [x] `npm test` runs 189 assertions (188 pass / 1 skip / 0 fail, node v22.22.2): 84 region-op
       correctness cases across 7 depths × 4 channel counts × 3 APIs, 29 `clone()` deep-copy and
-      copy-semantics cases, 21 regression cases for the defects 2.0 fixed, 38 argument-validation
+      copy-semantics cases, 21 regression cases for the defects 2.0 fixed, 48 argument-validation
       cases, 6 `.d.ts`-vs-runtime consistency cases, and 1 wasm-artifact smoke test that is
       skipped unless `OPENCV_ARTIFACT` is set
 - [x] `npm run bench` gates region-op performance: `roiClone()` 14.6–14.8 ms vs the native
@@ -150,7 +150,7 @@ const data: Float32Array = roi.data32F;
 ```bash
 ./build/build.sh          # Docker + emsdk 构建 OpenCV → build/out/baseline/
 npm run assemble          # build/out/baseline + src/js/ → dist/（含 index.d.ts）
-npm test                  # 179 项
+npm test                  # 189 项
 npm run bench             # 性能门禁
 ```
 
@@ -217,11 +217,26 @@ Mat.sum(): 接收者 Mat 已被 delete() —— 释放后的 Mat 不能再使用
    `replaceMatOnRow` 全都由 `PTR()` 逐像素驱动，所以一个越界的 `Rect` 或列号就是一次
    静默的堆破坏。这类比第 1 类危险得多。
 
-> ⚠️ **`DATA()` / `PTR()` 本身是裸访问器，不查边界**（与 C++ 的 `Mat::ptr` 在 release
-> 构建下一致）。校验只做在**每个操作的入口**，不做在逐像素的循环里：一次 rows/cols
-> 边界检查约 19 ns，而 `PTR()` 自身约 54 ns，塞进去就是 +35%，且要由双重循环里的
-> 每个像素来付。放在入口只付一次——20000 次 `roiClone` 的性能门禁实测无退化。
-> 直接调用 `PTR()` 的代码需要自己保证下标合法。
+`PTR()` 自己也查边界（它是公开 API，用户会绕开上面那些方法直接调）：
+
+```javascript
+let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+try {
+  mat2.PTR(9, 9);
+} catch (e) {
+  console.log(e.message);
+  //Mat.PTR(row, col): row = 9 越界，有效范围 0..2
+}
+mat2.delete();
+```
+
+> ⚠️ **每个下标只校验一次。** `rows` / `cols` 是 embind getter，每读一次都是一次跨
+> 语言调用——给 `PTR()` 加边界检查实测让它慢 49%（+23.7 ns/次）。所以扩展层内部
+> 那些逐像素的循环**不走 `PTR()`**：它们在入口用一次校验证明整个循环的下标范围
+> 合法，循环里直接用原生访问器。不这么分工的话 `replaceMatOnRect` 会慢 82%
+> （同进程轮换 6 轮、丢首轮、取最小值实测）。
+>
+> `DATA()` 不收参数，没有可越界的入参。
 
 ### Commonly
 

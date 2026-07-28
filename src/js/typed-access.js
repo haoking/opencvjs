@@ -11,9 +11,12 @@
  * 旧实现写成 28 路 switch（7 深度 × 4 通道）。通道数不参与选择——CV_8UC1 与
  * CV_8UC4 用的是同一个 data 视图——所以这里按 depth() 查表，行为等价，且对
  * OpenCV 允许的 >4 通道 Mat 也成立（旧的 28 路 switch 在那里返回 undefined）。
+ *
+ * 除了两个方法，本模块还返回一个 { rawPtr } 供扩展层内部使用 —— 为什么需要它，
+ * 见 PTR() 上方那段关于「校验放哪里」的实测。
  */
 
-module.exports = function applyTypedAccess(cv) {
+module.exports = function applyTypedAccess(cv, guards) {
   // OpenCV 的 depth 值 CV_8U..CV_64F 恒为 0..6，但仍从 cv 上取，避免硬编码。
   const DATA_BY_DEPTH = [];
   const PTR_BY_DEPTH = [];
@@ -34,13 +37,15 @@ module.exports = function applyTypedAccess(cv) {
   /**
    * 返回覆盖整个 Mat 的 TypedArray（按元素类型定型）。
    *
+   * 没有可越界的入参（不收参数），所以除了深度分发本身没有别的可校验的东西。
+   *
    * ⚠️ 仅对连续 Mat 有意义。原生 roi()/col()/diag() 返回的非连续视图上，
    * 这个视图会按连续内存直读，得到错误数据 —— 见 mat-region.js 的 roiClone()。
    */
   cv.Mat.prototype.DATA = function DATA() {
     const prop = DATA_BY_DEPTH[this.depth()];
     if (prop === undefined) {
-      throw new TypeError(`DATA(): unsupported Mat depth ${this.depth()}`);
+      throw new TypeError(`Mat.DATA(): 不支持的 Mat depth ${this.depth()}`);
     }
     return this[prop];
   };
@@ -49,21 +54,55 @@ module.exports = function applyTypedAccess(cv) {
    * PTR(row)      → 第 row 行的全部元素（cols × channels 个）
    * PTR(row, col) → (row, col) 处像素的各通道（channels 个）
    *
-   * ⚠️ **裸访问器，不查边界**，与 C++ 的 `Mat::ptr` 在 release 构建下一致。
-   * 越界下标不会报错：3×3 CV_32FC1（36 字节）上 `PTR(9, 9)` 返回 base+144 字节处的
-   * Float32Array，读写都落在别人的堆上；小数下标会被静默截断（`PTR(1.5, 0)` 取第 1 行）。
+   * 行列下标都会校验。不校验的话，embind 生成的 `*Ptr` 什么都不查：3×3 CV_32FC1
+   * （共 36 字节）上 `PTR(9, 9)` 返回 base+144 字节处的 Float32Array，读写都落在
+   * 别人的堆上、不报任何错；小数下标则被静默截断（`PTR(1.5, 0)` 取第 1 行）。
+   * PTR() 是文档化的公开 API，用户会直接调它，所以这层不能省。
    *
-   * 之所以不在这里加校验：一次 rows/cols 边界检查约 19 ns，而本函数自身约 54 ns
-   * （实测数据见 guards.js 顶部），加上去就是 +35%，且这笔开销要由
-   * replaceMatOnRect 那类双重循环里的**每个像素**来付。扩展层的每个操作都已在
-   * 入口把下标校验掉，因此循环内调用本函数是安全的；直接调用 PTR() 的代码需要
-   * 自己保证下标合法。
+   * ⚠️ 校验要读 `this.rows` / `this.cols` 两个 **embind getter**，各约 11 ns ——
+   * 它们是跨语言调用，不是普通属性读取。实测（同进程交替 6 轮、丢首轮、取最小值，
+   * node v22.22.2 / darwin-arm64）：
+   *     PTR(1, 1) 紧循环   96.2 → 143.6 ms / 200 万次   +49%（+23.7 ns/次）
+   *     PTR(row) 行形式   101.4 → 132.6 ms / 200 万次   +31%（+15.6 ns/次）
+   * 也就是说这层校验**不便宜**。所以扩展层内部那些逐像素的双重循环不走 PTR()，
+   * 而是用下面的 rawPtr() 在循环外取一次访问器名 —— 它们的下标已经由各自的入口
+   * 校验证明在范围内，再逐像素查一遍纯属重复（实测那样会让 replaceMatOnRect
+   * 慢 38%）。
    */
-  cv.Mat.prototype.PTR = function PTR(row, col = -1) {
+  cv.Mat.prototype.PTR = function PTR(row, col) {
+    const where = "Mat.PTR(row, col)";
     const method = PTR_BY_DEPTH[this.depth()];
     if (method === undefined) {
-      throw new TypeError(`PTR(): unsupported Mat depth ${this.depth()}`);
+      throw new TypeError(`${where}: 不支持的 Mat depth ${this.depth()}`);
     }
-    return col < 0 ? this[method](row) : this[method](row, col);
+    guards.index(row, this.rows, "row", where);
+    // 只给 row 就是「取整行」。1.x 到 2.0 这里的缺省值一直写作 -1、判据是
+    // `col < 0`，于是 PTR(0, -1) 会被当成取整行而不是报错；改成 undefined 之后
+    // 任何负数列号都会如实报越界。-1 这个哨兵从未出现在文档或调用方里。
+    if (col === undefined) {
+      return this[method](row);
+    }
+    guards.index(col, this.cols, "col", where);
+    return this[method](row, col);
+  };
+
+  return {
+    /**
+     * 返回该 Mat 对应的原生访问器**方法名**（如 "floatPtr"），供扩展层在循环外
+     * 取一次、循环内直接 `mat[name](i, j)` 用。
+     *
+     * 它跳过的是 PTR() 的边界校验，**不是**放弃校验：调用它的每个方法都已经在
+     * 入口用 guards 证明了整个循环的下标范围合法。顺带也把逐像素的 depth()
+     * 调用（约 5.7 ns/次）提到了循环外。
+     */
+    rawPtr(mat) {
+      const method = PTR_BY_DEPTH[mat.depth()];
+      if (method === undefined) {
+        throw new TypeError(
+          `Mat.PTR(row, col): 不支持的 Mat depth ${mat.depth()}`,
+        );
+      }
+      return method;
+    },
   };
 };
