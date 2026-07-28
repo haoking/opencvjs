@@ -1,0 +1,41 @@
+name: Build WASM
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 构建 baseline wasm
+        run: ./build/build.sh
+
+      - name: 报告体积
+        run: |
+          cd build/out/baseline
+          for f in opencv.js opencv_js.wasm; do
+            raw=$(stat -c%s "$f")
+            gz=$(gzip -c "$f" | wc -c)
+            br=$(brotli -c "$f" | wc -c)
+            printf '%-14s raw %8s  gzip %8s  brotli %8s\n' "$f" "$raw" "$gz" "$br"
+          done
+
+      - name: 冒烟测试
+        env:
+          OPENCV_ARTIFACT: ${{ github.workspace }}/build/out/baseline
+        run: ls test/smoke/*.test.js >/dev/null && node --test test/smoke/*.test.js
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencv-wasm-baseline
+          path: build/out/baseline/
+          retention-days: 30
