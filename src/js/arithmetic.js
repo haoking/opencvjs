@@ -124,7 +124,8 @@ module.exports = function applyArithmetic(cv, guards) {
    */
   cv.norm2 = function norm2(src1, src2, normType = cv.NORM_L2) {
     // cv.subtract 在尺寸或类型不一致时 abort，抛出的是裸数字（实测 3×3 减 3×4
-    // 得 `throw 1914528`）—— 这两条校验就是把那个数字换成一句话。
+    // 得 `throw <某个堆指针>`，具体数值每次调用、每个变体都不同，故不写死）
+    // —— 这两条校验就是把那个数字换成一句话。
     const where = "cv.norm2(src1, src2, normType)";
     guards.mat(src1, "src1", where);
     guards.mat(src2, "src2", where);

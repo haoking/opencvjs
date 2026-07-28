@@ -1,15 +1,240 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 — 2026-07-28
 
-> ⚠️ 本节的改动**尚未发布**。`2.0.0` 已经发出去了，所以这些语义变更不能追记进下面
-> 那个 `2.0.0` 小节——那等于声称它们在 2.0.0 里就有，而用户 `npm install` 装到的
-> 2.0.0 里并没有。按 semver，带着下面这张表的下一个版本应当是 **major**。
+**运行时 SIMD 探测 + 双 wasm 产物**，外加自 2.0.0 发布以来积压的一批参数前置校验与
+TypeScript 声明工作。npm 包现在同时带 baseline 与 SIMD 两份 wasm，入口按引擎能力
+自选；`require("@haoking/opencvjs")()` 的写法不变。
 
-### 破坏性变更
+### 为什么定成 minor 而不是 major
 
-下面这些调用此前要么 abort（抛出的是裸数字，不是 `Error`）、要么静默产出错误数据，
-现在抛标准异常。它们都会改变现有代码的**运行时行为**，因此按破坏性变更记录。
+`dist/` 的布局确实变了，下面「已积压的语义变更」那张表里的每一条也都会改变现有代码
+的**运行时行为**。定成 minor 的理由有三条，摆在这里供自行判断：
+
+1. **主入口一个字都没变。** `main`（`dist/index.js`）与 `types`（`dist/index.d.ts`）
+   的路径没动，`await require("@haoking/opencvjs")()` 的调用方式与返回值也没动
+   （新增的 `options` 参数是可选的）。会断的只有**深引用**
+   `@haoking/opencvjs/dist/opencv.js` 的代码，而这个路径从未出现在文档、
+   类型声明或任何示例里。
+2. **那批语义变更全是「原本静默出错 → 现在显式抛出」。** 每一条的「此前」列都是
+   整片 `NaN`、静默截断，或者干脆读写别人的堆内存。没有正确的代码会依赖这些行为。
+   唯一一条曾被误伤的正当用法（`±Infinity` 作运算数）已经改回放行（`5304839`）。
+3. semver 要保护的是「按文档写的正确代码不被意外弄坏」。前两条合起来就是：按文档
+   写的代码一行都不用改。
+
+**但这不代表变更很小。** 下面每一节都按完整清单写，没有为了迁就 minor 而把话说轻。
+如果你的代码深引用了 `dist/` 里的文件，或者曾经依赖上面那些静默行为，这次升级对你
+就是破坏性的——照「`dist/` 布局」一节改。
+
+### 新增
+
+#### 运行时 SIMD 探测与变体自动选择
+
+`loadOpenCV()` 用 `WebAssembly.validate()` 探测当前引擎支不支持 SIMD，然后自动加载
+`dist/simd/` 或 `dist/baseline/`。**默认情况下调用方什么都不用做。**
+
+探测对象是一个 31 字节、返回 `v128` 的 wasm 模块。用 `validate()` 而不是
+`compile()` / `instantiate()`，是因为它同步返回 `boolean`，而变体决策必须在
+`require` 之前完成——异步探测会逼着入口先 `await` 一次才知道该 `require` 谁。
+模块结尾用的是 `i8x16.popcnt`（SIMD 提案定稿阶段才加入的指令），只实现了早期草案的
+引擎会在这里返回 false 并回落到 baseline，这是有意的保守：SIMD 产物由 `-msimd128`
+编译，目标就是定稿版指令集。
+
+手动覆盖有两种，优先级 `loadOpenCV({ simd })` > `OPENCV_SIMD` > 运行时探测：
+
+```javascript
+const loadCV = require("@haoking/opencvjs");
+
+await loadCV(); // 自动探测（默认）
+await loadCV({ simd: false }); // 强制 baseline
+await loadCV({ simd: true }); // 强制 simd
+loadCV.detectSimd(); // boolean：当前引擎支不支持 SIMD（只反映引擎能力，不反映实际加载了谁）
+```
+
+```bash
+OPENCV_SIMD=0   # 强制 baseline；认 0/false/off/no
+OPENCV_SIMD=1   # 强制 simd；    认 1/true/on/yes
+```
+
+以上是**公开** API。实现这条优先级规则的 `resolveVariant()` 在
+`src/js/simd-detect.js` 里，它是内部函数——虽然 `dist/simd-detect.js` 随包发布，
+但那是深引用，不在兼容性承诺范围内。
+
+两条刻意的严格行为：
+
+- **被明确点名的变体如果不存在，抛错，不会悄悄换成另一个。** 只有自动探测那条路径
+  才回落（并打一条 warning）。理由：`OPENCV_SIMD=1` 若在缺 SIMD 产物时静默回落，
+  「强制 SIMD 跑一遍测试」实际测的就是 baseline，而结果会宣称测的是 SIMD。
+- **`OPENCV_SIMD` 的值拼错（`ture`）同样抛错**，不是被当成「未设置」忽略。
+
+#### 三个构建变体
+
+`build/build.sh` 从「硬编码 `--disable_single_file`」改为三变体：
+
+| 参数            | 变体         | 产物                                           |
+| --------------- | ------------ | ---------------------------------------------- |
+| （无）          | `baseline`   | `opencv.js` + `opencv_js.wasm`                 |
+| `--simd`        | `simd`       | `opencv.js` + `opencv_js.wasm`                 |
+| `--single-file` | `singlefile` | 只有 `opencv.js`（wasm base64 内联，约 11 MB） |
+
+npm 包里只有 `baseline` 与 `simd`。**单文件变体不进 npm 包**——`assemble.sh` 会拒绝
+大于 2 MB 的 glue，正是为了挡住它被误打进包。它由 `build-wasm.yml` 作为 CI artifact
+`opencv-wasm-singlefile` 产出，发布时手工附到对应的 GitHub Release；仓库里**没有**
+自动上传步骤（`gh release upload` 在 Release 尚不存在时会失败，等于给每次打 tag 埋
+一个必红的步骤）。
+
+单文件变体刻意走 baseline 而非 SIMD：它的使用场景是浏览器 `<script>` 直接引用，
+那条路径上没有任何回退机制，而 SIMD 的浏览器覆盖率是 93.57%
+（Chrome 91+ / Firefox 89+ / Safari 16.4+）——发一个无回退的 SIMD 单文件版等于让
+6.4% 的浏览器直接白屏。
+
+`build-wasm.yml` 相应改为三变体并行矩阵（`fail-fast: false`），三者都跑冒烟测试与
+raw/gzip/brotli 体积报告，另加一个 `verify` 作业当场验双产物一致性。`concurrency`
+保持 `cancel-in-progress: false`——那一段是 workflow 级的，作用对象是整个 run，
+三个矩阵作业共用一个并发名额、彼此不排队也不取消。代价是一次 run 的 CI 分钟数变成
+三倍（墙钟时间不变，约 11 分钟）。
+
+#### 双产物一致性测试（14 个用例）
+
+把同一份确定性输入喂给两个变体，逐元素比较 14 个操作的输出。整数内核与扩展层要求
+**逐位相同**；浮点内核用的是 OpenCV 自己的误差判据，不是自己拍的阈值：
+
+    max|a − b|  <=  1e-5 × max(‖baseline‖∞, 1)
+
+公式与常数都取自上游（`CV_PyramidBaseTest::get_success_error_level` 的 1e-5 +
+`CV_FilterBaseTest` 的 `element_wise_relative_error = false` + `cmpEps()` 里
+`maxval = norm(refarr, NORM_INF)`）。没有按算子分档，因为分档在这里只会放松：
+上游同族是 pyrDown/blur/GaussianBlur 1e-5、filter2D 1e-4、Sobel 5e-4，统一取最严的
+1e-5，对本表每个算子都比上游更严。
+
+实测（真实产物）：14 个用例里 12 个**逐位相同**；`pyrDown 32FC4` 判据值 1.31e-7
+（余量 76x）、`Sobel 32FC1` 8.68e-8（余量 115x）。
+
+已知弱点（也写进了注释）：分母是整幅数据的 ‖·‖∞，对输出动态范围极大的算子
+（如 DFT 的 DC 项远大于高频项），量级很小的元素即使相对误差大也能过。上游有同样的
+性质；要收紧得给每个算子写双精度参照实现，成本远超收益。
+
+另有一条哈希断言要求两个变体的 `.wasm` 不同——必要条件而非充分条件，但挡得住
+「`--simd` 被静默忽略、两条构建路径产出同一份东西、而所有断言照样全绿」这种最现实
+的故障。实测通过（8,515,975 B vs 10,363,503 B）。
+
+#### 参数前置校验（`src/js/guards.js`）
+
+扩展层的每个方法、以及 `Mat.PTR()` 本身，现在都在**调用 wasm 之前**校验参数，失败时
+抛标准 `TypeError` / `RangeError`，消息里带函数名、参数名、实际收到的值和期望的范围。
+覆盖：Rect / 行列 / 对角线下标越界、两个 Mat 的尺寸与类型不匹配、`src` 装不下
+`rect`、数组长度不足、非有限的常数、非 Mat 参数、已被 `delete()` 的 Mat，以及
+`cv.matFromArray` 的元素个数。（`DATA()` 不收参数，没有可越界的入参。）
+
+这解决的是两类都很难查的故障（均本机实测）：
+
+1. **abort 抛出的不是 `Error` 实例。** 本产物在异常被编译掉的配置下构建，C++ 的
+   `CV_Assert` 失败走 abort，emscripten 转成 `throw <裸数字>`——`mat.roi(Rect(1,1,10,10))`
+   抛出的是一个纯数字（`typeof e === "number"`），`e instanceof Error` 为 `false`、
+   `e.message` 为 `undefined`。
+
+   顺带修掉一处文档缺陷：README 与几处源码注释里把那个数字写成了固定值
+   （`1914504` / `1914528`）。它其实是**堆指针而非错误码**——`1914504` 在 baseline 上
+   确实能复现，但同一段代码在 simd 变体上是 `1955632`，而 2.1.0 起支持 SIMD 的引擎
+   默认加载的正是 simd。这些写死的数值已全部改为说明「只能看 `typeof e === "number"`」。
+
+2. **越界的行列号根本不会 abort。** embind 的 `*Ptr(row, col)` 不查边界：3×3 `CV_32FC1`
+   （36 字节）上 `PTR(9, 9)` 返回 base+144 字节处的视图，读写落在别人的堆上、不报错。
+   `replaceMatOnRect` 等 7 个就地写入方法全由 `PTR()` 逐像素驱动。
+
+这批校验带来的行为变更全部列在下面的「已积压的语义变更」小节里。
+
+#### TypeScript 类型声明（`dist/index.d.ts`）
+
+新增 `package.json` 的 `types` 字段。声明**由构建产物自动 dump**（`build/gen-types.js`，
+`build/assemble.sh` 组装时执行），不是手写的：顶层符号取自运行时的 `Object.keys(cv)`
+（1450 个），Mat 成员取自其整条原型链（75 个，含 embind 的 `delete` / `isDeleted` /
+`deleteLater` / `isAliasOf`——它们在 `ClassHandle.prototype` 上，只 dump
+`Mat.prototype` 会漏掉）。
+
+`test/types/dts-consistency.test.js` 双向断言声明的符号集与运行时严格相等。这条断言
+是这件事的全部意义：生态里现有的 OpenCV.js 声明（`@opencvjs/types`、TechStark 的
+`src/`）声明了运行时没有的 `SIFT` / `PCA` / `FlannBasedMatcher`，又漏掉了确实存在的
+`FaceDetectorYN`，结果是代码通过类型检查、运行时才抛异常。
+
+范围：只保证**符号存在性**与运行时一致；未逐条标注的原生绑定是
+`(...args: any[]): any`（精确到每个参数需要解析 C++ 签名并复现 embind 的重载分发，
+超出本项目范围），本项目自己写的扩展层有准确签名。本产物**没有** `Symbol.dispose`
+（实测 Mat 原型链上无任何 symbol 属性），所以用不了 TS 5.2 的 `using`。
+
+`gen-types.js` 固定用 `{ simd: false }` 生成声明：声明只有一份，来源必须确定，否则
+同一份源码在装了 / 没装 SIMD 产物的机器上会生成不同的 `.d.ts`。两个变体的 API 面
+是否一致改由测试来对——CI 带 `OPENCV_SIMD=1` 再跑一遍，`dts-consistency.test.js` 会拿
+SIMD 运行时的符号集去对这份 baseline 生成的声明，一旦分叉那里就会红。
+
+### 变更
+
+#### `dist/` 布局：wasm 产物移入按变体分的子目录
+
+```
+dist/
+  index.js  simd-detect.js  guards.js  typed-access.js  mat-region.js
+  arithmetic.js  dft.js  index.d.ts        ← 与变体无关的扩展层（位置不变）
+  baseline/opencv.js + opencv_js.wasm      ← 无 SIMD，任何环境都能跑
+  simd/opencv.js     + opencv_js.wasm      ← -msimd128 编译
+```
+
+`dist/opencv.js` 与 `dist/opencv_js.wasm` **不再位于顶层**。这是本次唯一的结构性
+破坏点，影响面仅限深引用：
+
+```javascript
+// 2.0.0 —— 会断
+const opencv = require("@haoking/opencvjs/dist/opencv.js");
+
+// 2.1.0 —— 推荐：走主入口，让它自己挑变体
+const cv = await require("@haoking/opencvjs")();
+
+// 2.1.0 —— 如果确实要点名某个变体的裸 glue（不推荐，不在兼容性承诺内）
+const opencv = require("@haoking/opencvjs/dist/baseline/opencv.js");
+```
+
+**必须分目录，不是布局偏好。** 两个变体的 `.wasm` 文件名都是编译期烘焙进 glue 的
+常量 `"opencv_js.wasm"`（emscripten 的 `{{{ WASM_BINARY_FILE }}}`，取值来自 CMake
+目标名 `opencv_js`），改名会让运行时去取一个不存在的路径，同名放同一个目录必然
+互相覆盖。glue 在 Node 下按 `__dirname` 定位 `.wasm`，所以每个子目录里必须各放一份
+glue，与同目录的 `.wasm` 原样配对。
+
+> ℹ️ 2.1.0 之前的文档（含 `Unreleased` 草稿）在这里还写着「两个变体的 glue 内容也
+> 不同，不能共用一份」。**这条是错的**：实测本次构建的两份 glue **逐字节相同**
+> （SHA-256 均为 `da1f9d19…`，各 143,365 B）。分目录的理由只有 `.wasm` 同名这一条。
+> 每个目录仍必须各放一份 glue，但那是因为 glue 按 `__dirname` 找 `.wasm`，不是因为
+> 内容不同。也不能反过来依赖「它们永远相同」——那同样没有依据。
+
+**已知限制：一个进程里只能加载一个变体。** OpenCV 的 UMD 外壳末尾是
+`if (typeof Module === 'undefined') Module = {}; return cv(Module);`，`Module = {}`
+没有声明关键字而整个外壳不是严格模式，于是它是隐式全局变量。实测第一个变体加载后
+`global.Module === cv` 为 true，第二个变体再 `require` 时会把同一个对象喂给自己的
+工厂，embind 抛 `Cannot register public name 'IntVector' twice`。正常用法不受影响；
+要对比两个变体请开两个进程（`test/simd-compare.js` 就是这么做的）。
+
+#### 包体积：解包 8.3 MB → 19.4 MB（tarball 6.0 MB）
+
+实测 `npm pack --dry-run`：17 个文件，解包 19.4 MB。多出来的是第二份 wasm。
+
+| 产物                      |     raw      | brotli  |
+| ------------------------- | :----------: | ------- |
+| `baseline/opencv_js.wasm` | 8,515,975 B  | 1.99 MB |
+| `simd/opencv_js.wasm`     | 10,363,503 B | 2.25 MB |
+
+**SIMD 那份比 baseline 大 21.7%。** 这不是打包问题：`-msimd128` 下 OpenCV 的 SIMD
+内核是**额外的代码路径**而不是替换——标量实现仍然编在里面（运行时按数据布局与
+对齐情况分派），所以 SIMD 产物是「标量 + 向量」两套。
+
+**为什么不能只发一份。** SIMD 覆盖率 93.57%，baseline 是必需的回退；而只发 baseline
+则等于把整套探测作废（`dist/simd/` 永远不存在，每次都 warning 然后回落）。两份都发
+是这两者之外唯一自洽的选择。真正在意传输体积的场景请注意 brotli 后单份是 2 MB 上下，
+且只会下载实际用到的那一份。
+
+### 已积压的语义变更
+
+下面这些改动**在 2.0.0 里并不存在**——它们是 2.0.0 发布之后做的，随 2.1.0 首次发出。
+这些调用此前要么 abort（抛出的是裸数字，不是 `Error`）、要么静默产出错误数据，现在
+抛标准异常。它们都会改变现有代码的**运行时行为**。
 
 > ℹ️ 本节曾经写着「没有一条是原本能正确工作的用法」。**那句话是错的**：最初的
 > `guards.number` 图省事用了 `Number.isFinite`，把 `±Infinity` 连同 `NaN` 一起拒了，
@@ -52,30 +277,71 @@
 `RangeError: Mat.PTR(row, col): row = 0 越界 —— 该 Mat 在这个方向上是空的（长度 0）`。
 （`dftSplit` 本就标着 `@deprecated`，正确性没有任何证据支撑。）
 
-### 参数前置校验（`src/js/guards.js`）
+### 性能
 
-扩展层的每个方法、以及 `Mat.PTR()` 本身，现在都在**调用 wasm 之前**校验参数，失败时
-抛标准 `TypeError` / `RangeError`，消息里带函数名、参数名、实际收到的值和期望的范围。
-覆盖：Rect / 行列 / 对角线下标越界、两个 Mat 的尺寸与类型不匹配、`src` 装不下
-`rect`、数组长度不足、非有限的常数、非 Mat 参数、已被 `delete()` 的 Mat，以及
-`cv.matFromArray` 的元素个数。（`DATA()` 不收参数，没有可越界的入参。）
+#### SIMD 实测加速比（两个架构）
 
-这解决的是两类都很难查的故障（均本机实测）：
+两趟都是真实产物、每个变体独立进程、启动顺序前后各一趟取最小值
+（`npm run simd:compare`）：
 
-1. **abort 抛出的不是 `Error` 实例。** 本产物在异常被编译掉的配置下构建，C++ 的
-   `CV_Assert` 失败走 abort，emscripten 转成 `throw <裸数字>`——`mat.roi(Rect(1,1,10,10))`
-   抛出 `1914504`，`e instanceof Error` 为 `false`、`e.message` 为 `undefined`。
-2. **越界的行列号根本不会 abort。** embind 的 `*Ptr(row, col)` 不查边界：3×3 `CV_32FC1`
-   （36 字节）上 `PTR(9, 9)` 返回 base+144 字节处的视图，读写落在别人的堆上、不报错。
-   `replaceMatOnRect` 等 7 个就地写入方法全由 `PTR()` 逐像素驱动。
+- **arm64** —— node v22.22.2 / darwin-arm64（本机）。噪声底用两份**相同**的二进制
+  标定过：**±3%**，所以 0.97–1.03 之间的比值不代表真实差异。
+- **x86-64** —— node v22.23.1 / linux-x64（GitHub Actions `ubuntu-24.04`，
+  run 30381929289）。这是共享 runner，**没有**做同样的噪声标定，个位数百分比的
+  差异不必当真。
 
-这批校验带来的行为变更全部列在上面的「破坏性变更」小节里。
+| 操作                            | arm64      | x86-64     | 上游 2020 年数据 |
+| ------------------------------- | ---------- | ---------- | ---------------- |
+| `absdiff` 8UC3 256²             | **12.81x** | **13.13x** | —                |
+| `add` 8UC1 256²                 | **10.37x** | **11.23x** | —                |
+| `resize` 8UC4 256²→128²         | **4.37x**  | **4.36x**  | 1.77x            |
+| `GaussianBlur` 8UC1 256² k=5    | **3.32x**  | **2.60x**  | 3.36x            |
+| `pyrDown` 32FC4 256²            | **3.27x**  | **3.41x**  | 3.09x            |
+| `Sobel` 32FC1 256²              | 2.07x      | 1.84x      | —                |
+| `warpAffine` 8UC1 256²          | 1.65x      | 2.00x      | —                |
+| `blur` 32FC1 256² k=5           | 1.55x      | 1.44x      | **0.519x**       |
+| `roiClone` 64² 取 32²（扩展层） | 1.00x      | 1.03x      | —                |
+| `replaceMatOnRect`（扩展层）    | 0.95x      | 1.04x      | —                |
+| `cvtColor` RGBA2GRAY 8UC4 256²  | 1.00x      | **0.84x**  | —                |
+| `dft` 32FC1 256²                | **0.91x**  | **0.91x**  | —                |
 
-**每个下标只校验一次，不逐像素重复校验。** `rows` / `cols` 是 embind getter，每读一次
-都是一次跨语言调用（各约 11 ns），所以：`PTR()` 自己查边界，代价实测 +49%
-（+23.7 ns/次）；而扩展层内部那 7 个逐像素写入的方法**不走 `PTR()`**，它们在入口用
-一次校验证明整个循环的下标范围合法，循环里直接用原生访问器。三方对照（同一进程内
-轮换 6 轮、丢首轮、取最小值）：
+三件必须写清楚的事：
+
+**① `dft` 在两个架构上都是 0.91x —— 真实退化，不是噪声。** 同一个数字在两台不同架构、
+不同 OS、不同 node 小版本的机器上复现，排除了偶然。**指引：重 DFT 的场景显式关闭
+SIMD。**
+
+```javascript
+const cv = await require("@haoking/opencvjs")({ simd: false });
+```
+
+或者进程级 `OPENCV_SIMD=0`。代价是同一个进程里所有其它算子也退回 baseline——变体是
+进程级的，不能按算子切换（一个进程只能加载一个变体，见上）。所以只有在 DFT 确实占
+主导时才值得这么做；`absdiff` / `add` 那两位数的加速比很容易把 9% 赚回来。
+
+**② `cvtColor` 的退化有架构差异。** arm64 上是 1.00x（噪声底内，等于无变化），
+x86-64 上掉到 **0.84x**。x86-64 那趟只有一个 CI 样本、未做噪声标定，但 16% 的差距
+远超任何合理的噪声幅度，倾向于认为是真实的。也就是说「SIMD 在某算子上更慢」这件事
+本身还依赖架构，不能只测一台机器就下结论。
+
+**③ 上游 2020 年那个反例，在两个平台都没有复现。** 上游测得 `blur CV_32FC1` 是
+**0.519x**（慢一倍），本项目实测 arm64 **1.55x** / x86-64 **1.44x**，都是加速。
+而同一组数据里 `GaussianBlur`（3.32x vs 上游 3.36x）与 `pyrDown`（3.27x vs 3.09x）
+在 arm64 上几乎吻合——所以不是整体标定问题，是**逐算子的差异**。结论：那组六年前的
+逐 kernel 数据**不能整体照搬**（六年里 OpenCV 的 SIMD 内核与 emscripten 的代码生成
+都变了），具体算子只能自己实测。顺带一提，`GaussianBlur` 在 x86-64 上是 2.60x，
+比 arm64 的 3.32x 低了不少——同一个算子跨架构也能差这么多。
+
+`npm run simd:compare` 打印这 12 个操作的实测加速比。它**刻意永远 exit 0**：实测确实
+有更慢的项。把「必须更快」做成门禁，结果只会是以后有人删门禁或只挑有利的算子来测。
+
+#### 就地写入类操作：入口校验一次，循环走原生访问器
+
+`rows` / `cols` 是 embind getter，每读一次都是一次跨语言调用（各约 11 ns），所以
+新加的边界校验分了两种做法：`PTR()` 自己查边界，代价实测 +49%（+23.7 ns/次）；而
+扩展层内部那 7 个逐像素写入的方法**不走 `PTR()`**，它们在入口用一次校验证明整个
+循环的下标范围合法，循环里直接用原生访问器。三方对照（同一进程内轮换 6 轮、丢首轮、
+取最小值）：
 
 | `replaceMatOnRect` 32×32          | 耗时      | 相对旧实现 |
 | --------------------------------- | --------- | ---------- |
@@ -87,8 +353,7 @@
 
 > ℹ️ 上表那个 `+82%` 的基准是**旧实现**（198.90 ms）。性能门禁打印的
 > 「退化参照 1.8–2.1x」基准则是**「循环走原生访问器」的参照实现**，两者口径不同、
-> 都对。要引用倍数请以门禁的输出为准——源码注释里一度出现过 38% / 82% / 105%
-> 三种说法（各自来自不同口径的对照），已统一。
+> 都对。要引用倍数请以门禁的输出为准。
 
 新增性能门禁 `test/bench/inplace-ops.bench.js`，专门盯住这个分工：它拿「循环走原生
 访问器」的参照实现当基准，被测实现超过 1.5× 即失败。原有的
@@ -97,123 +362,22 @@
 改回调 `PTR` 之后：新门禁以退出码 1 失败并打印 `1.96x`，旧门禁照样打印「✅ 性能达标」
 并退出码 0。`npm run bench` 现在按 glob 跑 `test/bench/*.bench.js` 下的全部门禁。
 
-### TypeScript 类型声明（`dist/index.d.ts`）
-
-新增 `package.json` 的 `types` 字段。声明**由构建产物自动 dump**（`build/gen-types.js`，
-`build/assemble.sh` 组装时执行），不是手写的：顶层符号取自运行时的 `Object.keys(cv)`
-（1450 个），Mat 成员取自其整条原型链（75 个，含 embind 的 `delete` / `isDeleted` /
-`deleteLater` / `isAliasOf`——它们在 `ClassHandle.prototype` 上，只 dump
-`Mat.prototype` 会漏掉）。
-
-`test/types/dts-consistency.test.js` 双向断言声明的符号集与运行时严格相等。这条断言
-是这件事的全部意义：生态里现有的 OpenCV.js 声明（`@opencvjs/types`、TechStark 的
-`src/`）声明了运行时没有的 `SIFT` / `PCA` / `FlannBasedMatcher`，又漏掉了确实存在的
-`FaceDetectorYN`，结果是代码通过类型检查、运行时才抛异常。
-
-范围：只保证**符号存在性**与运行时一致；未逐条标注的原生绑定是
-`(...args: any[]): any`（精确到每个参数需要解析 C++ 签名并复现 embind 的重载分发，
-超出本项目范围），本项目自己写的扩展层有准确签名。本产物**没有** `Symbol.dispose`
-（实测 Mat 原型链上无任何 symbol 属性），所以用不了 TS 5.2 的 `using`。
-
-### SIMD 双产物与运行时探测
-
-`npm` 包现在同时带两份 wasm 产物，入口按运行时能力自选：
-
-```
-dist/baseline/opencv.js + opencv_js.wasm   无 SIMD，任何环境都能跑
-dist/simd/opencv.js     + opencv_js.wasm   -msimd128 编译
-```
-
-**这是 `dist/` 布局的破坏性变更**：`dist/opencv.js` 与 `dist/opencv_js.wasm` 不再位于
-顶层。`main`（`dist/index.js`）与 `types` 的路径不变，`loadOpenCV()` 的调用方式也
-向后兼容（新增的 `options` 是可选的），所以只有直接深引用 `@haoking/opencvjs/dist/opencv.js`
-的代码会断。
-
-必须分目录，不是布局偏好：两个变体的 `.wasm` 文件名都是编译期烘焙进 glue 的常量
-`"opencv_js.wasm"`（emscripten 的 `{{{ WASM_BINARY_FILE }}}`，取值来自 CMake 目标名
-`opencv_js`），改名会让运行时去取一个不存在的路径，同名放同一个目录必然互相覆盖。
-两个变体的 glue 内容也不同，不能共用一份。
-
-**变体选择**：`loadOpenCV({ simd })` > 环境变量 `OPENCV_SIMD` > 运行时探测。
-探测用 `WebAssembly.validate()` 校验一个 31 字节、返回 `v128` 的模块——用 `validate`
-而非 `compile`/`instantiate`，是因为它同步返回 `boolean`，而变体决策必须在 `require`
-之前完成。
-
-**被明确点名的变体若不存在会抛错，不会悄悄换另一个。** 只有自动探测那条路径才回落
-（并打一条 warning）。理由：`OPENCV_SIMD=1` 若在缺 SIMD 产物时静默回落，「强制 SIMD
-跑一遍测试」实际测的就是 baseline，而结果会宣称测的是 SIMD。`OPENCV_SIMD` 的值拼错
-（`ture`）同样抛错而不是被忽略。
-
-**代价**：包体积解包 8.3 MB → **19.4 MB**（tarball 6.0 MB）。SIMD 那份 wasm 本身
-就比 baseline 大 21.7%（10,363,503 B vs 8,515,975 B；brotli 后 2.25 MB vs 1.99 MB）。
-这是 SIMD 浏览器覆盖率只有 93.57%（Chrome 91+ / Firefox 89+ / Safari 16.4+）的必然
-结果——baseline 是必需的回退，不能只发 SIMD。
-
-**已知限制：一个进程里只能加载一个变体。** OpenCV 的 UMD 外壳末尾是
-`if (typeof Module === 'undefined') Module = {}; return cv(Module);`，`Module = {}`
-没有声明关键字而整个外壳不是严格模式，于是它是隐式全局变量。实测第一个变体加载后
-`global.Module === cv` 为 true，第二个变体再 `require` 时会把同一个对象喂给自己的
-工厂，embind 抛 `Cannot register public name 'IntVector' twice`。正常用法不受影响；
-要对比两个变体请开两个进程。
-
-### 构建变体
-
-`build/build.sh` 从「硬编码 `--disable_single_file`」改为三变体：
-
-| 参数            | 变体         | 产物                                           |
-| --------------- | ------------ | ---------------------------------------------- |
-| （无）          | `baseline`   | `opencv.js` + `opencv_js.wasm`                 |
-| `--simd`        | `simd`       | `opencv.js` + `opencv_js.wasm`                 |
-| `--single-file` | `singlefile` | 只有 `opencv.js`（wasm base64 内联，约 11 MB） |
-
-单文件变体供浏览器 `<script>` 直接引用，**不进 npm 包**，只作为 CI artifact 产出。
-它刻意走 baseline 而非 SIMD：`<script>` 那条路径上没有任何回退机制。
-
-`build-wasm.yml` 改为三变体并行矩阵（`fail-fast: false`），三者都跑冒烟测试与
-raw/gzip/brotli 体积报告，另加一个 `verify` 作业当场验双产物一致性。
-`concurrency` 保持 `cancel-in-progress: false`——那一段是 workflow 级的，作用对象是
-整个 run，三个矩阵作业共用一个并发名额、彼此不排队也不取消。代价是一次 run 的
-CI 分钟数变成三倍（墙钟时间不变，约 11 分钟）。
-
 ### 测试
 
-189 项 → 205 项（0 fail）：新增 12 项 SIMD 探测用例、2 项双产物一致性用例
-（另有本轮复审带来的 2 项）。CI 里同一套断言会在两个变体上**各跑一遍**。
+189 项 → **205 项（0 fail）**：新增 12 项 SIMD 探测用例、2 项双产物一致性
+用例，另有复审带来的 2 项。CI 里同一套断言会在两个变体上**各跑一遍**
+（`npm run test:baseline` / `npm run test:simd`）。
 
-一致性用例把同一份确定性输入喂给两个变体，逐元素比较 14 个操作的输出。整数内核与
-扩展层要求**逐位相同**；浮点内核用的是 OpenCV 自己的判据
+其中 3 项依赖产物：`dist/simd/` 不存在时一致性用例整组跳过，`OPENCV_ARTIFACT` 未设
+时冒烟测试跳过。把这些跳过升级为硬失败靠 `OPENCV_PARITY_REQUIRED=1` /
+`OPENCV_SMOKE_REQUIRED=1`（CI 里都设了）。本机两个变体齐备并设齐这两个变量时实测
+**205 pass / 0 fail / 0 skipped**。
 
-    max|a − b|  <=  1e-5 × max(‖baseline‖∞, 1)
-
-公式与常数都取自上游（`CV_PyramidBaseTest::get_success_error_level` 的 1e-5 +
-`CV_FilterBaseTest` 的 `element_wise_relative_error = false` + `cmpEps()` 里
-`maxval = norm(refarr, NORM_INF)`）。没有按算子分档，因为分档在这里只会放松：
-上游同族是 pyrDown/blur/GaussianBlur 1e-5、filter2D 1e-4、Sobel 5e-4，
-统一取最严的 1e-5，对本表每个算子都比上游更严。
-
-实测（真实产物）：14 个用例里 12 个**逐位相同**；`pyrDown 32FC4` 判据值 1.31e-7
-（余量 76x）、`Sobel 32FC1` 8.68e-8（余量 115x）。
-
-另有一条哈希断言要求两个变体的 `.wasm` 不同——必要条件而非充分条件，但挡得住
-「`--simd` 被静默忽略、两条构建路径产出同一份东西、而所有断言照样全绿」这种最
-现实的故障。首次真实构建时它如期通过（8,515,975 B vs 10,363,503 B）。
-
-`npm run simd:compare` 打印 12 个操作的实测加速比。它**刻意永远 exit 0**：
-实测确实有更慢的项（`dft CV_32FC1` 0.91x）。把「必须更快」做成门禁，结果只会是
-以后有人删门禁或只挑有利的算子来测。
-
-### SIMD 首次真实构建的结果
-
-`-msimd128` + emsdk 3.1.64 + OpenCV 4.14.0 这个组合**能编**，三个变体全部通过
-（run 30379642633）。实测加速比见 README 的「SIMD 实测加速比」一节。两处要点：
-
-- **`dft CV_32FC1` 是 0.91x（更慢）**，超出 ±3% 的噪声底，是真实退化。
-- **上游 2020 年那个反例没有复现**：上游测得 `blur CV_32FC1` 0.519x，这里是 1.55x。
-  而 `GaussianBlur` 3.32x vs 上游 3.36x、`pyrDown` 3.27x vs 3.09x 几乎吻合。
-  结论是那组六年前的逐 kernel 数据不能整体照搬，具体算子只能实测。
-
-首次构建暴露并修掉了一致性判据本身的一个错误（用逐元素相对差度量卷积输出，
-在抵消严重的像素上会把 1.6 ulp 放大成「752 ulp」）——详见提交 `caf9c1f`。
+首次真实构建（run 30379642633）三个变体全部编过，但 `verify` 作业红了——拦下的是
+**一致性判据本身的错误**（用逐元素相对差度量卷积输出，在抵消严重的像素上会把
+1.6 ulp 放大成「752 ulp」），详见 `caf9c1f`。判据改成上游那条公式之后，
+run 30381929289 三变体 + `verify` 全绿。这恰好说明把 `verify` 放进 `build-wasm.yml`
+是对的：产物一出来就当场验。
 
 ## 2.0.0 — 2026-07-28
 

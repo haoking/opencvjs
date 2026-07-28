@@ -8,8 +8,13 @@
  *
  * 1. **abort 抛出的不是 Error 实例。** 本产物在异常被编译掉的配置下构建，C++ 侧
  *    `CV_Assert` 失败走 abort，emscripten 把它转成 `throw <裸数字>`：
- *      mat.roi(new cv.Rect(1, 1, 10, 10))   →  throw 1914504  （typeof "number"）
- *      cv.norm2(3×3 的 a, 3×4 的 b)          →  throw 1914528
+ *      mat.roi(new cv.Rect(1, 1, 10, 10))   →  throw <数字>  （typeof "number"）
+ *      cv.norm2(3×3 的 a, 3×4 的 b)          →  throw <数字>
+ *    ⚠️ 这里曾经写着具体数值（1914504 / 1914528）。**别再写死数值**：抛出的是一个
+ *    堆指针而不是错误码，它随变体和分配历史变化。实测 baseline 上前一行确实是
+ *    1914504，但同一段代码在 simd 变体上是 1955632；同一进程内后续每次 abort 还会
+ *    继续递增，步长也随中间分配了什么而变。2.1.0 起支持 SIMD 的引擎默认加载 simd
+ *    变体，照旧数字去对必然对不上。可靠的判据只有 typeof e === "number"。
  *    调用方 catch 到的是一个指针数值：`e.message` 是 undefined，`e instanceof Error`
  *    是 false，对它做任何字符串操作都会让调用方代码自己再崩一次，而且这个数字
  *    完全无法用来定位问题。（模块本身在 abort 之后仍可继续使用——实测 abort 后

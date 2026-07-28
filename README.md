@@ -19,6 +19,25 @@ build, patched in place and never rebased. **2.0 builds the artifact from source
 emsdk, pinned to `build/opencv-version.txt`) with its own export whitelist, and keeps the
 extension layer as separate modules under `src/js/`.
 
+## What changed in 2.1
+
+- **The package now ships two wasm builds and picks one at runtime.** `loadOpenCV()`
+  probes for WebAssembly SIMD and loads `dist/simd/` or `dist/baseline/` accordingly.
+  **You do not have to do anything** — `await require("@haoking/opencvjs")()` is unchanged.
+- Speed-ups are large but **not universal**: 12.81x/13.13x on `absdiff` (arm64/x86-64),
+  but `dft` is **0.91x on both architectures** — a real regression. See
+  [SIMD 实测加速比](#simd-实测加速比) for the full table and
+  [when to turn SIMD off](#何时该手动关掉-simd).
+- **`dist/` layout changed**: `dist/opencv.js` and `dist/opencv_js.wasm` moved into
+  `dist/baseline/` and `dist/simd/`. Only code that **deep-imports**
+  `@haoking/opencvjs/dist/opencv.js` breaks; `main`, `types` and the entry point are
+  unchanged.
+- Package size: **8.3 MB → 19.4 MB unpacked** (6.0 MB tarball) — the cost of carrying a
+  baseline fallback, since SIMD browser coverage is only 93.57%.
+- Plus the argument-validation and TypeScript-declaration work that had accumulated since
+  2.0.0 shipped. Several calls that used to fail silently now throw — full list in
+  [`CHANGELOG.md`](CHANGELOG.md#已积压的语义变更).
+
 ## What changed in 2.0
 
 - Artifact: asm.js / OpenCV 4.0.1 → **WebAssembly / OpenCV 4.14.0**, built by
@@ -35,6 +54,13 @@ extension layer as separate modules under `src/js/`.
 
 - [x] 20 extra `cv.Mat` methods plus `cv.norm2` on top of a stock OpenCV build — region copies,
       in-place writes, scalar arithmetic, and type-dispatching accessors (`DATA()` / `PTR()`)
+- [x] **Two wasm builds, picked at runtime.** The package ships both a `-msimd128` build and a
+      non-SIMD fallback; `loadOpenCV()` probes the engine with `WebAssembly.validate()` and loads
+      the right one — **callers do nothing**. Measured on two architectures: up to **13.13x**
+      (`absdiff`), but `dft` is **0.91x on both** — see
+      [SIMD 实测加速比](#simd-实测加速比) and [何时该手动关掉 SIMD](#何时该手动关掉-simd).
+      Override with `loadOpenCV({ simd })` or `OPENCV_SIMD`; a variant named explicitly but
+      missing **throws** rather than silently falling back
 - [x] Reproducible build from OpenCV source (Docker + emsdk, version pinned in
       `build/opencv-version.txt`); the export whitelist lives in `src/config/opencv_js.config.py`
       and additionally exposes `mulSpectrums` and `SVDecomp`, which the upstream tutorial build
@@ -44,7 +70,7 @@ extension layer as separate modules under `src/js/`.
       sizes/types, non-finite constants and already-`delete()`d Mats all raise a standard
       `TypeError` / `RangeError` naming the function, the argument, the value received and the
       range expected. Without that layer a bad `Rect` aborts inside C++ and emscripten rethrows it
-      as a **bare number** (`throw 1914504` — not an `Error`, `e.message` is `undefined`), while a
+      as a **bare number** (a heap pointer — not an `Error`, `e.message` is `undefined`), while a
       bad row/column index does not fail at all and silently writes past the end of the Mat
 - [x] **TypeScript declarations generated from the artifact itself**, not hand-written:
       `dist/index.d.ts` dumps `Object.keys(cv)` and Mat's prototype chain, and a test asserts the
@@ -78,16 +104,21 @@ extension layer as separate modules under `src/js/`.
   1.x 时代它唯一的消费者是那个返回 `NaN` 的手写 `mulSpectrums()`，所以也不存在
   「端到端跑通过」这回事。需要复数谱相乘请直接用原生 `cv.mulSpectrums()`——它在 CCS
   格式上直接做乘法，根本不需要先拆分。
-- **浏览器路径整体未验证。** npm 包里的产物是拆分的 `opencv.js`（约 143 KB 的 glue）
-  - `opencv_js.wasm`（约 8.5 MB），必须同目录同名；扩展层是 CommonJS 模块，
-    `<script>` 直接引 glue 只能拿到原生 OpenCV，要用扩展层得走打包器。
-    `build/build.sh --single-file` 能产出 1.x 那样的单文件形态（wasm base64 内联，
-    约 11 MB），但它只作为 CI artifact 存在、不进 npm 包，且同样没有做过浏览器验证。
-    本仓库的测试只覆盖 Node（CI 矩阵 18 / 20 / 22）。
-- **SIMD 在部分算子上更慢。** 实测（真实产物，node v22.22.2 / darwin-arm64）
-  `dft CV_32FC1` 是 **0.91x** —— 比 baseline 慢 9%。`cvtColor RGBA2GRAY` 与
-  `roiClone` 是 1.00x（无变化）。SIMD 不是无脑赢，`npm run simd:compare` 会把
-  这些数字连同有利的一并打出来。这些是 arm64 上的数字，CI 跑在 x86-64，会不同。
+- **浏览器路径整体未验证。** 本仓库的自动化测试只覆盖 Node（CI 矩阵 18 / 20 / 22），
+  浏览器里一行都没跑过——包括 SIMD 探测在浏览器中的行为（`WebAssembly.validate` 有、
+  `process.env` 没有；`resolveVariant` 对 `process` 做了 `typeof` 保护，逻辑上安全，
+  但没有实测过）。
+  这**不是**「拿不到单文件形态」的意思：`build/build.sh --single-file` 会产出 1.x 那样
+  的单文件产物（wasm base64 内联，约 11 MB），它只是**不进 npm 包**——见
+  [Single-file build](#single-file-build)。
+  npm 包里是拆分形态：`opencv.js`（约 143 KB 的 glue）+ `opencv_js.wasm`，必须同目录、
+  文件名不能改；扩展层是 CommonJS 模块，`<script>` 直接引 glue 只能拿到原生 OpenCV，
+  要用扩展层得走打包器。
+- **SIMD 在部分算子上更慢，且哪些算子更慢与架构有关。** 实测 `dft CV_32FC1` 在
+  **arm64 与 x86-64 上都是 0.91x**（比 baseline 慢 9%，两个架构复现，是真实退化）；
+  `cvtColor RGBA2GRAY` 在 arm64 上 1.00x、在 **x86-64 上 0.84x**。SIMD 不是无脑赢。
+  完整的两架构数据见 [SIMD 实测加速比](#simd-实测加速比)，
+  应对办法见 [何时该手动关掉 SIMD](#何时该手动关掉-simd)。
 
 ## Requirements
 
@@ -134,8 +165,13 @@ dist/
 
 **必须分目录，不是布局偏好。** 两个变体的 `.wasm` 文件名都是编译期烘焙进 glue 的
 常量 `"opencv_js.wasm"`，改名会让运行时去取一个不存在的路径；同名文件放同一个目录
-必然互相覆盖。glue 在 Node 下按 `__dirname` 定位 `.wasm`，所以每个子目录里的两个
-文件必须原样配对——两个变体的 glue 内容也不同，不能共用一份。
+必然互相覆盖。glue 在 Node 下按 `__dirname` 定位 `.wasm`，所以每个子目录里必须各放
+一份 glue，与同目录的 `.wasm` 原样配对。
+
+> ℹ️ 本文档此前在这里写着「两个变体的 glue 内容也不同，不能共用一份」。**那句话是
+> 错的**：实测这两份 glue **逐字节相同**（SHA-256 均为 `da1f9d19…`，各 143,365 B）。
+> 分目录的理由只有 `.wasm` 同名这一条。每个目录仍要各放一份 glue，但那是因为 glue
+> 按 `__dirname` 找 `.wasm`，不是因为内容不同；反过来也不能依赖「它们永远相同」。
 
 `loadOpenCV()` 会用 `WebAssembly.validate()` 探测运行时是否支持 SIMD，自动选择
 对应变体：
@@ -143,10 +179,13 @@ dist/
 ```javascript
 const loadCV = require("@haoking/opencvjs");
 
-const cv = await loadCV(); // 自动：支持 SIMD 就用 simd，否则 baseline
-const cv = await loadCV({ simd: false }); // 强制 baseline
-const cv = await loadCV({ simd: true }); // 强制 simd
-loadCV.detectSimd(); // boolean：当前引擎支不支持 SIMD
+// 下面三行是三种**互斥**的写法，一个进程里只能选一种调一次（见下方「一个进程里
+// 只能加载一个变体」）。照抄整段会因为重复声明 cv 而直接语法错误。
+await loadCV(); // 自动：支持 SIMD 就用 simd，否则 baseline
+await loadCV({ simd: false }); // 强制 baseline
+await loadCV({ simd: true }); // 强制 simd
+
+loadCV.detectSimd(); // boolean：当前引擎支不支持 SIMD（不需要先加载，也不反映实际加载了谁）
 ```
 
 也可以用环境变量 `OPENCV_SIMD=0` / `1`（认 `0/1`、`false/true`、`off/on`、`no/yes`）。
@@ -169,33 +208,81 @@ baseline 是必需的回退，两份都会随包发布——代价是包体积�
 
 ### SIMD 实测加速比
 
-真实产物，node v22.22.2 / darwin-arm64，每个变体独立进程、启动顺序前后各一趟取最小值
-（`npm run simd:compare`）。同一套测量用两份**相同**的二进制标定过噪声底：±3%，
-所以 0.97–1.03 之间的比值不代表真实差异。
+两个架构各测了一趟，真实产物，每个变体独立进程、启动顺序前后各一趟取最小值
+（`npm run simd:compare`）：
 
-| 操作                            | baseline | simd     | 加速比     | 上游 2020 年数据 |
-| ------------------------------- | -------- | -------- | ---------- | ---------------- |
-| `absdiff` 8UC3 256²             | 18.2 ms  | 1.4 ms   | **12.81x** | —                |
-| `add` 8UC1 256²                 | 7.7 ms   | 0.7 ms   | **10.37x** | —                |
-| `resize` 8UC4 256²→128²         | 6.4 ms   | 1.5 ms   | **4.37x**  | 1.77x            |
-| `GaussianBlur` 8UC1 256² k=5    | 21.6 ms  | 6.5 ms   | **3.32x**  | 3.36x            |
-| `pyrDown` 32FC4 256²            | 9.2 ms   | 2.8 ms   | **3.27x**  | 3.09x            |
-| `Sobel` 32FC1 256²              | 6.9 ms   | 3.3 ms   | 2.07x      | —                |
-| `warpAffine` 8UC1 256²          | 28.1 ms  | 17.1 ms  | 1.65x      | —                |
-| `blur` 32FC1 256² k=5           | 10.3 ms  | 6.6 ms   | 1.55x      | **0.519x**       |
-| `cvtColor` RGBA2GRAY 8UC4 256²  | 8.5 ms   | 8.6 ms   | 1.00x      | —                |
-| `roiClone` 64² 取 32²（扩展层） | 14.7 ms  | 14.7 ms  | 1.00x      | —                |
-| `replaceMatOnRect`（扩展层）    | 263.1 ms | 275.9 ms | 0.95x      | —                |
-| `dft` 32FC1 256²                | 11.8 ms  | 13.0 ms  | **0.91x**  | —                |
+- **arm64** —— node v22.22.2 / darwin-arm64（本机）。噪声底用两份**相同**的二进制
+  标定过：**±3%**，所以 0.97–1.03 之间的比值不代表真实差异。
+- **x86-64** —— node v22.23.1 / linux-x64（GitHub Actions `ubuntu-24.04`）。共享
+  runner，**没有**做同样的噪声标定，个位数百分比的差异不必当真。
 
-两处值得注意：
+| 操作                            | arm64      | x86-64     | 上游 2020 年数据 |
+| ------------------------------- | ---------- | ---------- | ---------------- |
+| `absdiff` 8UC3 256²             | **12.81x** | **13.13x** | —                |
+| `add` 8UC1 256²                 | **10.37x** | **11.23x** | —                |
+| `resize` 8UC4 256²→128²         | **4.37x**  | **4.36x**  | 1.77x            |
+| `GaussianBlur` 8UC1 256² k=5    | **3.32x**  | **2.60x**  | 3.36x            |
+| `pyrDown` 32FC4 256²            | **3.27x**  | **3.41x**  | 3.09x            |
+| `Sobel` 32FC1 256²              | 2.07x      | 1.84x      | —                |
+| `warpAffine` 8UC1 256²          | 1.65x      | 2.00x      | —                |
+| `blur` 32FC1 256² k=5           | 1.55x      | 1.44x      | **0.519x**       |
+| `roiClone` 64² 取 32²（扩展层） | 1.00x      | 1.03x      | —                |
+| `replaceMatOnRect`（扩展层）    | 0.95x      | 1.04x      | —                |
+| `cvtColor` RGBA2GRAY 8UC4 256²  | 1.00x      | **0.84x**  | —                |
+| `dft` 32FC1 256²                | **0.91x**  | **0.91x**  | —                |
 
-- **`dft` 更慢（0.91x）**，超出噪声底，是真实的退化。两个扩展层用例是 1.00x /
-  0.95x —— 它们是 JS 侧的逐像素循环，不走 wasm 内核，本来就不该有变化。
-- **上游那个反例没有复现。** 上游 2020 年测得 `blur CV_32FC1` 是 0.519x（慢一倍），
-  这里是 1.55x（快）。而 `GaussianBlur` 3.32x vs 3.36x、`pyrDown` 3.27x vs 3.09x
-  两项几乎吻合。结论是上游那组逐 kernel 数据**不能整体照搬**——六年过去，
-  OpenCV 的 SIMD 内核与 emscripten 的代码生成都变了，具体到某个算子只能实测。
+三件值得注意的事：
+
+- **`dft` 在两个架构上都是 0.91x** —— 同一个数字在两台不同架构、不同 OS、不同 node
+  小版本的机器上复现，排除了偶然。这是真实退化，不是噪声。应对办法见下一节。
+- **`cvtColor` 的退化有架构差异**：arm64 上 1.00x（噪声底内，等于无变化），x86-64 上
+  掉到 **0.84x**。x86-64 那趟只有一个 CI 样本、未做噪声标定，但 16% 的差距远超任何
+  合理的噪声幅度，倾向于认为是真实的。也就是说「SIMD 在某算子上更慢」这件事本身还
+  依赖架构，不能只测一台机器就下结论。
+- **上游那个反例在两个平台都没有复现。** 上游 2020 年测得 `blur CV_32FC1` 是 0.519x
+  （慢一倍），这里是 arm64 **1.55x** / x86-64 **1.44x**，都是加速。而同一组数据里
+  `GaussianBlur`（3.32x vs 上游 3.36x）与 `pyrDown`（3.27x vs 3.09x）在 arm64 上几乎
+  吻合——所以不是整体标定问题，是**逐算子的差异**。结论：那组六年前的逐 kernel 数据
+  **不能整体照搬**（六年里 OpenCV 的 SIMD 内核与 emscripten 的代码生成都变了），
+  具体算子只能自己实测。顺带一提，`GaussianBlur` 在 x86-64 上是 2.60x、arm64 上
+  3.32x —— 同一个算子跨架构也能差这么多。
+
+两个扩展层用例（`roiClone` / `replaceMatOnRect`）在 0.95–1.04x 之间，符合预期：
+它们是 JS 侧的逐像素循环，不走 wasm 内核，本来就不该有变化。
+
+### 何时该手动关掉 SIMD
+
+**默认不用管。** 12 个算子里 10 个更快，其中 4 个是 3x 以上，两个是 10x 以上。
+
+**唯一有明确证据的例外是 DFT。** 如果你的负载以 `cv.dft()` / `cv.idft()` 为主，
+SIMD 变体会慢约 9%（两个架构一致）。这时显式关掉：
+
+```javascript
+const cv = await require("@haoking/opencvjs")({ simd: false });
+```
+
+或者进程级：
+
+```bash
+OPENCV_SIMD=0 node your-app.js
+```
+
+**代价是全进程的。** 变体是进程级的，不能按算子切换（一个进程只能加载一个变体，
+见上）。关掉 SIMD 意味着同一进程里 `absdiff` / `add` 那两位数的加速比也一起没了 ——
+它们很容易把 DFT 的 9% 赚回来。所以只有在 DFT 确实占主导时才值得这么做，
+**并且请自己实测**，不要照搬这里的结论。
+
+如果你在 x86-64 上跑大量 `cvtColor`，那里实测是 0.84x，同样可以考虑；但那只有一个
+CI 样本，不如 DFT 那条结论硬。
+
+拿不准就自己跑一趟：
+
+```bash
+npm run simd:compare   # 需要本地已 assemble 两个变体
+```
+
+它只打印数字、不作门禁（**刻意永远 exit 0**）——实测确实有更慢的项，把「必须更快」
+做成门禁，结果只会是以后有人删门禁或只挑有利的算子来测。
 
 ### TypeScript
 
@@ -250,15 +337,39 @@ Docker 时只构得出 baseline，那时 `dist/` 只含 baseline，一致性测�
 在 CI 那种「本来就该有两个变体」的场合，设 `OPENCV_REQUIRE_SIMD=1` 让缺失从告警
 升级为失败。**不会拿 baseline 冒充 simd**——那会让强制 SIMD 测到的其实是 baseline。
 
-第三个变体 `--single-file` 把 wasm 以 base64 内联进 `opencv.js`（体积 +33%，
-约 11 MB 单文件），供浏览器 `<script>` 直接引用。它**不进 npm 包**（`assemble.sh`
-会拒绝 >2MB 的 glue），只作为 CI artifact 产出。它刻意走 baseline 而非 SIMD：
-`<script>` 那条路径上没有任何回退机制，发一个无回退的 SIMD 单文件版等于让 6.4%
-的浏览器白屏。
+第三个变体 `--single-file` 不参与 npm 打包，见下一节。
 
 CI 里 `build-wasm.yml` 用三变体矩阵并行构建、逐个跑冒烟测试，再用一个 `verify`
 作业下载 baseline + simd 当场验双产物一致性；`ci.yml` 取它最近一次成功运行的
 两个产物再组装，并把同一套测试在两个变体上各跑一遍。
+
+### Single-file build
+
+给浏览器 `<script>` 直接引用的单文件形态：`build/build.sh --single-file` 把 wasm 以
+base64 内联进 `opencv.js`（体积 +33%，约 11 MB 单个文件）。
+
+**它不在 npm 包里。** `assemble.sh` 会拒绝大于 2 MB 的 glue，正是为了挡住它被误打
+进包——19.4 MB 的包已经够大，再塞一份 11 MB 的重复产物没有道理。
+
+拿它的两个途径：
+
+1. **GitHub Release** —— 每个版本的 Release 页面附有该版本的单文件产物。
+2. **自己构建** —— `./build/build.sh --single-file`，产物在 `build/out/singlefile/`
+   （需要 Docker）。也可以从 `Build WASM` 工作流那次运行的 CI artifact
+   `opencv-wasm-singlefile` 直接下载。
+
+> ⚠️ **仓库里没有自动上传 Release 的步骤**，单文件产物由维护者在发版时手工附上。
+> 如果某个版本的 Release 页面上没有它，那就是漏了——请开 issue，或按上面第 2 条
+> 自己构建。（不做自动上传是因为 `gh release upload` 在 Release 尚不存在时会失败，
+> 等于给每次打 tag 埋一个必红的步骤。）
+
+单文件变体**刻意走 baseline 而非 SIMD**：它的使用场景是 `<script>` 直接引用，
+那条路径上没有任何回退机制，而 SIMD 浏览器覆盖率是 93.57%——发一个无回退的 SIMD
+单文件版等于让 6.4% 的浏览器直接白屏。也就是说单文件形态**拿不到 SIMD 加速**。
+
+> ⚠️ 单文件形态给到的是**原生 OpenCV**，没有本项目的扩展层（`roiClone` / `DATA` /
+> `PTR` / `replaceMatOn*` 等）——扩展层是 CommonJS 模块，得走打包器。而且如
+> [Known Issues](#known-issues) 所述，**浏览器路径整体没有验证过**。
 
 ---
 
@@ -308,9 +419,17 @@ Mat.sum(): 接收者 Mat 已被 delete() —— 释放后的 Mat 不能再使用
 
 1. **abort 抛出的不是 `Error` 实例。** 本产物在异常被编译掉的配置下构建，C++ 侧的
    `CV_Assert` 失败会走 abort，emscripten 把它转成 `throw <裸数字>`——实测
-   `mat.roi(new cv.Rect(1, 1, 10, 10))` 抛出 `1914504`。`e instanceof Error` 是 `false`、
-   `e.message` 是 `undefined`，调用方想「记条日志再降级」都会让自己再崩一次，而那个
-   数字对定位问题毫无帮助。（模块本身在 abort 之后仍可继续使用。）
+   `mat.roi(new cv.Rect(1, 1, 10, 10))` 抛出的是一个纯数字（`typeof e === "number"`），
+   `e instanceof Error` 是 `false`、`e.message` 是 `undefined`，调用方想「记条日志再
+   降级」都会让自己再崩一次，而那个数字对定位问题毫无帮助。（模块本身在 abort 之后
+   仍可继续使用。）
+
+   > ℹ️ 这里**不写具体数值**，因为它是个堆指针而不是错误码，会随变体和分配历史变化。
+   > 本文档此前写的是 `1914504`：那个值在 **baseline** 上确实能复现，但同一段代码在
+   > **simd** 变体上是 `1955632`——而 2.1 起支持 SIMD 的引擎默认加载的正是 simd。
+   > 同一进程内后续每次 abort 还会继续递增。**可靠的判据只有 `typeof e === "number"`，
+   > 不要依赖具体数值。**
+
 2. **越界的行列号根本不会 abort。** embind 生成的 `*Ptr(row, col)` 不做边界检查：
    3×3 `CV_32FC1`（共 36 字节）上 `mat.PTR(9, 9)` 返回 base+144 字节处的
    `Float32Array`，读写都落在别人的堆上，不报任何错。`replaceMatOnRect` /

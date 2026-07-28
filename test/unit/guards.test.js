@@ -5,7 +5,9 @@
 // 这批用例要钉住的不是「会抛异常」，而是**抛出物的形状**：
 //
 //   加 guards 之前，一个越界的 Rect 让 C++ 的 CV_Assert 走 abort，emscripten
-//   把它转成 `throw 1914504` —— 一个裸数字。调用方 catch 到它之后：
+//   把它转成 `throw <裸数字>` —— 一个堆指针，不是错误码（随变体与分配历史变化：
+//   实测 baseline 上是 1914504，simd 变体上同一段代码是 1955632，所以不写死具体值）。
+//   调用方 catch 到它之后：
 //     e instanceof Error → false      e.message → undefined
 //     e.message.includes(...) → TypeError: Cannot read properties of undefined
 //   也就是说，调用方想「记一条日志再降级」都会让自己再崩一次，而那个数字对定位
