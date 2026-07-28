@@ -28,16 +28,25 @@ const fs = require("fs");
 
 const artifact = process.env.OPENCV_ARTIFACT;
 
+// 单文件变体（build/build.sh --single-file）的产物形状与另外两个相反：只有一个
+// opencv.js，wasm 已 base64 内联进去，因此 glue 反而必须**大于** 2MB。
+//
+// 这个判据用显式的环境变量，不用「目录里有没有 .wasm」来猜。猜的话，一次
+// --disable_single_file 意外生效的拆分构建（.wasm 没被拷进来）会被当成单文件
+// 变体、然后一路报绿——那正好是这条断言本该抓住的故障。
+const SINGLE_FILE = process.env.OPENCV_SMOKE_SINGLE_FILE === "1";
+const INLINE_THRESHOLD = 2 * 1024 * 1024;
+
 if (!artifact && process.env.OPENCV_SMOKE_REQUIRED) {
   throw new Error(
     "OPENCV_SMOKE_REQUIRED 已置位但 OPENCV_ARTIFACT 未设置 —— " +
-      "冒烟测试是 wasm 构建的唯一验证，静默跳过等于让 60–150 分钟的构建" +
+      "冒烟测试是 wasm 构建的唯一验证，静默跳过等于让整场构建" +
       "在零验证下报绿。本地开发不设这两个变量时会正常跳过。",
   );
 }
 
 test(
-  "新构建的 wasm 产物冒烟验证",
+  `新构建的 wasm 产物冒烟验证（${SINGLE_FILE ? "单文件" : "拆分"}变体）`,
   {
     skip: !artifact ? "未设置 OPENCV_ARTIFACT（本地开发）" : false,
     // 有限超时：wasm 实例化正常应在秒级完成；若 onRuntimeInitialized 因
@@ -51,16 +60,24 @@ test(
     const wasmPath = path.resolve(artifact, "opencv_js.wasm");
 
     assert.ok(fs.existsSync(jsPath), `缺少 ${jsPath}`);
-    assert.ok(
-      fs.existsSync(wasmPath),
-      `缺少 ${wasmPath} —— --disable_single_file 未生效？`,
-    );
 
     const jsSize = fs.statSync(jsPath).size;
-    assert.ok(
-      jsSize < 2 * 1024 * 1024,
-      `opencv.js 有 ${(jsSize / 1048576).toFixed(1)}MB —— wasm 可能仍被 base64 内联进了 JS`,
-    );
+    if (SINGLE_FILE) {
+      assert.ok(!fs.existsSync(wasmPath), `单文件变体不该有独立的 ${wasmPath}`);
+      assert.ok(
+        jsSize > INLINE_THRESHOLD,
+        `opencv.js 只有 ${(jsSize / 1048576).toFixed(1)}MB —— SINGLE_FILE=1 未生效，wasm 没被内联进来`,
+      );
+    } else {
+      assert.ok(
+        fs.existsSync(wasmPath),
+        `缺少 ${wasmPath} —— --disable_single_file 未生效？`,
+      );
+      assert.ok(
+        jsSize < INLINE_THRESHOLD,
+        `opencv.js 有 ${(jsSize / 1048576).toFixed(1)}MB —— wasm 可能仍被 base64 内联进了 JS`,
+      );
+    }
 
     // 加载就绪的判据只能是 cv.Mat 是否可用，不能看 onRuntimeInitialized 是否存在。
     // 实测（2026-07-28 首次真实构建产物）：新 wasm 产物的 require() 返回 Promise，
