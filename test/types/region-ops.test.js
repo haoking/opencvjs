@@ -22,24 +22,25 @@ for (const depth of DEPTHS) {
         const { mat, data } = makeMat(depth, channels);
         let out;
         try {
-          out = callRegion(mat, api);
-        } catch (e) {
+          try {
+            out = callRegion(mat, api);
+          } catch (e) {
+            assert.fail(`${api}() on ${typeName} 崩溃: ${describeError(e)}`);
+          }
+
+          const want = expectedRegion(api, data, channels);
+          const got = Array.from(out.DATA());
+
+          assert.strictEqual(
+            out.isContinuous(),
+            true,
+            `${api}() on ${typeName} 返回了非连续 Mat —— .data* 读取会得到错误数据`,
+          );
+          assert.deepStrictEqual(got, want, `${api}() on ${typeName} 数据错误`);
+        } finally {
           mat.delete();
-          assert.fail(`${api}() on ${typeName} 崩溃: ${describeError(e)}`);
+          if (out) out.delete();
         }
-
-        const want = expectedRegion(api, data, channels);
-        const got = Array.from(out.DATA());
-
-        assert.strictEqual(
-          out.isContinuous(),
-          true,
-          `${api}() on ${typeName} 返回了非连续 Mat —— .data* 读取会得到错误数据`,
-        );
-        assert.deepStrictEqual(got, want, `${api}() on ${typeName} 数据错误`);
-
-        mat.delete();
-        out.delete();
       });
     }
   }
