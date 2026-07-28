@@ -10,10 +10,15 @@ const CHANNELS = [1, 2, 3, 4];
  * emscripten 在异常被编译掉的构建下抛出的是数字（如 6446944），不是 Error 实例。
  * 直接读 e.message 会得到 undefined，对它做字符串操作会让测试代码自身崩溃，
  * 并把这个自伤伪装成 "cv 模块已报废"。所有捕获点必须走这个函数。
+ *
+ * e 是对象且带 message 属性时取 message（不论其类型——{message: 123} 应产出
+ * "123"，而不是退化成 String(e) 的 "[object Object]"）；否则退回 String(e)，
+ * 覆盖数字、字符串、null、undefined 等非对象抛出物。两个分支都只返回字符串，
+ * 不会再抛出。
  */
 function describeError(e) {
-  if (e !== null && typeof e === "object" && typeof e.message === "string") {
-    return e.message;
+  if (e !== null && typeof e === "object" && e.message !== undefined) {
+    return String(e.message);
   }
   return String(e);
 }
