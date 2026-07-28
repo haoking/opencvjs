@@ -107,10 +107,27 @@ test(
     m.data32F[0] = 999;
     assert.strictEqual(copy.data32F[0], 1, "clone() 退化为浅拷贝");
 
-    // 白名单必须保住 CascadeClassifier（5.x 移除了它，这是钉 4.x 的理由）
-    assert.ok(
-      typeof cv.CascadeClassifier === "function",
-      "白名单丢失 CascadeClassifier",
+    // 白名单必须保住这两个**类**绑定。挑类而不是自由函数，是因为 embind 生成
+    // 类绑定走的是另一条代码路径（注册构造函数 + 方法表），自由函数全在也不能
+    // 证明它没坏。ORB 来自 features 模块、FaceDetectorYN 来自 objdetect，
+    // 两个模块各取一个，一次覆盖两条模块链路。
+    //
+    // 这条断言在 4.x 时代点的是 CascadeClassifier，理由是「5.x 会移除它，
+    // 所以要钉住 4.x」。基线升到 5.0.0 后那个理由不复存在：OpenCV 5 把
+    // CascadeClassifier / HOGDescriptor / groupRectangles / AKAZE / BRISK /
+    // KAZE / AgastFeatureDetector 从 **C++ API** 里删了（不只是白名单），
+    // 加白名单也救不回来，所以断言只能改点别的。
+    for (const name of ["ORB", "FaceDetectorYN"]) {
+      assert.strictEqual(typeof cv[name], "function", `白名单丢失 ${name}`);
+    }
+
+    // 反向钉住 5.x 基线：CascadeClassifier 必须**不在**。没有这条，产物若因
+    // 某次改动退回 4.x 构建，上面那组正向断言照样全过（ORB/FaceDetectorYN
+    // 在 4.x 里也有），一次静默的版本回退就报绿了。
+    assert.strictEqual(
+      cv.CascadeClassifier,
+      undefined,
+      "CascadeClassifier 又出现了 —— 产物可能不是 5.x 构建",
     );
 
     // dnn 的 JS 绑定应已被裁掉（注意：dnn 的 C++ 代码仍在产物中——白名单只

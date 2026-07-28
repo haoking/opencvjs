@@ -186,8 +186,30 @@ test("生态里那几个说谎的符号，这里一个都不许出现", async ()
     );
   }
 
+  // OpenCV 5.x 从 JS 白名单里删掉的一批 API。生态里那些 .d.ts 仍照 4.x 声明
+  // 着它们，本产物（基线 5.0.0）运行时没有，我们的 .d.ts 也不该有。
+  // 这一组同时反向钉住基线版本：任何一个又出现了，就说明产物退回了 4.x。
+  for (const name of [
+    "CascadeClassifier",
+    "HOGDescriptor",
+    "AKAZE",
+    "BRISK",
+    "KAZE",
+  ]) {
+    assert.strictEqual(
+      cv[name],
+      undefined,
+      `前提变了: 运行时又有 cv.${name} 了 —— 产物可能不是 5.x 构建`,
+    );
+    assert.strictEqual(
+      declared.has(name),
+      false,
+      `.d.ts 声明了 5.x 已移除的 cv.${name}`,
+    );
+  }
+
   // 它们漏掉、而本产物确实存在的
-  for (const name of ["FaceDetectorYN", "CascadeClassifier"]) {
+  for (const name of ["FaceDetectorYN", "ORB"]) {
     assert.strictEqual(
       typeof cv[name],
       "function",
