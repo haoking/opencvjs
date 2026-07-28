@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [master, rebuild-2.0]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["18", "20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 测试栈零依赖，无需 npm install
+
+      - name: 运行测试
+        run: npm test
+
+      - name: 性能门禁
+        # 只在一个 Node 版本上跑，避免 CI runner 抖动导致误报
+        if: matrix.node == '22'
+        run: npm run bench

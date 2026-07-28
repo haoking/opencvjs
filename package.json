@@ -1,0 +1,31 @@
+{
+  "name": "@haoking/opencvjs",
+  "version": "1.0.0",
+  "description": "OpenCV for JavaScript with extended Mat operations",
+  "main": "opencv.js",
+  "scripts": {
+    "test": "ls test/*/*.test.js >/dev/null && node --test test/*/*.test.js",
+    "bench": "node test/bench/region-ops.bench.js"
+  },
+  "files": [
+    "opencv.js",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencv",
+    "computer-vision",
+    "asm.js",
+    "image-processing"
+  ],
+  "author": "Haochen Wang",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haoking/opencvjs.git"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

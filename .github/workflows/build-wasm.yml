@@ -1,0 +1,77 @@
+name: Build WASM
+
+on:
+  # 只留手动触发。tag 触发（push: tags: ["v*"]）已暂时移除：这条构建链路
+  # 一次都没有真正跑通过，而它单次要 60–150 分钟——在验证过之前，让任何
+  # `git push --tags` 都自动点燃 2.5 小时的构建是不划算的。
+  # **待首次手动构建验证成功后，再恢复 tag 触发。**
+  workflow_dispatch:
+
+# 构建单次要 60–150 分钟，串行化以免同时烧掉两份。
+# group 必须是常量：用 `build-wasm-${{ github.ref }}` 时，两个不同 tag /
+# 分支的 ref 不同就落进两个不同的 group，照样并发——只有同一个 ref 上的
+# 重复触发才会被串行化，防不住它本来要防的场景。
+# cancel-in-progress: false（而非 true）是因为取消一个跑到一半的构建同样
+# 是浪费——排队等它跑完更划算。
+concurrency:
+  group: build-wasm
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 构建 baseline wasm
+        run: ./build/build.sh
+
+      - name: 报告体积
+        run: |
+          cd build/out/baseline
+          for f in opencv.js opencv_js.wasm; do
+            raw=$(stat -c%s "$f")
+            gz=$(gzip -c "$f" | wc -c)
+            br=$(brotli -c "$f" | wc -c)
+            printf '%-14s raw %8s  gzip %8s  brotli %8s\n' "$f" "$raw" "$gz" "$br"
+          done
+
+      - name: 冒烟测试
+        # node:test 的 timeout 选项不保证进程退出——它只让测试结果在超时点
+        # 报 fail，若事件循环被存活的异步句柄占住（真实 wasm 加载挂起时更
+        # 可能是这种情况），node --test 进程本身会继续跑。--test-force-exit
+        # 是进程级止损；这里的 timeout-minutes 是同一件事的第二重、完全不
+        # 依赖 Node 内部机制的兜底（由 runner 直接杀掉整个进程树）。两者
+        # 互为保险，都不依赖对方生效。
+        timeout-minutes: 5
+        env:
+          OPENCV_ARTIFACT: ${{ github.workspace }}/build/out/baseline
+          # 声明「这一趟必须真跑」。未设 OPENCV_ARTIFACT 时冒烟测试默认是
+          # skip 且 exit 0，那会让 60–150 分钟的构建在零验证下报绿；有了这个
+          # 变量，测试文件会直接抛错而不是跳过。
+          # 用它而不是 process.env.CI，是因为 ci.yml 的 `npm test` 也在 CI 里
+          # 跑并会 glob 到同一个文件，那条链路本来就没有 wasm 产物。
+          OPENCV_SMOKE_REQUIRED: "1"
+        # 第一重守卫在 shell 里，不依赖 Node：OPENCV_ARTIFACT 未设置或目录
+        # 不存在时 `test -d ""` 直接为假，步骤立刻失败。
+        run: |
+          test -d "$OPENCV_ARTIFACT" || { echo "::error::OPENCV_ARTIFACT 未设置或目录不存在: '$OPENCV_ARTIFACT'"; exit 1; }
+          ls test/smoke/*.test.js >/dev/null
+          node --test --test-force-exit test/smoke/*.test.js
+
+      - uses: actions/upload-artifact@v4
+        # if: always() —— 冒烟测试失败时，那 60–150 分钟的产物正是最需要拿来
+        # 排查的东西。没有这一行，upload 会因为前一步失败而被跳过，产物直接
+        # 随 runner 销毁，只能重跑 2.5 小时才能再看一眼。
+        # 构建步骤本身失败时目录可能不存在，此时 upload-artifact 默认
+        # if-no-files-found: warn，只告警不让 job 失败——不会掩盖真正的失败。
+        if: always()
+        with:
+          name: opencv-wasm-baseline
+          path: build/out/baseline/
+          retention-days: 30
