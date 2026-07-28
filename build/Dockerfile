@@ -1,6 +1,7 @@
 # 锁死 emsdk 版本 —— 官方 nightly 仍钉在 2019 年的 1.39.0,不可参照。
 #
-# 选 3.1.64(2024-07 发布)的理由(已用上游源码核实,细节见 task-8-report.md):
+# 选 3.1.64(2024-07 发布)的理由(下面两条都可直接在上游源码里核对,
+# 不依赖本仓库任何未提交的文件):
 # - 必须 < 4.0.20:emscripten 自 4.0.20 起,Embind 要求 C++17,opencv 的
 #   modules/js/CMakeLists.txt 会在 cmake 配置阶段直接 FATAL_ERROR,除非额外
 #   传 --cmake_option="-DCMAKE_CXX_STANDARD=17"。3.1.64 在这条线以下,

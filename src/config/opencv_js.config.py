@@ -1,5 +1,16 @@
-# 相对上游的改动：从 white_list 中移除 dnn（体积大头，含 TensorFlow protobuf）。
-# 其余保持与上游同步，便于跟进新版本。
+# 相对上游 platforms/js/opencv_js.config.py 的改动只有两处：本段注释，以及
+# 文件末尾 makeWhiteList([...]) 的参数里去掉了 dnn。其余逐字同步，便于跟进新版本。
+#
+# 去掉 dnn 是为了收窄暴露给 JS 的 API 面，**不是体积优化**——这一点极易搞反：
+# 白名单只控制 embind 绑定的生成，不影响 CMake 是否编译该模块。上游
+# platforms/js/build_js.py:126 硬编码 -DBUILD_opencv_dnn=ON 且没有 --disable_dnn
+# 选项，所以 dnn 的 C++ 代码仍会进产物，体积不会因为这里少一个名字而显著下降。
+# 真要减体积得靠 build/build.sh 的 EXTRA_CMAKE_OPTIONS 传 -DBUILD_opencv_dnn=OFF，
+# 但有风险（objdetect 的 FaceDetectorYN 走 dnn::readNet），见 build/build.sh 中
+# CMAKE_OPTION_ARG 上方的注释。
+#
+# 下方 dnn = {...} 字典本身逐字保留自上游，只是不再传进 makeWhiteList()——
+# 保留它是为了跟进上游新版本时 diff 保持干净。
 
 # Classes and methods whitelist
 

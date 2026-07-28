@@ -23,8 +23,18 @@
 #   壳、另存为 opencv.js(纯文本操作,不改内容、不碰 .wasm 文件),所以最终
 #   opencv.js 内部引用的仍然是字符串 "opencv_js.wasm"。两个文件必须原名配对;
 #   如果把 .wasm 重命名成 opencv.wasm,浏览器/Node 运行时会去 fetch
-#   opencv_js.wasm 而 404。(证据链见 task-8-report.md;GitHub issue
-#   opencv/opencv#19243 的构建日志里也能看到真实路径 bin/opencv_js.wasm。)
+#   opencv_js.wasm 而 404。
+#
+#   两条可独立核对的旁证(都在上游仓库,不依赖本仓库任何未提交的文件):
+#   - opencv/opencv#13356 附带的完整构建日志里有
+#       [100%] Linking CXX executable ../../bin/opencv_js.js
+#     ——链接目标名就是 opencv_js,产物落在 bin/ 下。(该 issue 本身报的是
+#     "构建后 bin/ 里没有 .wasm",结论是 SINGLE_FILE 把 wasm 以 base64
+#     内联进了 opencv.js;这正是本脚本要传 --disable_single_file 的原因。)
+#   - opencv/opencv#19243 的评论里有 emscripten 的报错行
+#       em++: error: '.../upstream/bin/wasm2js --emscripten -O ../../bin/opencv_js.wasm ...' failed
+#     ——直接给出 bin/opencv_js.wasm 这个路径。(注意这是 --disable_wasm
+#     构建的失败输出,不是成功日志;它能证明的只是文件名,不是别的。)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

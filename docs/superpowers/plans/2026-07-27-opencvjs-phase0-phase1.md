@@ -1,5 +1,16 @@
 # opencvjs 阶段 0 + 阶段 1 实施计划
 
+> ⚠️ **本文档是实施期的快照，不是活文档。** 阶段 0 + 阶段 1 已经实施完毕，
+> 但本文件保留在实施当时的状态：复选框未回填，且若干代码块已被后续修正取代。
+> **一律以仓库实际内容为准，不要照抄本文档里的代码块。** 已知过时之处至少有：
+>
+> - Step 1 的 `package.json` 代码块（version、`files` 字段、`test` 脚本形式都已变）；
+> - 发布版本号是 **1.0.0** 而非文中的 1.0.1，tag 为 `v1.0.0`（npm 上此前从无任何版本）；
+> - Task 6 说 `npm publish --dry-run` 应有 4 项，实际为 5 项（增加了 `CHANGELOG.md`）；
+> - `build-wasm.yml` 已移除 tag 触发，只保留 `workflow_dispatch`。
+>
+> 保留它是作为历史记录（每个决策当时的依据），不作为规范。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 先修掉 `roi()`/`col()`/`Diag()` 的崩溃与静默错误数据并发布 1.0.1，再打通可复现的 OpenCV 4.x WASM 构建链路。
