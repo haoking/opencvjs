@@ -115,10 +115,83 @@
 超出本项目范围），本项目自己写的扩展层有准确签名。本产物**没有** `Symbol.dispose`
 （实测 Mat 原型链上无任何 symbol 属性），所以用不了 TS 5.2 的 `using`。
 
+### SIMD 双产物与运行时探测
+
+`npm` 包现在同时带两份 wasm 产物，入口按运行时能力自选：
+
+```
+dist/baseline/opencv.js + opencv_js.wasm   无 SIMD，任何环境都能跑
+dist/simd/opencv.js     + opencv_js.wasm   -msimd128 编译
+```
+
+**这是 `dist/` 布局的破坏性变更**：`dist/opencv.js` 与 `dist/opencv_js.wasm` 不再位于
+顶层。`main`（`dist/index.js`）与 `types` 的路径不变，`loadOpenCV()` 的调用方式也
+向后兼容（新增的 `options` 是可选的），所以只有直接深引用 `@haoking/opencvjs/dist/opencv.js`
+的代码会断。
+
+必须分目录，不是布局偏好：两个变体的 `.wasm` 文件名都是编译期烘焙进 glue 的常量
+`"opencv_js.wasm"`（emscripten 的 `{{{ WASM_BINARY_FILE }}}`，取值来自 CMake 目标名
+`opencv_js`），改名会让运行时去取一个不存在的路径，同名放同一个目录必然互相覆盖。
+两个变体的 glue 内容也不同，不能共用一份。
+
+**变体选择**：`loadOpenCV({ simd })` > 环境变量 `OPENCV_SIMD` > 运行时探测。
+探测用 `WebAssembly.validate()` 校验一个 31 字节、返回 `v128` 的模块——用 `validate`
+而非 `compile`/`instantiate`，是因为它同步返回 `boolean`，而变体决策必须在 `require`
+之前完成。
+
+**被明确点名的变体若不存在会抛错，不会悄悄换另一个。** 只有自动探测那条路径才回落
+（并打一条 warning）。理由：`OPENCV_SIMD=1` 若在缺 SIMD 产物时静默回落，「强制 SIMD
+跑一遍测试」实际测的就是 baseline，而结果会宣称测的是 SIMD。`OPENCV_SIMD` 的值拼错
+（`ture`）同样抛错而不是被忽略。
+
+**代价**：包体积翻倍，解包 8.3 MB → 17.5 MB（tarball 5.6 MB）。这是 SIMD 浏览器
+覆盖率只有 93.57%（Chrome 91+ / Firefox 89+ / Safari 16.4+）的必然结果——baseline
+是必需的回退，不能只发 SIMD。
+
+**已知限制：一个进程里只能加载一个变体。** OpenCV 的 UMD 外壳末尾是
+`if (typeof Module === 'undefined') Module = {}; return cv(Module);`，`Module = {}`
+没有声明关键字而整个外壳不是严格模式，于是它是隐式全局变量。实测第一个变体加载后
+`global.Module === cv` 为 true，第二个变体再 `require` 时会把同一个对象喂给自己的
+工厂，embind 抛 `Cannot register public name 'IntVector' twice`。正常用法不受影响；
+要对比两个变体请开两个进程。
+
+### 构建变体
+
+`build/build.sh` 从「硬编码 `--disable_single_file`」改为三变体：
+
+| 参数            | 变体         | 产物                                           |
+| --------------- | ------------ | ---------------------------------------------- |
+| （无）          | `baseline`   | `opencv.js` + `opencv_js.wasm`                 |
+| `--simd`        | `simd`       | `opencv.js` + `opencv_js.wasm`                 |
+| `--single-file` | `singlefile` | 只有 `opencv.js`（wasm base64 内联，约 11 MB） |
+
+单文件变体供浏览器 `<script>` 直接引用，**不进 npm 包**，只作为 CI artifact 产出。
+它刻意走 baseline 而非 SIMD：`<script>` 那条路径上没有任何回退机制。
+
+`build-wasm.yml` 改为三变体并行矩阵（`fail-fast: false`），三者都跑冒烟测试与
+raw/gzip/brotli 体积报告，另加一个 `verify` 作业当场验双产物一致性。
+`concurrency` 保持 `cancel-in-progress: false`——那一段是 workflow 级的，作用对象是
+整个 run，三个矩阵作业共用一个并发名额、彼此不排队也不取消。代价是一次 run 的
+CI 分钟数变成三倍（墙钟时间不变，约 11 分钟）。
+
 ### 测试
 
-135 项 → 189 项（188 pass / 1 skip / 0 fail）：新增 48 项参数校验用例、
-6 项 `.d.ts` 与运行时一致性用例。
+189 项 → 205 项（0 fail）：新增 12 项 SIMD 探测用例、2 项双产物一致性用例
+（另有本轮复审带来的 2 项）。CI 里同一套断言会在两个变体上**各跑一遍**。
+
+一致性用例把同一份确定性输入喂给两个变体，逐元素比较 14 个操作的输出：整数内核与
+扩展层要求逐位相同，浮点内核容差 1e-5 相对误差（SIMD 会改变累加结合顺序），
+并且无论过不过都打印实测最大偏差。另有一条哈希断言要求两个变体的 `.wasm` 不同——
+必要条件而非充分条件，但挡得住「`--simd` 被静默忽略、两条构建路径产出同一份东西、
+而所有断言照样全绿」这种最现实的故障。
+
+`npm run simd:compare` 打印 12 个操作的实测加速比。它**刻意永远 exit 0**：SIMD 不是
+无脑赢，上游 2020 年的逐 kernel 数据里 `blur CV_32FC1` 只有 **0.519x**。把「必须更快」
+做成门禁，结果只会是以后有人删门禁或只挑有利的算子来测。
+
+> ⚠️ 截至本节写就，`--simd` **从未真正构建过**。探测、布局、一致性检查、构建矩阵都
+> 已就位并各自验过，但 SIMD 产物本身与它的实测收益要等 CI 首次跑 `build-wasm.yml`
+> 才有数据。
 
 ## 2.0.0 — 2026-07-28
 

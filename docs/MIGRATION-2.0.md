@@ -45,6 +45,11 @@ const loadCV = require("@haoking/opencvjs");
 不再是「一个 .js 文件」。扩展层是 CommonJS 模块，浏览器里要用得走打包器。详见
 README 的 Installation 一节。
 
+> ℹ️ **2.0.0 之后 `dist/` 的布局又变了一次**（见 CHANGELOG 的 Unreleased 一节）：
+> glue 与 `.wasm` 移进了 `dist/baseline/` 与 `dist/simd/` 两个子目录，入口按运行时
+> 是否支持 WebAssembly SIMD 自动选择。`main` / `types` 的路径不变、`loadOpenCV()`
+> 的调用方式向后兼容，只有直接深引用 `@haoking/opencvjs/dist/opencv.js` 的代码会断。
+
 ---
 
 ## 2. 改名：不再覆盖原生方法

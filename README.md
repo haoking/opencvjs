@@ -52,11 +52,17 @@ extension layer as separate modules under `src/js/`.
       ecosystem declare `SIFT` / `PCA` / `FlannBasedMatcher`, which this build does not have, and
       omit `FaceDetectorYN`, which it does — so code type-checks and then throws at runtime
 - [x] Zero runtime dependencies, zero test dependencies (`node:test` only)
-- [x] `npm test` runs 189 assertions (188 pass / 1 skip / 0 fail, node v22.22.2): 84 region-op
-      correctness cases across 7 depths × 4 channel counts × 3 APIs, 29 `clone()` deep-copy and
-      copy-semantics cases, 21 regression cases for the defects 2.0 fixed, 48 argument-validation
-      cases, 6 `.d.ts`-vs-runtime consistency cases, and 1 wasm-artifact smoke test that is
-      skipped unless `OPENCV_ARTIFACT` is set
+- [x] `npm test` runs 205 assertions (0 fail, node v22.22.2): 84 region-op correctness cases
+      across 7 depths × 4 channel counts × 3 APIs, 29 `clone()` deep-copy and copy-semantics
+      cases, 21 regression cases for the defects 2.0 fixed, 50 argument-validation cases,
+      12 SIMD-detection cases, 6 `.d.ts`-vs-runtime consistency cases, 2 baseline-vs-SIMD
+      output-parity cases, and 1 wasm-artifact smoke test. The 3 artifact-dependent ones skip
+      unless `OPENCV_ARTIFACT` / `dist/simd/` are present, and turn from skip into hard failure
+      under `OPENCV_SMOKE_REQUIRED=1` / `OPENCV_PARITY_REQUIRED=1` (both set in CI)
+- [x] The same 205 assertions run twice in CI — once forced onto `baseline`, once onto `simd`.
+      Plus an output-parity check that feeds identical deterministic input to both variants
+      and compares 14 operations element-wise (bit-exact for integer kernels and the extension
+      layer, 1e-5 relative for float kernels, whose SIMD paths may reassociate accumulation)
 - [x] `npm run bench` runs two performance gates, each comparing the shipped method against the
       primitive it is built on (alternating rounds, warm-up round discarded, minimum taken):
       `region-ops` — `roiClone()` 14.6–14.8 ms vs the native `roi()` + `clone()` it wraps
@@ -72,10 +78,16 @@ extension layer as separate modules under `src/js/`.
   1.x 时代它唯一的消费者是那个返回 `NaN` 的手写 `mulSpectrums()`，所以也不存在
   「端到端跑通过」这回事。需要复数谱相乘请直接用原生 `cv.mulSpectrums()`——它在 CCS
   格式上直接做乘法，根本不需要先拆分。
-- **浏览器用法没有 1.x 那样的单文件形态。** 产物是 `opencv.js`（约 143 KB 的 glue）
-  - `opencv_js.wasm`（约 8.5 MB）两个文件，必须同目录同名；扩展层是 CommonJS 模块，
-    `<script>` 直接引 `dist/opencv.js` 只能拿到原生 OpenCV，要用扩展层得走打包器。
-    本仓库的测试只覆盖 Node（CI 矩阵 18 / 20 / 22），浏览器路径未做验证。
+- **浏览器路径整体未验证。** npm 包里的产物是拆分的 `opencv.js`（约 143 KB 的 glue）
+  - `opencv_js.wasm`（约 8.5 MB），必须同目录同名；扩展层是 CommonJS 模块，
+    `<script>` 直接引 glue 只能拿到原生 OpenCV，要用扩展层得走打包器。
+    `build/build.sh --single-file` 能产出 1.x 那样的单文件形态（wasm base64 内联，
+    约 11 MB），但它只作为 CI artifact 存在、不进 npm 包，且同样没有做过浏览器验证。
+    本仓库的测试只覆盖 Node（CI 矩阵 18 / 20 / 22）。
+- **SIMD 变体的实测收益尚无数据。** 探测、分目录、双产物一致性、构建矩阵都已就位，
+  但 `--simd` 至今**没有真正构建过**（首次真实构建要等 CI 跑一次 `build-wasm.yml`）。
+  `npm run simd:compare` 会打印实测加速比，包括 SIMD 更慢的项——上游 2020 年那组
+  逐 kernel 数据里 `blur CV_32FC1` 只有 **0.519x**，SIMD 不是无脑赢。
 
 ## Requirements
 
@@ -110,9 +122,48 @@ const loadCV = require("@haoking/opencvjs");
 > `function`）。拿它判断「还没就绪」会恒真，于是去等一个永不再触发的回调——
 > 本项目第一次 CI 冒烟测试就是这么挂掉的。
 
-包里的 `dist/` 是扁平布局：`index.js`（入口）、`opencv.js`（emscripten glue）、
-`opencv_js.wasm`，以及五个扩展模块和 `index.d.ts`。glue 在 Node 下按 `__dirname`
-定位 `.wasm`，所以三者必须留在同一个目录里，文件名也不能改。
+包里的 `dist/` 有两份 wasm 产物，各自一个子目录：
+
+```
+dist/
+  index.js  simd-detect.js  guards.js  typed-access.js  mat-region.js
+  arithmetic.js  dft.js  index.d.ts        ← 与变体无关的扩展层
+  baseline/opencv.js + opencv_js.wasm      ← 无 SIMD，任何环境都能跑
+  simd/opencv.js     + opencv_js.wasm      ← -msimd128 编译
+```
+
+**必须分目录，不是布局偏好。** 两个变体的 `.wasm` 文件名都是编译期烘焙进 glue 的
+常量 `"opencv_js.wasm"`，改名会让运行时去取一个不存在的路径；同名文件放同一个目录
+必然互相覆盖。glue 在 Node 下按 `__dirname` 定位 `.wasm`，所以每个子目录里的两个
+文件必须原样配对——两个变体的 glue 内容也不同，不能共用一份。
+
+`loadOpenCV()` 会用 `WebAssembly.validate()` 探测运行时是否支持 SIMD，自动选择
+对应变体：
+
+```javascript
+const loadCV = require("@haoking/opencvjs");
+
+const cv = await loadCV(); // 自动：支持 SIMD 就用 simd，否则 baseline
+const cv = await loadCV({ simd: false }); // 强制 baseline
+const cv = await loadCV({ simd: true }); // 强制 simd
+loadCV.detectSimd(); // boolean：当前引擎支不支持 SIMD
+```
+
+也可以用环境变量 `OPENCV_SIMD=0` / `1`（认 `0/1`、`false/true`、`off/on`、`no/yes`）。
+优先级是 `loadOpenCV({ simd })` > `OPENCV_SIMD` > 自动探测。
+
+> ⚠️ **被明确点名的变体如果不存在，会抛错，不会悄悄换成另一个。** 只有自动探测那条
+> 路径才回落（回落时打一条 warning）。这条是刻意的：如果 `OPENCV_SIMD=1` 在缺 SIMD
+> 产物时静默回落，那么「强制 SIMD 跑一遍测试」实际测的是 baseline，而结果会宣称测的
+> 是 SIMD。同理，`OPENCV_SIMD` 的值拼错（`ture`）会抛错而不是被忽略。
+
+> ⚠️ **一个进程里只能加载一个变体。** OpenCV 的 UMD 外壳把 `Module` 泄漏成了隐式
+> 全局变量（`Module = {}`，没有声明关键字，而外壳不是严格模式），第二个变体会撞上
+> 第一个的 embind 注册表并抛 `Cannot register public name 'IntVector' twice`。
+> 正常用法不受影响；确实要对比两个变体请开两个进程（`test/simd-compare.js` 就是这么做的）。
+
+SIMD 的浏览器覆盖率是 **93.57%**（Chrome 91+ / Firefox 89+ / Safari 16.4+），所以
+baseline 是必需的回退，两份都会随包发布——代价是包体积翻倍（解包约 17.5 MB）。
 
 ### TypeScript
 
@@ -152,16 +203,30 @@ const data: Float32Array = roi.data32F;
 产物不入 git。本地要跑测试或自己出包：
 
 ```bash
-./build/build.sh          # Docker + emsdk 构建 OpenCV → build/out/baseline/
-npm run assemble          # build/out/baseline + src/js/ → dist/（含 index.d.ts）
-npm test                  # 189 项
-npm run bench             # 两个性能门禁（test/bench/*.bench.js 全跑）
+./build/build.sh                # → build/out/baseline/   opencv.js + opencv_js.wasm
+./build/build.sh --simd         # → build/out/simd/       opencv.js + opencv_js.wasm
+./build/build.sh --single-file  # → build/out/singlefile/ 只有 opencv.js（wasm 已内联）
+npm run assemble                # 两个变体 + src/js/ → dist/（含 index.d.ts）
+npm test                        # 205 项
+npm run bench                   # 两个性能门禁（test/bench/*.bench.js 全跑）
+npm run simd:compare            # baseline vs simd 的实测加速比（只报数字，不是门禁）
 ```
 
-`npm run assemble` 也接受一个目录参数（例如 CI 下载下来的产物目录）：
-`npm run assemble -- /path/to/artifact`。
+`npm run assemble` 接受两个目录参数（例如 CI 下载下来的产物目录）：
+`npm run assemble -- /path/to/baseline /path/to/simd`。simd 那个可以缺——本地没有
+Docker 时只构得出 baseline，那时 `dist/` 只含 baseline，一致性测试整组跳过。
+在 CI 那种「本来就该有两个变体」的场合，设 `OPENCV_REQUIRE_SIMD=1` 让缺失从告警
+升级为失败。**不会拿 baseline 冒充 simd**——那会让强制 SIMD 测到的其实是 baseline。
 
-CI 里 `build-wasm.yml` 负责构建并上传产物，`ci.yml` 取它最近一次成功运行的产物再组装。
+第三个变体 `--single-file` 把 wasm 以 base64 内联进 `opencv.js`（体积 +33%，
+约 11 MB 单文件），供浏览器 `<script>` 直接引用。它**不进 npm 包**（`assemble.sh`
+会拒绝 >2MB 的 glue），只作为 CI artifact 产出。它刻意走 baseline 而非 SIMD：
+`<script>` 那条路径上没有任何回退机制，发一个无回退的 SIMD 单文件版等于让 6.4%
+的浏览器白屏。
+
+CI 里 `build-wasm.yml` 用三变体矩阵并行构建、逐个跑冒烟测试，再用一个 `verify`
+作业下载 baseline + simd 当场验双产物一致性；`ci.yml` 取它最近一次成功运行的
+两个产物再组装，并把同一套测试在两个变体上各跑一遍。
 
 ---
 
