@@ -10,7 +10,9 @@
 #   dist/opencv.js        emscripten glue（约 143 KB）
 #   dist/opencv_js.wasm   wasm 二进制（约 8.5 MB）
 #   dist/index.js         包入口：加载 glue → 挂扩展 → 返回 cv（Promise）
-#   dist/{typed-access,mat-region,arithmetic,dft}.js
+#   dist/{guards,typed-access,mat-region,arithmetic,dft}.js
+#   dist/index.d.ts       TypeScript 声明，由 build/gen-types.js 从**刚组装好的这份
+#                         产物**dump 出来（不是手写的）——见该文件顶部的说明
 #
 # ⚠️ 两个文件名都不能改。glue 内部用的是编译期写死的字符串 "opencv_js.wasm"
 #    （见 build/build.sh 顶部的长注释），Node 下由 glue 自己按 __dirname 拼路径
@@ -49,6 +51,11 @@ mkdir -p "${DIST_DIR}"
 
 cp "${SRC_DIR}/opencv.js" "${SRC_DIR}/opencv_js.wasm" "${DIST_DIR}/"
 cp "${REPO_ROOT}"/src/js/*.js "${DIST_DIR}/"
+
+# .d.ts 必须在这里生成、且必须用刚拷进去的这份产物：它的内容就是 Object.keys(cv) 的
+# dump。任何「先生成、后换产物」的顺序都会让声明与运行时脱节——那正是本项目要修的
+# 那个毛病。生成失败即整个组装失败（set -e），不允许 dist/ 里出现一份陈旧的声明。
+node "${REPO_ROOT}/build/gen-types.js" "${DIST_DIR}"
 
 echo "==> dist/:"
 ls -la "${DIST_DIR}"

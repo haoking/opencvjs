@@ -36,9 +36,28 @@
 基准的 1.5 倍）；`replaceMatOnCol` / `addOnCol` 反而快了约 11%（`this.rows` 由每轮
 读取改为循环外读一次）。`DATA()` / `PTR()` 保持裸访问器语义，不查边界。
 
+### TypeScript 类型声明（`dist/index.d.ts`）
+
+新增 `package.json` 的 `types` 字段。声明**由构建产物自动 dump**（`build/gen-types.js`，
+`build/assemble.sh` 组装时执行），不是手写的：顶层符号取自运行时的 `Object.keys(cv)`
+（1450 个），Mat 成员取自其整条原型链（75 个，含 embind 的 `delete` / `isDeleted` /
+`deleteLater` / `isAliasOf`——它们在 `ClassHandle.prototype` 上，只 dump
+`Mat.prototype` 会漏掉）。
+
+`test/types/dts-consistency.test.js` 双向断言声明的符号集与运行时严格相等。这条断言
+是这件事的全部意义：生态里现有的 OpenCV.js 声明（`@opencvjs/types`、TechStark 的
+`src/`）声明了运行时没有的 `SIFT` / `PCA` / `FlannBasedMatcher`，又漏掉了确实存在的
+`FaceDetectorYN`，结果是代码通过类型检查、运行时才抛异常。
+
+范围：只保证**符号存在性**与运行时一致；未逐条标注的原生绑定是
+`(...args: any[]): any`（精确到每个参数需要解析 C++ 签名并复现 embind 的重载分发，
+超出本项目范围），本项目自己写的扩展层有准确签名。本产物**没有** `Symbol.dispose`
+（实测 Mat 原型链上无任何 symbol 属性），所以用不了 TS 5.2 的 `using`。
+
 ### 测试
 
-135 项 → 173 项（172 pass / 1 skip / 0 fail）：新增 38 项参数校验用例。
+135 项 → 179 项（178 pass / 1 skip / 0 fail）：新增 38 项参数校验用例、
+6 项 `.d.ts` 与运行时一致性用例。
 
 ## 2.0.0 — 2026-07-28
 

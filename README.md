@@ -46,11 +46,17 @@ extension layer as separate modules under `src/js/`.
       emscripten rethrows it as a **bare number** (`throw 1914504` — not an `Error`, `e.message`
       is `undefined`), while a bad row/column index does not fail at all and silently writes past
       the end of the Mat
+- [x] **TypeScript declarations generated from the artifact itself**, not hand-written:
+      `dist/index.d.ts` dumps `Object.keys(cv)` and Mat's prototype chain, and a test asserts the
+      declared symbol set equals the runtime one **in both directions**. The `.d.ts` files in the
+      ecosystem declare `SIFT` / `PCA` / `FlannBasedMatcher`, which this build does not have, and
+      omit `FaceDetectorYN`, which it does — so code type-checks and then throws at runtime
 - [x] Zero runtime dependencies, zero test dependencies (`node:test` only)
-- [x] `npm test` runs 173 assertions (172 pass / 1 skip / 0 fail, node v22.22.2): 84 region-op
+- [x] `npm test` runs 179 assertions (178 pass / 1 skip / 0 fail, node v22.22.2): 84 region-op
       correctness cases across 7 depths × 4 channel counts × 3 APIs, 29 `clone()` deep-copy and
       copy-semantics cases, 21 regression cases for the defects 2.0 fixed, 38 argument-validation
-      cases, and 1 wasm-artifact smoke test that is skipped unless `OPENCV_ARTIFACT` is set
+      cases, 6 `.d.ts`-vs-runtime consistency cases, and 1 wasm-artifact smoke test that is
+      skipped unless `OPENCV_ARTIFACT` is set
 - [x] `npm run bench` gates region-op performance: `roiClone()` 14.6–14.8 ms vs the native
       `roi()` + `clone()` it wraps 13.7–14.3 ms (20000 iterations, 64×64 `CV_32FC1`,
       `Rect(1, 1, 32, 32)`, node v22.22.2 / darwin-arm64)
@@ -101,8 +107,41 @@ const loadCV = require("@haoking/opencvjs");
 > 本项目第一次 CI 冒烟测试就是这么挂掉的。
 
 包里的 `dist/` 是扁平布局：`index.js`（入口）、`opencv.js`（emscripten glue）、
-`opencv_js.wasm`，以及五个扩展模块。glue 在 Node 下按 `__dirname` 定位 `.wasm`，
-所以三者必须留在同一个目录里，文件名也不能改。
+`opencv_js.wasm`，以及五个扩展模块和 `index.d.ts`。glue 在 Node 下按 `__dirname`
+定位 `.wasm`，所以三者必须留在同一个目录里，文件名也不能改。
+
+### TypeScript
+
+`package.json` 的 `types` 指向 `dist/index.d.ts`，装完即可用，不需要
+`@types/*`：
+
+```typescript
+import loadOpenCV = require("@haoking/opencvjs");
+
+const cv = await loadOpenCV();
+const mat = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+const roi = mat.roiClone(new cv.Rect(1, 1, 2, 2)); // roi: Mat
+const data: Float32Array = roi.data32F;
+(mat.delete(), roi.delete());
+```
+
+这份声明**由构建产物自动 dump**（`build/gen-types.js`，组装时执行），不是手写的：
+顶层符号来自运行时的 `Object.keys(cv)`，Mat 成员来自其整条原型链，
+`test/types/dts-consistency.test.js` 双向断言两个集合严格相等。
+
+> ℹ️ **为什么要这么做**：生态里现有的 OpenCV.js 声明（`@opencvjs/types`、TechStark 的
+> `src/`）与运行时不符——声明了运行时没有的 `SIFT` / `PCA` / `FlannBasedMatcher`，
+> 又漏掉了确实存在的 `FaceDetectorYN`。血统能追到 2019 年的 mirada，此后靠人手维护。
+> 后果是最难受的那种：**代码通过类型检查，然后运行时抛异常。**
+
+范围与限制：
+
+- **保证**符号存在性与运行时严格一致（1450 个顶层符号、75 个 Mat 成员，实测）。
+- **不保证**每个原生函数的参数类型精确——那需要解析 OpenCV 的 C++ 签名并复现 embind
+  的重载分发规则，超出本项目范围。未逐条标注的原生绑定一律是 `(...args: any[]): any`。
+  本项目自己写的扩展层（`roiClone` / `DATA` / `PTR` / `replaceMatOn*` 等）有准确签名。
+- **没有 `Symbol.dispose`**，所以用不了 TS 5.2 的 `using`（实测本产物的 Mat 原型链上
+  没有任何 symbol 属性）。Mat 一律由调用方显式 `delete()`。
 
 ### Build from source
 
@@ -110,8 +149,8 @@ const loadCV = require("@haoking/opencvjs");
 
 ```bash
 ./build/build.sh          # Docker + emsdk 构建 OpenCV → build/out/baseline/
-npm run assemble          # build/out/baseline + src/js/ → dist/
-npm test                  # 173 项
+npm run assemble          # build/out/baseline + src/js/ → dist/（含 index.d.ts）
+npm test                  # 179 项
 npm run bench             # 性能门禁
 ```
 
