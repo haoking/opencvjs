@@ -62,9 +62,18 @@ test(
       `opencv.js 有 ${(jsSize / 1048576).toFixed(1)}MB —— wasm 可能仍被 base64 内联进了 JS`,
     );
 
+    // 加载就绪的判据只能是 cv.Mat 是否可用，不能看 onRuntimeInitialized 是否存在。
+    // 实测（2026-07-28 首次真实构建产物）：新 wasm 产物的 require() 返回 Promise，
+    // await 后 29ms 即就绪、cv.Mat 已是 function，但 emscripten **同时保留了
+    // cv.onRuntimeInitialized 这个属性**。原判据写作
+    //   typeof cv.onRuntimeInitialized === "function" || !cv.Mat
+    // 时第一个子条件恒为真，于是即便已经就绪也会进入下面那个 Promise 等待，
+    // 而此时初始化早已完成、回调永不再触发 —— 事件循环空转后被 Node 判为
+    // failureType: 'cancelledByParent'（"Promise resolution is still pending
+    // but the event loop has already resolved"）。首次 CI 构建正是栽在这里。
     const mod = require(jsPath);
     const cv = typeof mod.then === "function" ? await mod : mod;
-    if (typeof cv.onRuntimeInitialized === "function" || !cv.Mat) {
+    if (typeof cv.Mat !== "function") {
       await new Promise((resolve) => {
         cv.onRuntimeInitialized = resolve;
       });
