@@ -23,6 +23,16 @@ But much more performance improved.
 
 以下问题已知存在，修复排期见 `docs/superpowers/specs/2026-07-27-opencvjs-rebuild-design.md`：
 
+- **【1.0.0 破坏性变更】多通道 Mat 上 `roi()` / `col()` / `Diag()` 返回的是独立副本，不再是原生视图。**
+  此前 `channels() > 1` 时这三个方法直接返回 OpenCV 原生视图（与源 Mat 共享内存、O(1)），
+  但视图非连续，读它的 `.data*` 会得到错误数据——改为 `clone()` 正是为了修掉这个。
+  代价是 `mat.roi(rect).setTo(...)` 一类「通过返回值写回源 Mat」的写法**不再影响源 Mat，
+  且不会报任何错**；性能上，256×256 `CV_32FC2` 取 `Rect(0, 0, 128, 128)` 5000 次，
+  原生视图 1.4 ms vs 现在的副本 57.0 ms，慢约 41×（node v22.22.2 / darwin-arm64，
+  4 次独立测量 40.7–41.7×；另一次独立测量得 48.5×）。
+  需要视图语义请改用未被覆盖的原生方法 `_roi()` / `_col()` / `diag()`，
+  但只用它写回源 Mat——对多通道 Mat 读视图的 `.data*` 仍然是错的。
+  单通道路径此前走 cvtColor 往返，本来就产出副本，语义不变。
 - `mds()` 不可用（内部取到函数对象而非数据）。
 - `mulSpectrums()` 返回 `NaN`。
 - `replaceMatOnPoint()` 的实际签名是 `(value, x, y)`，与本文档中的 `(value, point)` 不符。
