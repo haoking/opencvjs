@@ -46,16 +46,44 @@ jobs:
             exit 1
           fi
           echo "使用 build-wasm 运行 #$run_id 的产物"
+          # 两个变体都要取。--status success 是整趟 run 的结论，而 build-wasm.yml
+          # 的矩阵是 fail-fast: false ——任一变体失败都会把整个 run 判为 failure，
+          # 所以「success」这个筛选条件已经蕴含了三个变体全部成功。
+          # 单文件变体（opencv-wasm-singlefile）刻意不取：它不进 npm 包，
+          # build/assemble.sh 也会拒绝把内联了 wasm 的 glue 组装进 dist/。
           gh run download "$run_id" --name opencv-wasm-baseline --dir build/out/baseline
-          ls -la build/out/baseline
+          gh run download "$run_id" --name opencv-wasm-simd --dir build/out/simd
+          ls -la build/out/baseline build/out/simd
 
       - name: 组装 dist/
+        env:
+          # 缺 simd 时从「警告并继续」升级为「直接失败」：这条链路本来就该有两个
+          # 变体，组装出一份只有 baseline 的 dist/ 然后照常报绿，就是会说谎的绿灯。
+          OPENCV_REQUIRE_SIMD: "1"
         run: npm run assemble
 
-      - name: 运行测试
+      # 同一套断言在两个变体上各跑一遍。这是「SIMD 版本没算错」的主要保证：
+      # 变体选择由 OPENCV_SIMD 强制，而被显式点名的变体若不存在，dist/index.js
+      # 会抛错而不是悄悄回落——否则「强制 SIMD 跑一遍」可能实际测的是 baseline。
+      - name: 运行测试（强制 baseline）+ 双产物一致性
+        env:
+          OPENCV_SIMD: "0"
+          # 一致性测试在 dist/simd/ 缺失时默认跳过；这里声明「必须真跑」。
+          # 只挂在这一步上，跑一遍就够——它内部是子进程加载两个变体做对比，
+          # 与外层 OPENCV_SIMD 取什么值无关。
+          OPENCV_PARITY_REQUIRED: "1"
+        run: npm test
+
+      - name: 运行测试（强制 simd）
+        env:
+          OPENCV_SIMD: "1"
         run: npm test
 
       - name: 性能门禁
-        # 只在一个 Node 版本上跑，避免 CI runner 抖动导致误报
+        # 只在一个 Node 版本上跑，避免 CI runner 抖动导致误报。
+        # 钉在 baseline 上：两个门禁比的都是「被测实现 vs 同进程内的参照实现」，
+        # 用哪个变体跑都成立，但钉死一个变体才能让历次运行打印的绝对毫秒数可比。
         if: matrix.node == '22'
+        env:
+          OPENCV_SIMD: "0"
         run: npm run bench
