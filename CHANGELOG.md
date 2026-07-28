@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+> ⚠️ 本节的改动**尚未发布**。`2.0.0` 已经发出去了，所以这些语义变更不能追记进下面
+> 那个 `2.0.0` 小节——那等于声称它们在 2.0.0 里就有，而用户 `npm install` 装到的
+> 2.0.0 里并没有。按 semver，带着下面这张表的下一个版本应当是 **major**。
+
+### 破坏性变更
+
+下面这些调用此前要么 abort（抛出的是裸数字，不是 `Error`）、要么静默产出错误数据。
+没有一条是「原本能正确工作」的用法，但它们都会改变现有代码的**运行时行为**——把
+静默的错误结果换成显式的抛出，因此按破坏性变更记录。
+
+| 调用                                         | 此前                     | 现在         |
+| -------------------------------------------- | ------------------------ | ------------ |
+| `mat.addConstant(undefined)` / `NaN` / `"2"` | 整片 NaN / 静默截断      | `TypeError`  |
+| `mat.colClone(1.5)`                          | 静默取第 1 列            | `TypeError`  |
+| `mat.replaceMatOnRow([1], 0)`（数组短）      | 缺的位置写成 NaN / 0     | `RangeError` |
+| `mat.addOnCol(1, 7)`（列越界）               | 静默改写堆内存           | `RangeError` |
+| `cv.matFromArray(3, 3, CV_32FC1, [1, 2, 3])` | 剩余部分是未初始化堆内存 | `RangeError` |
+| `mat.dftSplit()`（多通道）                   | 只读通道 0，静默返回垃圾 | `TypeError`  |
+| `mat.dftSplit()`（空 Mat 上）                | 静默越界写堆             | `RangeError` |
+| `mat.PTR(9, 9)`（3×3 上）                    | 静默读写别人的堆内存     | `RangeError` |
+| `mat.PTR(1.5, 0)`                            | 静默截断成第 1 行        | `TypeError`  |
+| `mat.PTR(0, -1)`                             | 被当成「取整行」的哨兵   | `RangeError` |
+
+两条需要展开：
+
+**`mat.PTR(row, col)` 的负列号。** `col` 的缺省值原本写作 `-1`、判据是 `col < 0`，于是
+**任何**负列号都会被当成「取整行」，而不是报错。缺省值已改为 `undefined`：`PTR(row)`
+与 `PTR(row, undefined)` 照旧取整行，负列号则如实报越界。`-1` 这个哨兵从未出现在
+文档或任何调用方里，但它确实是能改变用户代码行为的语义变更。
+
+**空 Mat 上的 `mat.dftSplit()`。** 它内部无条件写 `PTR(0, 0)`，在 `0×0` 或 `0×N` 的 Mat
+上此前是一次静默的越界写；现在抛
+`RangeError: Mat.PTR(row, col): row = 0 越界 —— 该 Mat 在这个方向上是空的（长度 0）`。
+（`dftSplit` 本就标着 `@deprecated`，正确性没有任何证据支撑。）
+
 ### 参数前置校验（`src/js/guards.js`）
 
 扩展层的每个方法、以及 `Mat.PTR()` 本身，现在都在**调用 wasm 之前**校验参数，失败时
@@ -19,24 +54,7 @@
    （36 字节）上 `PTR(9, 9)` 返回 base+144 字节处的视图，读写落在别人的堆上、不报错。
    `replaceMatOnRect` 等 7 个就地写入方法全由 `PTR()` 逐像素驱动。
 
-**行为变更**（此前这些调用要么 abort、要么静默产出错误数据，因此不认为是回归）：
-
-| 调用                                         | 此前                     | 现在         |
-| -------------------------------------------- | ------------------------ | ------------ |
-| `mat.addConstant(undefined)` / `NaN` / `"2"` | 整片 NaN / 静默截断      | `TypeError`  |
-| `mat.colClone(1.5)`                          | 静默取第 1 列            | `TypeError`  |
-| `mat.replaceMatOnRow([1], 0)`（数组短）      | 缺的位置写成 NaN / 0     | `RangeError` |
-| `mat.addOnCol(1, 7)`（列越界）               | 静默改写堆内存           | `RangeError` |
-| `cv.matFromArray(3, 3, CV_32FC1, [1, 2, 3])` | 剩余部分是未初始化堆内存 | `RangeError` |
-| `mat.dftSplit()`（多通道）                   | 只读通道 0，静默返回垃圾 | `TypeError`  |
-| `mat.PTR(9, 9)`（3×3 上）                    | 静默读写别人的堆内存     | `RangeError` |
-| `mat.PTR(1.5, 0)`                            | 静默截断成第 1 行        | `TypeError`  |
-| `mat.PTR(0, -1)`                             | 被当成「取整行」的哨兵   | `RangeError` |
-
-最后一条要展开说明：`PTR(row, col)` 的 `col` 缺省值原本写作 `-1`、判据是 `col < 0`，
-于是任何负列号都会被当成「取整行」。缺省值已改为 `undefined`——`PTR(row)` 与
-`PTR(row, undefined)` 照旧取整行，负列号则如实报越界。`-1` 这个哨兵从未出现在文档
-或任何调用方里。
+这批校验带来的行为变更全部列在上面的「破坏性变更」小节里。
 
 **每个下标只校验一次，不逐像素重复校验。** `rows` / `cols` 是 embind getter，每读一次
 都是一次跨语言调用（各约 11 ns），所以：`PTR()` 自己查边界，代价实测 +49%
@@ -51,8 +69,13 @@
 | 现在：入口校验 + 循环用原生访问器 | 176.73 ms | **−11%**   |
 
 比旧实现还快，是因为顺带把逐像素的 `depth()` 调用（约 5.7 ns/次）也提到了循环外。
-`npm run bench`（20000 次 `roiClone`，不经过 `PTR`）13.1 ms 基准 vs 14.1 ms 实测，
-阈值 19.6 ms，通过。
+
+新增性能门禁 `test/bench/inplace-ops.bench.js`，专门盯住这个分工：它拿「循环走原生
+访问器」的参照实现当基准，被测实现超过 1.5× 即失败。原有的
+`test/bench/region-ops.bench.js` 覆盖不到这里——它测的是 `roiClone()`，而 `roiClone()`
+内部是「原生 roi + clone」，根本不经过 `PTR`、也不逐像素循环。实测把 `rectAdd` 的循环
+改回调 `PTR` 之后：新门禁以退出码 1 失败并打印 `1.96x`，旧门禁照样打印「✅ 性能达标」
+并退出码 0。`npm run bench` 现在按 glob 跑 `test/bench/*.bench.js` 下的全部门禁。
 
 ### TypeScript 类型声明（`dist/index.d.ts`）
 

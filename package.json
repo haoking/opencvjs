@@ -7,7 +7,7 @@
   "scripts": {
     "assemble": "build/assemble.sh",
     "test": "ls test/*/*.test.js >/dev/null && node --test test/*/*.test.js",
-    "bench": "node test/bench/region-ops.bench.js",
+    "bench": "ls test/bench/*.bench.js >/dev/null && for f in test/bench/*.bench.js; do node \"$f\" || exit 1; done",
     "prepack": "test -f dist/index.js && test -f dist/opencv_js.wasm && test -f dist/index.d.ts || { echo '❌ dist/ 未组装：先跑 npm run assemble'; exit 1; }"
   },
   "files": [

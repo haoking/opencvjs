@@ -57,9 +57,13 @@ extension layer as separate modules under `src/js/`.
       copy-semantics cases, 21 regression cases for the defects 2.0 fixed, 48 argument-validation
       cases, 6 `.d.ts`-vs-runtime consistency cases, and 1 wasm-artifact smoke test that is
       skipped unless `OPENCV_ARTIFACT` is set
-- [x] `npm run bench` gates region-op performance: `roiClone()` 14.6–14.8 ms vs the native
-      `roi()` + `clone()` it wraps 13.7–14.3 ms (20000 iterations, 64×64 `CV_32FC1`,
-      `Rect(1, 1, 32, 32)`, node v22.22.2 / darwin-arm64)
+- [x] `npm run bench` runs two performance gates, each comparing the shipped method against the
+      primitive it is built on (alternating rounds, warm-up round discarded, minimum taken):
+      `region-ops` — `roiClone()` 14.6–14.8 ms vs the native `roi()` + `clone()` it wraps
+      13.7–14.3 ms (20000 iterations, 64×64 `CV_32FC1`, `Rect(1, 1, 32, 32)`); `inplace-ops` —
+      the five per-pixel write methods vs a raw-accessor reference loop, which catches the one
+      shortcut that would otherwise slip through: routing those loops back through `PTR()` costs
+      **1.8–2.1x** and `region-ops` cannot see it (`roiClone` never touches `PTR`)
 
 ## Known Issues
 
@@ -151,7 +155,7 @@ const data: Float32Array = roi.data32F;
 ./build/build.sh          # Docker + emsdk 构建 OpenCV → build/out/baseline/
 npm run assemble          # build/out/baseline + src/js/ → dist/（含 index.d.ts）
 npm test                  # 189 项
-npm run bench             # 性能门禁
+npm run bench             # 两个性能门禁（test/bench/*.bench.js 全跑）
 ```
 
 `npm run assemble` 也接受一个目录参数（例如 CI 下载下来的产物目录）：
