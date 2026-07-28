@@ -8,3 +8,8 @@ build/out/
 .env
 .env.*
 !.env.example
+
+# 1.x 的 asm.js 单文件产物（13.9 MB，OpenCV 4.0.1）。
+# 2.0 起改用 dist/ 下的 WASM 拆分产物，此文件不再参与构建或测试。
+# 仍保留在 git 历史中：v1.0.0 tag 的 package.json main 字段指向它。
+opencv.js
