@@ -66,8 +66,11 @@ module.exports = function applyTypedAccess(cv, guards) {
    *     PTR(row) 行形式   101.4 → 132.6 ms / 200 万次   +31%（+15.6 ns/次）
    * 也就是说这层校验**不便宜**。所以扩展层内部那些逐像素的双重循环不走 PTR()，
    * 而是用下面的 rawPtr() 在循环外取一次访问器名 —— 它们的下标已经由各自的入口
-   * 校验证明在范围内，再逐像素查一遍纯属重复（实测那样会让 replaceMatOnRect
-   * 慢 38%）。
+   * 校验证明在范围内，再逐像素查一遍纯属重复：实测那样会让这些方法慢 **1.8–2.1x**。
+   *
+   * 这个倍数**不要在注释里各写各的**（这里曾经写成 38%，那是另一组对照的数字，
+   * 差了将近一倍）。`npm run bench` 的 inplace-ops 门禁每次运行都会打印
+   * 「退化参照（循环调 PTR）」那一行，以它为准。
    */
   cv.Mat.prototype.PTR = function PTR(row, col) {
     const where = "Mat.PTR(row, col)";
@@ -94,13 +97,15 @@ module.exports = function applyTypedAccess(cv, guards) {
      * 它跳过的是 PTR() 的边界校验，**不是**放弃校验：调用它的每个方法都已经在
      * 入口用 guards 证明了整个循环的下标范围合法。顺带也把逐像素的 depth()
      * 调用（约 5.7 ns/次）提到了循环外。
+     *
+     * where 由调用方传入：深度不支持时要报的是**调用方**的名字。写死成
+     * "Mat.PTR(row, col)" 会让 replaceMatOnRect 里的失败谎称来自 PTR，
+     * 与本层「指名道姓报出是哪个函数的哪个参数」的目标正好相反。
      */
-    rawPtr(mat) {
+    rawPtr(mat, where) {
       const method = PTR_BY_DEPTH[mat.depth()];
       if (method === undefined) {
-        throw new TypeError(
-          `Mat.PTR(row, col): 不支持的 Mat depth ${mat.depth()}`,
-        );
+        throw new TypeError(`${where}: 不支持的 Mat depth ${mat.depth()}`);
       }
       return method;
     },

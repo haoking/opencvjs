@@ -244,10 +244,10 @@ const CASES = [
     needs: ["Mat.addOnCol(constant, col)", "col = 7"],
   },
   {
-    name: "addOnCol 的常数不是有限数",
+    name: "addOnCol 的常数不是数",
     call: (cv, m) => m.addOnCol(undefined, 0),
     error: TypeError,
-    needs: ["constant 必须是有限数", "undefined"],
+    needs: ["constant 必须是数", "undefined"],
   },
   {
     name: "replaceMatOnPoint 的行列越界",
@@ -266,25 +266,25 @@ const CASES = [
     name: "addConstant 收到 undefined（原本静默产出整片 NaN）",
     call: (cv, m) => m.addConstant(undefined),
     error: TypeError,
-    needs: ["Mat.addConstant(constant)", "有限数", "undefined"],
+    needs: ["Mat.addConstant(constant)", "NaN 除外", "undefined"],
   },
   {
     name: "mulConstant 收到 NaN",
     call: (cv, m) => m.mulConstant(NaN),
     error: TypeError,
-    needs: ["有限数", "number NaN"],
+    needs: ["NaN 除外", "number NaN"],
   },
   {
     name: "constantDivide 收到字符串",
     call: (cv, m) => m.constantDivide("2"),
     error: TypeError,
-    needs: ["有限数", 'string "2"'],
+    needs: ["NaN 除外", 'string "2"'],
   },
   {
-    name: "constantSubtract 收到 Infinity",
-    call: (cv, m) => m.constantSubtract(Infinity),
+    name: "addOnCol 的常数是 NaN",
+    call: (cv, m) => m.addOnCol(NaN, 0),
     error: TypeError,
-    needs: ["有限数", "Infinity"],
+    needs: ["Mat.addOnCol(constant, col)", "number NaN"],
   },
   // —— norm2 的尺寸 / 类型不匹配（加 guards 前：cv.subtract abort，裸数字）——
   {
@@ -517,6 +517,75 @@ test("guards: 贴边但合法的输入不受影响", async () => {
 // 就地写入的那批方法在**入口**就把下标校验掉了，循环里走的是 access.rawPtr() 取到
 // 的原生访问器，不再逐像素过 PTR()。这两条守卫钉住这个分工的两端。
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// ±Infinity 必须放行。
+//
+// 这是一次真实的误伤：guards.number 起初图省事写成 `Number.isFinite`，把 ±Infinity
+// 和 NaN 一起拒了。可 ±Infinity 是合法的 IEEE-754 值，加 guards 之前它本来就工作
+// 得好好的（在 preguard 的产物上实测 addConstant(Infinity) 得到整片 Infinity），
+// 在代价图 / 距离图上还是标准哨兵。把原本正确的用法拒掉，就是这层校验最不该犯的错。
+//
+// 与 NaN 的区别是有意的：NaN 作为**运算数**没有正当用途，它会把整个 Mat 一次性毁掉，
+// 而那通常是上游已经出错的信号。
+// ---------------------------------------------------------------------------
+test("guards: ±Infinity 是合法运算数，不能被误伤", async () => {
+  const cv = await getCv();
+  const mk = () => cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
+  const out = [];
+  try {
+    const a = mk();
+    out.push(a);
+    const r1 = a.addConstant(Infinity);
+    out.push(r1);
+    assert.deepStrictEqual(Array.from(r1.DATA()), [
+      Infinity,
+      Infinity,
+      Infinity,
+      Infinity,
+    ]);
+
+    const r2 = a.mulConstant(-Infinity);
+    out.push(r2);
+    assert.deepStrictEqual(Array.from(r2.DATA()), [
+      -Infinity,
+      -Infinity,
+      -Infinity,
+      -Infinity,
+    ]);
+
+    const b = mk();
+    out.push(b);
+    b.addOnCol(Infinity, 0);
+    assert.deepStrictEqual(Array.from(b.DATA()), [Infinity, 2, Infinity, 4]);
+
+    const c = mk();
+    out.push(c);
+    c.replaceMatOnPoint(-Infinity, 0, 0);
+    assert.deepStrictEqual(Array.from(c.DATA()), [-Infinity, 2, 3, 4]);
+
+    // NaN 仍然拒 —— 两条边界是分开定的，不是一句 isFinite 顺手带出来的
+    assert.throws(() => mk().addConstant(NaN), TypeError);
+  } finally {
+    for (const m of out) m.delete();
+  }
+});
+
+test("guards: 写进数据里的 NaN / Infinity 不受限制（运算数与数据的区别）", async () => {
+  const cv = await getCv();
+  const mat = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
+  try {
+    // arrayLike 只查长度、不查元素值：往指定像素写 NaN 表示「此处无效」是正当写法。
+    // 这条不对称是有意的，别在后续改动里「顺手统一」掉。
+    mat.replaceMatOnRow([Infinity, NaN], 0);
+    const got = Array.from(mat.DATA());
+    assert.strictEqual(got[0], Infinity);
+    assert.ok(Number.isNaN(got[1]));
+    assert.deepStrictEqual(got.slice(2), [3, 4]);
+  } finally {
+    mat.delete();
+  }
+});
+
 test("guards: 就地写入方法报的是自己的函数名，不是 Mat.PTR", async () => {
   const cv = await getCv();
   const mat = mat3(cv);
@@ -570,8 +639,8 @@ test("guards: 逐像素循环不经过 PTR()（经过就是每像素多两次 em
   const src = cv.matFromArray(2, 2, cv.CV_32FC1, [10, 20, 30, 40]);
   const realPTR = cv.Mat.prototype.PTR;
   // 把 PTR 换成地雷：循环里只要碰它一次就炸。这是唯一能观察到「循环走没走
-  // rawPtr」的办法，而这正是最容易被后来的改动悄悄改回去的地方——实测走 PTR
-  // 会让 replaceMatOnRect 慢 82%（同进程轮换 6 轮、丢首轮、取最小值）。
+  // rawPtr」的办法，而这正是最容易被后来的改动悄悄改回去的地方——走 PTR 会让
+  // 这些方法慢 1.8–2.1x，倍数见 test/bench/inplace-ops.bench.js 的门禁输出。
   cv.Mat.prototype.PTR = function () {
     throw new Error("循环里调了 PTR()");
   };

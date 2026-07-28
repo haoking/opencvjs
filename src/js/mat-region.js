@@ -13,8 +13,10 @@
  * 访问器名。
  *
  * 为什么不在循环里调 PTR()（它自己也查边界）：那是重复校验，而且不便宜——它要
- * 逐像素多读 this.rows / this.cols 两个 embind getter，实测让 replaceMatOnRect
- * 慢 38%。数据见 typed-access.js 里 PTR() 上方的注释。
+ * 逐像素多读 this.rows / this.cols 两个 embind getter，实测让这些方法慢
+ * **1.8–2.1x**。这个倍数以 `npm run bench` 的 inplace-ops 门禁每次打印的
+ * 「退化参照（循环调 PTR）」为准，别在注释里另抄一份（这里曾经写成 38%，那是
+ * 另一组对照的数字，差了将近一倍）。
  */
 
 /**
@@ -66,8 +68,8 @@ module.exports = function applyMatRegion(cv, guards, access) {
     guards.mat(src1, "src", where);
     guards.rect(this, rect, where);
     guards.covers(src1, rect, "src", where);
-    const dstPtr = access.rawPtr(this);
-    const srcPtr = access.rawPtr(src1);
+    const dstPtr = access.rawPtr(this, where);
+    const srcPtr = access.rawPtr(src1, where);
     for (let i = 0; i < rect.height; i += 1) {
       for (let j = 0; j < rect.width; j += 1) {
         this[dstPtr](i + rect.y, j + rect.x)[0] = src1[srcPtr](i, j)[0];
@@ -99,7 +101,7 @@ module.exports = function applyMatRegion(cv, guards, access) {
     guards.index(d, this.cols, "col", where);
     const rows = this.rows;
     guards.arrayLike(arr, rows, "arr", where);
-    const ptr = access.rawPtr(this);
+    const ptr = access.rawPtr(this, where);
     for (let i = 0; i < rows; i += 1) {
       this[ptr](i, d)[0] = arr[i];
     }
@@ -147,7 +149,7 @@ module.exports = function applyMatRegion(cv, guards, access) {
     guards.number(constant, "constant", where);
     guards.index(d, this.cols, "col", where);
     const rows = this.rows;
-    const ptr = access.rawPtr(this);
+    const ptr = access.rawPtr(this, where);
     for (let i = 0; i < rows; i += 1) {
       this[ptr](i, d)[0] += constant;
     }
@@ -160,8 +162,8 @@ module.exports = function applyMatRegion(cv, guards, access) {
     guards.mat(src1, "src", where);
     guards.rect(this, rect, where);
     guards.covers(src1, rect, "src", where);
-    const dstPtr = access.rawPtr(this);
-    const srcPtr = access.rawPtr(src1);
+    const dstPtr = access.rawPtr(this, where);
+    const srcPtr = access.rawPtr(src1, where);
     for (let i = 0; i < rect.height; i += 1) {
       for (let j = 0; j < rect.width; j += 1) {
         this[dstPtr](rect.y + i, rect.x + j)[0] += src1[srcPtr](i, j)[0];
@@ -176,8 +178,8 @@ module.exports = function applyMatRegion(cv, guards, access) {
     guards.mat(src1, "src", where);
     guards.rect(this, rect, where);
     guards.covers(src1, rect, "src", where);
-    const dstPtr = access.rawPtr(this);
-    const srcPtr = access.rawPtr(src1);
+    const dstPtr = access.rawPtr(this, where);
+    const srcPtr = access.rawPtr(src1, where);
     for (let i = 0; i < rect.height; i += 1) {
       for (let j = 0; j < rect.width; j += 1) {
         this[dstPtr](rect.y + i, rect.x + j)[0] -= src1[srcPtr](i, j)[0];

@@ -42,8 +42,9 @@
  *     实测 +49%（+23.7 ns/次）。
  *   - 扩展层内部的逐像素循环**不走 PTR()**，而是在入口用 guards 一次性证明整个
  *     循环的下标范围合法，循环里直接用 typed-access 的 rawPtr() 取到的原生访问器。
- *     不这么做的话，`replaceMatOnRect` 实测慢 82%（同进程轮换 6 轮、丢首轮、取最小
- *     值），因为每个像素都要多付两次 embind getter。
+ *     不这么做的话这些方法要慢 **1.8–2.1x**，因为每个像素都要多付两次 embind
+ *     getter。这个倍数不要在注释里各写各的：`npm run bench` 的 inplace-ops 门禁
+ *     每次运行都会打印「退化参照（循环调 PTR）」那一行，以它为准。
  *
  * 入口校验本身很便宜：一次 roiClone 的校验合计约 26 ns，对照该函数本身约 700 ns
  * 不足 4%，性能门禁（npm run bench，20000 次 roiClone）实测无可测退化。
@@ -105,11 +106,29 @@ module.exports = function applyGuards(cv) {
       return value;
     },
 
-    /** 必须是有限数（拒绝 NaN / ±Infinity / 非 number）。 */
+    /**
+     * 标量**运算数**：必须是 number 且不是 NaN。**±Infinity 是放行的。**
+     *
+     * 这两条边界是分开定的，不是一句 `Number.isFinite` 顺手带出来的：
+     *
+     *  - 非 number 一律拒。这才是真正要抓的 bug：`mat.addConstant(undefined)`
+     *    在 addWeighted 里一路算下去，返回一整个 NaN 的 Mat 且不报错。
+     *  - NaN 拒。作为运算数它没有任何正当用途——`x + NaN` / `x * NaN` 会把整个
+     *    Mat 一次性毁掉，而这正是上游某处已经出错的信号。
+     *  - **±Infinity 放行。** 它是合法的 IEEE-754 值，在代价图 / 距离图上是标准
+     *    哨兵。加 guards 之前它本来就工作得好好的（实测 CV_32FC1 上
+     *    `addConstant(Infinity)` 得到整片 Infinity、`mulConstant(-Infinity)` 得到
+     *    整片 -Infinity），拒掉它就是在砍一个原本正确的用法。曾经因为图省事写成
+     *    `Number.isFinite` 而误伤，已改回。
+     *
+     * ⚠️ 与 `arrayLike` 的不对称是**有意的**：这里校验的是**运算数**（一个标量
+     * 作用到整个 Mat 上），而 `arrayLike` 里流过的是**数据**（写进指定的若干格）。
+     * 往某些像素里写 NaN 表示「此处无效」是正当写法，所以那条路径不查元素值。
+     */
     number(value, label, where) {
-      if (typeof value !== "number" || !Number.isFinite(value)) {
+      if (typeof value !== "number" || Number.isNaN(value)) {
         throw new TypeError(
-          `${where}: ${label} 必须是有限数，实际收到 ${describe(value)}`,
+          `${where}: ${label} 必须是数（NaN 除外，±Infinity 可以），实际收到 ${describe(value)}`,
         );
       }
       return value;

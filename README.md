@@ -237,10 +237,25 @@ mat2.delete();
 > ⚠️ **每个下标只校验一次。** `rows` / `cols` 是 embind getter，每读一次都是一次跨
 > 语言调用——给 `PTR()` 加边界检查实测让它慢 49%（+23.7 ns/次）。所以扩展层内部
 > 那些逐像素的循环**不走 `PTR()`**：它们在入口用一次校验证明整个循环的下标范围
-> 合法，循环里直接用原生访问器。不这么分工的话 `replaceMatOnRect` 会慢 82%
-> （同进程轮换 6 轮、丢首轮、取最小值实测）。
+> 合法，循环里直接用原生访问器。不这么分工的话这些方法要慢 **1.8–2.1x**
+> （倍数以 `npm run bench` 的 inplace-ops 门禁每次打印的那一行为准）。
 >
 > `DATA()` 不收参数，没有可越界的入参。
+
+**标量运算数的取值范围**：`addConstant` / `constantSubtract` / `mulConstant` /
+`constantDivide` / `addOnCol` / `replaceMatOnPoint` 拒绝非数与 `NaN`，但**放行
+`±Infinity`** —— 它是合法的 IEEE-754 值，在代价图 / 距离图上是标准哨兵：
+
+```javascript
+let mat3 = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
+console.log("" + mat3.addConstant(Infinity).DATA()); //Infinity,Infinity,Infinity,Infinity
+mat3.delete();
+```
+
+写进**数据**里的 `NaN` / `Infinity` 完全不受限制（`replaceMatOnRow` / `replaceMatOnCol`
+只查数组长度、不查元素值）——往某些像素写 `NaN` 表示「此处无效」是正当写法。
+被拒的只有作为**运算数**的 `NaN`：`x + NaN` 会把整个 Mat 一次性毁掉，而那通常是
+上游已经出错的信号。
 
 ### Commonly
 
