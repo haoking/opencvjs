@@ -1,5 +1,6 @@
 # src/config/opencv_js.config.py 是从 OpenCV 上游逐字拷贝的白名单，
-# 只有两处有意改动（顶部注释 + 移除 dnn）。格式化它会破坏与上游的可比性：
+# 只有三处有意改动（顶部注释 + 移除 dnn + core 放行 mulSpectrums/SVDecomp）。
+# 格式化它会破坏与上游的可比性：
 # 跟进新版本时 diff 会被风格差异淹没，看不出真正的白名单变化。
 #
 # 这不是理论风险：2026-07-27 引入该文件时，全局 ruff format 钩子真实把它从
@@ -10,8 +11,9 @@
 #   curl -sL https://raw.githubusercontent.com/opencv/opencv/$(tr -d '[:space:]' \
 #     < build/opencv-version.txt)/platforms/js/opencv_js.config.py \
 #     | diff - src/config/opencv_js.config.py
-# 预期差异恒为两处：本仓库加的顶部注释块，以及末尾 makeWhiteList([...]) 少了 dnn。
-# 出现任何第三处差异，就说明它被格式化了（或上游改了白名单，需人工判断）。
+# 预期差异恒为三处：本仓库加的顶部注释块、末尾 makeWhiteList([...]) 少了 dnn、
+# 以及 core 的第一行多出 'mulSpectrums', 'SVDecomp'（紧邻 dft）。
+# 出现任何第四处差异，就说明它被格式化了（或上游改了白名单，需人工判断）。
 #
 # force-exclude 是必需的——没有它，ruff 在被显式传入文件路径时会忽略 exclude，
 # 而格式化钩子正是显式传路径的。
