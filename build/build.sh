@@ -10,7 +10,7 @@
 #                         只支持单个 -D 值(build_js.py 的 --cmake_option 是
 #                         "append" 型参数,每个 -D 都要单独一个 --cmake_option;
 #                         这里没有做多值拆分)。如需一次传多个,请扩展本脚本。
-#                         默认不设置的原因见下方 CMAKE_OPTION_ARG 注释。
+#                         默认不设置的原因见下方 --cmake_option 透传逻辑的注释。
 #
 # 产物: build/out/<baseline|simd>/opencv.js + opencv_js.wasm
 #
@@ -63,10 +63,6 @@ fi
 # - 本任务的目标是先把构建链路跑通,体积优化留到链路打通之后再试。因此默认
 #   不传任何 --cmake_option,只留这一个入口给以后需要时使用。
 : "${EXTRA_CMAKE_OPTIONS:=}"
-CMAKE_OPTION_ARG=""
-if [[ -n "${EXTRA_CMAKE_OPTIONS}" ]]; then
-  CMAKE_OPTION_ARG="--cmake_option=\"${EXTRA_CMAKE_OPTIONS}\""
-fi
 
 echo "==> OpenCV ${OPENCV_VERSION}, 变体: ${BUILD_SUBDIR}"
 if [[ -n "${EXTRA_CMAKE_OPTIONS}" ]]; then
@@ -77,23 +73,45 @@ docker build -t "${IMAGE_TAG}" -f "${REPO_ROOT}/build/Dockerfile" "${REPO_ROOT}"
 
 mkdir -p "${OUT_DIR}/${BUILD_SUBDIR}"
 
+#   下面这段容器内脚本用单引号整体传给内层 bash -c——外层 shell 不对其做任何
+#   变量展开，脚本文本本身是纯字面量。OPENCV_VERSION/SIMD_FLAG/EXTRA_CMAKE_OPTIONS
+#   一律通过位置参数（$1/$2/$3，紧跟在单引号脚本之后的 `bash "${...}"...`）
+#   传入，内层脚本只以 "$1"/"$2"/"$3" 引用、装进数组再展开(`"${arr[@]}"`)。
+#   这样即便 EXTRA_CMAKE_OPTIONS 里含引号、分号、$() 等 shell 元字符，也只是
+#   不透明的字符串数据，不会被内层 bash 当脚本语法二次解析——消除了旧写法
+#   （把值拼进双引号字符串再整体喂给 bash -c）天然带有的注入面。
 docker run --rm \
   -v "${REPO_ROOT}/src/config:/config:ro" \
   -v "${OUT_DIR}/${BUILD_SUBDIR}:/out" \
   "${IMAGE_TAG}" \
-  bash -euo pipefail -c "
-    git clone --depth 1 --branch ${OPENCV_VERSION} https://github.com/opencv/opencv.git /work/opencv
+  bash -euo pipefail -c '
+    opencv_version="$1"
+    simd_flag="$2"
+    extra_cmake_options="$3"
+
+    git clone --depth 1 --branch "${opencv_version}" https://github.com/opencv/opencv.git /work/opencv
     cd /work/opencv
-    python3 ./platforms/js/build_js.py /work/build_js \
-      --build_wasm \
-      --disable_single_file \
-      --config /config/opencv_js.config.py \
-      --emscripten_dir \$EMSDK/upstream/emscripten \
-      ${SIMD_FLAG} \
-      ${CMAKE_OPTION_ARG}
+
+    build_js_args=(
+      /work/build_js
+      --build_wasm
+      --disable_single_file
+      --config
+      /config/opencv_js.config.py
+      --emscripten_dir
+      "$EMSDK/upstream/emscripten"
+    )
+    if [[ -n "${simd_flag}" ]]; then
+      build_js_args+=("${simd_flag}")
+    fi
+    if [[ -n "${extra_cmake_options}" ]]; then
+      build_js_args+=("--cmake_option=${extra_cmake_options}")
+    fi
+
+    python3 ./platforms/js/build_js.py "${build_js_args[@]}"
     cp -v /work/build_js/bin/opencv.js      /out/
     cp -v /work/build_js/bin/opencv_js.wasm /out/
-  "
+  ' bash "${OPENCV_VERSION}" "${SIMD_FLAG}" "${EXTRA_CMAKE_OPTIONS}"
 
 echo "==> 产物:"
 ls -la "${OUT_DIR}/${BUILD_SUBDIR}"
