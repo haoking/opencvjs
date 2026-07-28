@@ -5,6 +5,11 @@ on:
     branches: [master, rebuild-2.0]
   pull_request:
 
+# gh run list/download 要读别的 workflow 的运行记录与产物。
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -19,6 +24,33 @@ jobs:
           node-version: ${{ matrix.node }}
 
       # 测试栈零依赖，无需 npm install
+
+      # 2.0 起测试跑在**组装后的 dist/** 上（wasm 产物 + src/js/ 扩展层），
+      # 而 wasm 产物不入 git。这里取 build-wasm.yml 最近一次成功运行上传的那份
+      # ——也正是被那条 workflow 的冒烟测试验过的同一份产物。
+      #
+      # 不在这里现场构建：build/build.sh 要跑 Docker + 完整 OpenCV 编译（实测
+      # 10.8 分钟），乘以 3 个 Node 版本、每次 push 都跑，代价与收益不成比例。
+      #
+      # 失败模式是显式的：产物有 30 天保留期，超期或从未构建过时下面这步直接
+      # 报错退出（而不是让测试静默地一项都不跑）。届时手动触发一次
+      # build-wasm.yml（workflow_dispatch）即可恢复。
+      - name: 取回最近一次成功构建的 wasm 产物
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list --workflow build-wasm.yml --status success \
+                     --limit 1 --json databaseId --jq '.[0].databaseId')
+          if [ -z "$run_id" ]; then
+            echo "::error::找不到 build-wasm.yml 的成功运行——手动触发一次以产出 wasm 产物"
+            exit 1
+          fi
+          echo "使用 build-wasm 运行 #$run_id 的产物"
+          gh run download "$run_id" --name opencv-wasm-baseline --dir build/out/baseline
+          ls -la build/out/baseline
+
+      - name: 组装 dist/
+        run: npm run assemble
 
       - name: 运行测试
         run: npm test

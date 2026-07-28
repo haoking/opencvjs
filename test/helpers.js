@@ -1,10 +1,56 @@
 "use strict";
 
 const path = require("path");
-const cv = require(path.join(__dirname, "..", "opencv.js"));
+
+/**
+ * 被测对象是**组装后的 dist/**，也就是用户 `npm install` 之后拿到的那份代码：
+ * CI 构建的 wasm 产物（opencv.js glue + opencv_js.wasm）加上 src/js/ 的扩展层。
+ * 不直接 require src/js/index.js —— 那份代码在 src/ 下没有同目录的 glue，
+ * require("./opencv.js") 会失败；而且直接测 src/ 也测不到组装这一步。
+ *
+ * dist/ 不入 git（.gitignore），先跑 `npm run assemble` 生成。
+ * OPENCV_DIST 可指向别处的 dist 布局（例如直接测 CI 下载下来的目录）。
+ */
+const DIST = process.env.OPENCV_DIST || path.join(__dirname, "..", "dist");
 
 const DEPTHS = ["8U", "8S", "16U", "16S", "32S", "32F", "64F"];
 const CHANNELS = [1, 2, 3, 4];
+
+let cached = null;
+
+/**
+ * 加载并缓存 cv。
+ *
+ * ⚠️ 新产物的入口返回 Promise，且 await 之后 `cv.onRuntimeInitialized` 这个属性
+ * **依然存在**（实测 typeof 为 function）。用它判断是否就绪会恒真，从而去等一个
+ * 永不再触发的回调 —— 首次 CI 冒烟测试正是栽在这上面。就绪判据只看 cv.Mat。
+ *
+ * dist/ 缺失时**抛错，不跳过**：跳过会让整套测试静默地从 113 项掉到 0 项并且
+ * 退出码仍是 0，这正是本仓库一路在清理的失败模式。
+ */
+async function getCv() {
+  if (cached) return cached;
+
+  const entry = path.join(DIST, "index.js");
+  let loadCV;
+  try {
+    loadCV = require(entry);
+  } catch (e) {
+    throw new Error(
+      `无法加载 ${entry}：${describeError(e)}\n` +
+        `dist/ 由 build/assemble.sh 组装且不入 git。先执行:\n` +
+        `  npm run assemble [wasm 产物目录]\n` +
+        `（产物目录默认 build/out/baseline，即 build/build.sh 的输出位置）`,
+    );
+  }
+
+  const cv = await loadCV();
+  if (typeof cv.Mat !== "function") {
+    throw new Error("cv.Mat 不是构造函数 —— wasm 运行时未就绪");
+  }
+  cached = cv;
+  return cv;
+}
 
 /**
  * emscripten 在异常被编译掉的构建下抛出的是数字（如 6446944），不是 Error 实例。
@@ -24,7 +70,7 @@ function describeError(e) {
 }
 
 /** 构造 3x3 测试矩阵，值为 1..9*channels，按 OpenCV 交错布局排列。 */
-function makeMat(depth, channels) {
+function makeMat(cv, depth, channels) {
   const typeName = `CV_${depth}C${channels}`;
   const type = cv[typeName];
   if (type === undefined) {
@@ -57,16 +103,22 @@ function expectedRegion(api, data, channels) {
   throw new Error(`unknown api: ${api}`);
 }
 
-/** 调用被测的区域操作。 */
-function callRegion(mat, api) {
-  if (api === "roi") return mat.roi(new cv.Rect(1, 1, 2, 2));
-  if (api === "col") return mat.col(2);
-  if (api === "diag") return mat.Diag();
+/**
+ * 调用被测的区域操作。
+ *
+ * 2.0 起这三个方法叫 roiClone / colClone / diagClone —— 1.x 把修复直接盖在原生
+ * roi()/col()/diag() 上，代价是原生的视图语义被静默改掉；2.0 不再覆盖原生方法。
+ */
+function callRegion(cv, mat, api) {
+  if (api === "roi") return mat.roiClone(new cv.Rect(1, 1, 2, 2));
+  if (api === "col") return mat.colClone(2);
+  if (api === "diag") return mat.diagClone();
   throw new Error(`unknown api: ${api}`);
 }
 
 module.exports = {
-  cv,
+  DIST,
+  getCv,
   DEPTHS,
   CHANNELS,
   describeError,

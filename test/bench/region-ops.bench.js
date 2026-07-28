@@ -2,21 +2,24 @@
 
 // 区域操作性能回归门禁。
 //
-// 背景：修复前，roi()/col()/Diag() 用 cvtColor(GRAY2BGR) → 操作 → cvtColor(BGR2GRAY)
-// 往返来制造连续副本，比「原生 _roi()/_col()/diag() + clone()」慢数倍，且只支持
-// 8U/16U/32F 深度。现已改为后者（见 opencv.js 中 cloneAndRelease 上方注释）。
-// opencv.js 那条注释引用的是多次测量的区间（5.8–8.6×）。区间的下界与上界
-// 都来自这套固定配置的重复测量——本文件把它钉死，下面是最初那次原始测量：
+// 背景：1.0.0 之前，roi()/col()/Diag() 用 cvtColor(GRAY2BGR) → 操作 →
+// cvtColor(BGR2GRAY) 往返来制造连续副本，比「原生 roi()/col()/diag() + clone()」
+// 慢数倍，且只支持 8U/16U/32F 深度。现已改为后者（见 src/js/mat-region.js 中
+// cloneAndRelease 上方注释）。2.0 起这三个方法叫 roiClone/colClone/diagClone，
+// 原生方法不再被覆盖——因此基准侧写的就是原生 roi()，不再需要 1.x 的 _roi() 转义名。
+//
+// src/js/mat-region.js 那条注释引用的是多次测量的区间（5.8–8.6×）。区间的下界与
+// 上界都来自这套固定配置的重复测量——本文件把它钉死，下面是最初那次原始测量：
 //
 //   图像:  64×64  CV_32FC1
 //   区域:  Rect(1, 1, 32, 32)         （32×32，非全图、不贴边）
 //   迭代:  20000 次
-//   结果:  旧实现(cvtColor 往返) 220ms  vs  原生 _roi + clone 31ms  ≈ 7.1x
+//   结果:  旧实现(cvtColor 往返) 220ms  vs  原生 roi + clone 31ms  ≈ 7.1x
 //
 // 之所以要把这套配置钉死在这里：不同图像/区域尺寸下，两种实现的倍数差异极大。
 // 下面这组对照是 2026-07-27 在本仓库重新实测的（把已删除的旧 cvtColor 实现按
-// commit 3492caf 的父提交逐字重建，与当前 roi() 在同一进程内交替测量，丢弃预热
-// 轮，node v22.22.2 / darwin-arm64，各配置重复 3 次）：
+// commit 3492caf 的父提交逐字重建，与当时的 roi() 在同一进程内交替测量，丢弃预热
+// 轮，node v22.22.2 / darwin-arm64，各配置重复 3 次；那次测量跑在 asm.js 产物上）：
 //
 //   图像      区域                迭代    旧(cvtColor)      新(clone)       倍数
 //   480×640   Rect(10,10,100,100)   200   121–125 ms        2.3–2.4 ms      52–55x
@@ -33,8 +36,8 @@
 // 480×640 下几百次就会。上表的迭代次数是按这个上限选的，不是随意取的。）
 //
 // 测量方法——为什么要丢弃第 1 轮：
-// 本门禁比较的是「当前 roi() 实现」与「手写的原生 _roi + clone」这两者的耗时，
-// 而不是重新对比旧的 cvtColor 实现（那份代码已被删除，无法再跑）。因为 roi()
+// 本门禁比较的是「当前 roiClone() 实现」与「手写的原生 roi + clone」这两者的耗时，
+// 而不是重新对比旧的 cvtColor 实现（那份代码已被删除，无法再跑）。因为 roiClone()
 // 内部现在就是原生 + clone，两者做的事完全一样，比值理应接近 1x。
 // 但首轮测量同时包含 JIT 分层编译与 embind 调用桥的一次性预热成本，这笔成本
 // 会被「先执行的那一方」整体付掉，导致谁先跑谁在首轮就显得更慢——这是测量
@@ -43,13 +46,12 @@
 // 完全相等；同进程内交替跑多轮，第 2 轮起两者才收敛到接近的数值，且不再受
 // 顺序影响）。因此下面跑 ROUNDS 轮，baseline/actual 的先后顺序逐轮交替，丢弃
 // 第 1 轮（预热轮），取第 2 轮起的最小值作为各自最终耗时——这样比值才反映
-// 真实差异，而不是谁先跑谁吃亏。一旦未来真把 roi() 改回 cvtColor 往返一类的
+// 真实差异，而不是谁先跑谁吃亏。一旦未来真把 roiClone() 改回 cvtColor 往返一类的
 // 慢路径，这里的比值会明显跳升，门禁随之失败。
-const { cv } = require("../helpers");
+const { getCv } = require("../helpers");
 
 const N = 20000;
 const SIZE = 64;
-const RECT = new cv.Rect(1, 1, 32, 32);
 const ROUNDS = 4; // 第 1 轮是预热轮，丢弃；取第 2..4 轮的最小值
 
 // ROUNDS < 2 时 rounds.slice(1) 是空数组，Math.min() 返回 Infinity，
@@ -57,11 +59,13 @@ const ROUNDS = 4; // 第 1 轮是预热轮，丢弃；取第 2..4 轮的最小�
 // 「✅ 性能达标」而实际什么都没查。当前 ROUNDS 是常量且无外部入口，触发不了，
 // 但这正是「门禁报绿却什么都没查」的模板，先把它堵死。
 //
-// 用 console.error + process.exit 而不是 throw：opencv.js（emscripten 产物）
-// 装了 `process.on("uncaughtException", ex => { if (!(ex instanceof ExitStatus)) throw ex })`，
-// 在该处理器内部再次抛出会让 Node 以退出码 7 结束，并把 opencv.js 那条
-// 194 万字符的源码行整个打进 stderr——实测 5.6MB 的垃圾输出，真正的错误信息
-// 完全被淹没。这也是本文件下方性能退化分支的既有写法。
+// 用 console.error + process.exit 而不是 throw：1.x 的 asm.js 产物装了
+// `process.on("uncaughtException", ex => { if (!(ex instanceof ExitStatus)) throw ex })`，
+// 在该处理器内部再次抛出会让 Node 以退出码 7 结束，并把那条 194 万字符的源码行
+// 整个打进 stderr（实测 5.6MB 垃圾输出）。2.0 的 wasm glue 已不再安装任何
+// process.on 处理器（实测 `grep -o 'process\.on(' dist/opencv.js` 无匹配），
+// 所以这条具体的坑没有了；写法保留是因为门禁要的本来就是明确的退出码，
+// 而不是一段栈回溯。
 if (ROUNDS < 2) {
   console.error(
     `❌ ROUNDS 必须 >= 2（当前 ${ROUNDS}）：第 1 轮是预热轮要丢弃，` +
@@ -70,22 +74,10 @@ if (ROUNDS < 2) {
   process.exit(1);
 }
 
-function makeBig() {
+function makeBig(cv) {
   const data = new Array(SIZE * SIZE);
   for (let i = 0; i < data.length; i += 1) data[i] = i % 7;
   return cv.matFromArray(SIZE, SIZE, cv.CV_32FC1, data);
-}
-
-function baselineOp(m) {
-  const v = m._roi(RECT);
-  const d = v.clone();
-  v.delete();
-  d.delete();
-}
-
-function actualOp(m) {
-  const d = m.roi(RECT);
-  d.delete();
 }
 
 function measure(mat, fn) {
@@ -94,44 +86,68 @@ function measure(mat, fn) {
   return Number(process.hrtime.bigint() - start) / 1e6;
 }
 
-const mat = makeBig();
-const baselineRounds = [];
-const actualRounds = [];
+async function main() {
+  const cv = await getCv();
+  const RECT = new cv.Rect(1, 1, 32, 32);
 
-for (let r = 0; r < ROUNDS; r += 1) {
-  // 逐轮交替先后顺序，防止某一方系统性地总是先跑/后跑而吃到预热成本。
-  if (r % 2 === 0) {
-    baselineRounds.push(measure(mat, baselineOp));
-    actualRounds.push(measure(mat, actualOp));
-  } else {
-    actualRounds.push(measure(mat, actualOp));
-    baselineRounds.push(measure(mat, baselineOp));
+  // 基准：原生 roi() 返回视图（2.0 起它没有被覆盖），再 clone 成副本。
+  function baselineOp(m) {
+    const v = m.roi(RECT);
+    const d = v.clone();
+    v.delete();
+    d.delete();
   }
-  const tag = r === 0 ? "（预热轮，丢弃）" : "";
+
+  // 被测：扩展层的 roiClone()，内部就是上面这两步。
+  function actualOp(m) {
+    const d = m.roiClone(RECT);
+    d.delete();
+  }
+
+  const mat = makeBig(cv);
+  const baselineRounds = [];
+  const actualRounds = [];
+
+  for (let r = 0; r < ROUNDS; r += 1) {
+    // 逐轮交替先后顺序，防止某一方系统性地总是先跑/后跑而吃到预热成本。
+    if (r % 2 === 0) {
+      baselineRounds.push(measure(mat, baselineOp));
+      actualRounds.push(measure(mat, actualOp));
+    } else {
+      actualRounds.push(measure(mat, actualOp));
+      baselineRounds.push(measure(mat, baselineOp));
+    }
+    const tag = r === 0 ? "（预热轮，丢弃）" : "";
+    console.log(
+      `round ${r + 1}: baseline ${baselineRounds[r].toFixed(1).padStart(6)} ms` +
+        `   actual ${actualRounds[r].toFixed(1).padStart(6)} ms  ${tag}`,
+    );
+  }
+  mat.delete();
+
+  // 丢弃第 1 轮，取后续轮次的最小值作为各自最终耗时。
+  const baseline = Math.min(...baselineRounds.slice(1));
+  const actual = Math.min(...actualRounds.slice(1));
+
   console.log(
-    `round ${r + 1}: baseline ${baselineRounds[r].toFixed(1).padStart(6)} ms` +
-      `   actual ${actualRounds[r].toFixed(1).padStart(6)} ms  ${tag}`,
+    `\n原生 roi + clone (基准)      ${baseline.toFixed(1)} ms / ${N} 次`,
   );
+  console.log(`roiClone() 当前实现          ${actual.toFixed(1)} ms / ${N} 次`);
+
+  // 当前实现就是「原生 + clone」，两者应当接近 1x；允许 50% 的测量噪声余量。
+  const LIMIT = baseline * 1.5;
+  console.log(`\n阈值: ${LIMIT.toFixed(1)} ms   实测: ${actual.toFixed(1)} ms`);
+
+  if (actual > LIMIT) {
+    console.error(
+      `❌ 性能退化：roiClone() 比「原生 + clone」慢了 ${(actual / baseline).toFixed(1)}x`,
+    );
+    process.exit(1);
+  }
+  console.log("✅ 性能达标");
 }
-mat.delete();
 
-// 丢弃第 1 轮，取后续轮次的最小值作为各自最终耗时。
-const baseline = Math.min(...baselineRounds.slice(1));
-const actual = Math.min(...actualRounds.slice(1));
-
-console.log(
-  `\n原生 _roi + clone (基准)     ${baseline.toFixed(1)} ms / ${N} 次`,
-);
-console.log(`roi() 当前实现               ${actual.toFixed(1)} ms / ${N} 次`);
-
-// 当前实现就是「原生 + clone」，两者应当接近 1x；允许 50% 的测量噪声余量。
-const LIMIT = baseline * 1.5;
-console.log(`\n阈值: ${LIMIT.toFixed(1)} ms   实测: ${actual.toFixed(1)} ms`);
-
-if (actual > LIMIT) {
-  console.error(
-    `❌ 性能退化：roi() 比「原生 + clone」慢了 ${(actual / baseline).toFixed(1)}x`,
-  );
+main().catch((e) => {
+  console.error(`❌ 门禁未能执行: ${e && e.message ? e.message : e}`);
   process.exit(1);
-}
-console.log("✅ 性能达标");
+});
