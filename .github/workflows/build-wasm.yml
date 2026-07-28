@@ -5,6 +5,13 @@ on:
   push:
     tags: ["v*"]
 
+# 构建单次要 60–150 分钟。连续两次 workflow_dispatch，或短时间内推送两个
+# tag，会并发跑两个这么贵的构建。cancel-in-progress: false（而非 true）是
+# 因为取消一个跑到一半的构建同样是浪费——排队等它跑完更划算。
+concurrency:
+  group: build-wasm-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,9 +37,16 @@ jobs:
           done
 
       - name: 冒烟测试
+        # node:test 的 timeout 选项不保证进程退出——它只让测试结果在超时点
+        # 报 fail，若事件循环被存活的异步句柄占住（真实 wasm 加载挂起时更
+        # 可能是这种情况），node --test 进程本身会继续跑。--test-force-exit
+        # 是进程级止损；这里的 timeout-minutes 是同一件事的第二重、完全不
+        # 依赖 Node 内部机制的兜底（由 runner 直接杀掉整个进程树）。两者
+        # 互为保险，都不依赖对方生效。
+        timeout-minutes: 5
         env:
           OPENCV_ARTIFACT: ${{ github.workspace }}/build/out/baseline
-        run: ls test/smoke/*.test.js >/dev/null && node --test test/smoke/*.test.js
+        run: ls test/smoke/*.test.js >/dev/null && node --test --test-force-exit test/smoke/*.test.js
 
       - uses: actions/upload-artifact@v4
         with:
