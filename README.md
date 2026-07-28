@@ -2,22 +2,28 @@
 
 ![OpenCV 4.0.0+](https://img.shields.io/badge/OpenCV-4.0.0%2B-green.svg)
 
-Complete opencvjs.(With the lastest OpenCV 4.0.0+)
+`opencv.js` plus a layer of extra `cv.Mat` convenience methods. Baseline: OpenCV 4.0.1, asm.js.
 
-The official opencv.js stoped update. Moreover, it still has many errors from the last offical version.
+OpenCV upstream is actively maintained — 4.14.0 shipped on 2026-07-19. What upstream does _not_
+ship is a standalone, production-oriented `opencv.js`: the official build is a reduced-function
+tutorial build, bundled inside `opencv-{VERSION}-docs.zip` on each release and mirrored at
+`docs.opencv.org/{VERSION}/opencv.js`. An OpenCV maintainer states it plainly in
+[opencv#25425](https://github.com/opencv/opencv/issues/25425): _"Only reduced subset of functions
+is provided here (size vs functionality compromise). Due to this there is no official OpenCV JS
+release. We don't recommend to use that file directly in your projects."_
 
-This project is inherited from official opencv.js.
-
-Which means all of the methods in opencv.js works here, also, fix most of the errors.
-
-But much more performance improved.
+This project is derived from the official `opencv.js` (baseline: OpenCV 4.0.1, asm.js) and adds
+a layer of extra `cv.Mat` methods on top of it. It has diverged from upstream since 2018 and has
+**not** been rebased onto any newer OpenCV release — see [Known Issues](#known-issues) for the
+list of methods in this layer that are currently broken.
 
 ## Features
 
 - [x] OpenCVJS writen by native JS which means this project can be used directly in the browser or JS project, or node.js
 - [x] OpenCVJS is the easiest to install as one .js file
 - [x] OpenCVJS has achieved most of the OpenCV C++ functions
-- [x] Region operations (roi/col/Diag) are covered by a 113-case test suite across all 7 depths and 4 channel counts, and run 5.8–7.1× faster than the previous cvtColor-based implementation (range across independent measurements on a 64×64 CV_32FC1 image with a 32×32 ROI over 20000 iterations)
+- [x] Region operations (`roi`/`col`/`Diag`) are covered by 84 correctness cases spanning all 7 depths × 4 channel counts × 3 APIs, plus 29 cases asserting `clone()` deep-copy and copy semantics — 113 executable assertions in total (`npm test`; a 114th smoke test for freshly built wasm artifacts is skipped unless `OPENCV_ARTIFACT` is set)
+- [x] On **single-channel** Mats, `roi()` runs **5.8–8.6× faster** than the previous `cvtColor`-round-trip implementation — a range across independent measurements on a 64×64 `CV_32FC1` image with `Rect(1, 1, 32, 32)` over 15000–20000 iterations. `col()` and `Diag()` have never been benchmarked, so no claim is made for them. On **multi-channel** Mats the change goes the other way: `roi()` is now ~41× _slower_ than the raw view it used to return, because it must copy. See the breaking-change note under [Known Issues](#known-issues) for why, and how to opt back into view semantics
 
 ## Known Issues
 
@@ -34,8 +40,10 @@ But much more performance improved.
   但只用它写回源 Mat——对多通道 Mat 读视图的 `.data*` 仍然是错的。
   单通道路径此前走 cvtColor 往返，本来就产出副本，语义不变。
 - `mds()` 不可用（内部取到函数对象而非数据）。
-- `mulSpectrums()` 返回 `NaN`。
-- `replaceMatOnPoint()` 的实际签名是 `(value, x, y)`，与本文档中的 `(value, point)` 不符。
+- `mulSpectrums()` / `mulSpectrums2Channel()` 返回无效结果：部分元素恒为 `NaN`，
+  另一部分**每次运行都不同**（读到了未初始化的堆内存）。
+- `replaceMatOnPoint()` 的实际签名是 `(value, x, y)`，与本文档中的 `(value, point)` 不符；
+  且内部是 `PTR(x, y)`——`x` 是行号、`y` 是列号，与参数名相反。
 - `replaceMatOnRow()` 仅支持 `CV_32F` 类型。
 - `reshape(rows)` 覆盖了 OpenCV 原生的 `reshape(cn, rows)` 签名。
 - 产物为 asm.js 而非 WebAssembly，基线为 OpenCV 4.0.1。
@@ -299,7 +307,7 @@ dst Sum of src1 data
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 let sum = mat1.sum();
 mat1.delete();
-console.log("dst::" + dst); //dst::45
+console.log("sum::" + sum); //sum::45
 ```
 
 **norm()**
@@ -485,6 +493,14 @@ console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
 
 **replaceMatOnPoint()**
 
+> ⚠️ **本节记录的签名与实现不符，下面第一段照抄必然抛异常。** 见 [Known Issues](#known-issues)。
+> 实测：`mat1.replaceMatOnPoint(30, {x: 1, y: 1})` 抛
+> `TypeError: Cannot convert "[object Object]" to int`。
+> 实现的真实签名是 `replaceMatOnPoint(constant, x, y)`，而且内部是
+> `this.PTR(x, y)[0] = constant`——`x` 其实是**行号**、`y` 是**列号**，
+> 与参数名给人的印象相反（实测 `replaceMatOnPoint(99, 0, 2)` 改的是
+> 第 0 行第 2 列）。
+
 void src1.replaceMatOnPoint(constant, point)
 
 src1 First input mat will be changed as output
@@ -494,10 +510,18 @@ constant Second input constant tp replace at the point
 point Point location
 
 ```javascript
+// ⚠️ 不可用：下面这行抛 TypeError: Cannot convert "[object Object]" to int
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 mat1.replaceMatOnPoint(30, { x: 1, y: 1 });
+```
+
+当前实现的可用写法（`x` = 行、`y` = 列）：
+
+```javascript
+let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+mat1.replaceMatOnPoint(30, 1, 1);
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-//mat1::1,11,3,4,12,6,7,13,9:::3:::3
+//mat1::1,2,3,4,30,6,7,8,9:::3:::3
 ```
 
 **addOnCol()**
@@ -514,7 +538,7 @@ col Col location
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 mat1.addOnCol(30, 1);
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-//mat1::1,11,3,4,12,6,7,13,9:::3:::3
+//mat1::1,32,3,4,35,6,7,38,9:::3:::3
 ```
 
 **rectAdd()**
@@ -533,7 +557,7 @@ let rect1 = new cv.Rect(1, 1, 2, 2);
 let rectmat = cv.matFromArray(2, 2, cv.CV_32FC1, [11, 12, 13, 14]);
 mat1.rectAdd(rectmat, rect1);
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-//mat1::1,2,3,4,11,12,7,13,14:::3:::3
+//mat1::1,2,3,4,16,18,7,21,23:::3:::3
 ```
 
 **rectSubtract()**
@@ -552,10 +576,15 @@ let rect1 = new cv.Rect(1, 1, 2, 2);
 let rectmat = cv.matFromArray(2, 2, cv.CV_32FC1, [11, 12, 13, 14]);
 mat1.rectSubtract(rectmat, rect1);
 console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-//mat1::1,2,3,4,11,12,7,13,14:::3:::3
+//mat1::1,2,3,4,-6,-6,7,-5,-5:::3:::3
 ```
 
 **mds()**
+
+> ⚠️ **当前不可用，下面这段照抄必然抛异常。** 见 [Known Issues](#known-issues)。
+> 实测抛 `TypeError: src1Array.reduce is not a function`——实现里写的是
+> `this.DATA` 而非 `this.DATA()`，取到的是函数对象而不是数据。
+> 注释里的期望值是这个 bug 存在之前留下的，从未被验证过。
 
 {m:Float, d:Array, s:Float} dst = src1.mds()
 
@@ -564,11 +593,11 @@ src1 First input mat
 dst Output with {mean, dev, stddev}
 
 ```javascript
+// ⚠️ 不可用：抛 TypeError: src1Array.reduce is not a function
 let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 let dst = mat1.mds();
 mat1.delete();
 console.log("dst::" + dst.m + ":::" + dst.d + ":::" + dst.s);
-//dst::5:::16,9,4,1,0,1,4,9,16:::2.581988897471611
 ```
 
 **roi()**
@@ -605,8 +634,11 @@ mat1.delete();
 console.log(
   "sssss::" + s.u.data32F + ":::" + s.w.data32F + "::::" + s.vt.data32F,
 );
-//sssss::-0.2690670727222803,-0.6798212121523656,-0.6822360514399335,0.9620092303255996,-0.15566952916310073,-0.22428829318197974,-0.04627257443681115,0.7166659732384585,-0.6958798255856847:::817.7596679296927,2.4749744909160456,0.002964523081211532::::0.6822778524193859,-0.6671413517114333,-0.29903068226292867,0.22871202334807922,-0.19371852220929917,0.9540251278289649,0.6943973952097016,0.7193021277527875,-0.020413391102276603
+//sssss::-0.2148372381925583,-0.8872306942939758,-0.40824830532073975,-0.5205873847007751,-0.2496439516544342,0.8164966106414795,-0.8263375163078308,0.3879427909851074,-0.40824830532073975:::16.848102569580078,1.0683695077896118,0::::-0.4796711802482605,-0.572367787361145,-0.6650643944740295,0.7766910195350647,0.07568646967411041,-0.6253180503845215,0.40824830532073975,-0.8164966106414795,0.40824830532073975
 ```
+
+（注：`w` 是奇异值，此矩阵为 `16.85, 1.07, 0`——第三个是 0，因为 `[[1,2,3],[4,5,6],[7,8,9]]` 秩为 2。
+本文档此前给的 `817.76, 2.47, 0.0030` 与实现无关，是伪造值。）
 
 **RodriguesFromArray()**
 
@@ -655,6 +687,18 @@ console.log("dst::" + dst.r.data32F + ":::" + dst.i.data32F);
 
 **mulSpectrums()**
 
+> ⚠️ **当前产出无效结果，不要照着注释的期望值使用。** 见 [Known Issues](#known-issues)。
+> 输出里第 7、9 个元素恒为 `NaN`，第 2、5、8 个元素**每次运行都不同**——
+> 那是未初始化的堆内存被当作数据读出来了。同一份代码连跑 3 次实测：
+>
+> ```
+> 9,0,66,153,0,237,NaN,9.016077633730734e-39,NaN
+> 9,9.010506071036578e-39,66,153,1.2662301079454766e-39,237,NaN,6.389920997321166e-43,NaN
+> 9,0,66,153,1.0229478789571165e-43,237,NaN,1.2663085806594788e-39,NaN
+> ```
+>
+> 只有第 1、3、4、6 个元素（`9, 66, 153, 237`）是稳定的。
+
 cv.Mat dst = cv.mulSpectrums(src1, src2, conjB = false)
 
 src1 First input mat
@@ -676,10 +720,21 @@ let mat2 = cv.matFromArray(
 let dst = cv.mulSpectrums(mat1, mat2, true);
 (mat1.delete(), mat2.delete());
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//dst::9,8.96831017167883e-44,66,153,4.624284932271896e-44,237,NaN,1.2534558711446916e-39,NaN:::3:::3
+//⚠️ 输出不稳定，形如 dst::9,<垃圾>,66,153,<垃圾>,237,NaN,<垃圾>,NaN:::3:::3
 ```
 
 **mulSpectrums2Channel()**
+
+> ⚠️ **与 `mulSpectrums()` 同一个缺陷，当前产出无效结果。** 见 [Known Issues](#known-issues)。
+> 第 7、9 个元素恒为 `NaN`，第 2、5、8 个元素每次运行都不同。连跑 3 次实测：
+>
+> ```
+> 29,1.401298464324817e-45,81,233,1.5414283107572988e-44,162,NaN,0,NaN
+> 29,7.658264263350844e-40,81,233,0,162,NaN,2.1019476964872256e-43,NaN
+> 29,9.053284910555486e-39,81,233,9.053531539085207e-39,162,NaN,9.053778167614928e-39,NaN
+> ```
+>
+> 另注：输入是 `CV_32FC2`，但返回的 Mat `channels()` 为 `1`。
 
 cv.Mat dst = cv.mulSpectrums2Channel(src1, src2, conjB = false)
 
@@ -715,7 +770,7 @@ console.log(
     ":::" +
     dst.channels(),
 );
-//dst::29,8.96831017167883e-44,81,233,4.624284932271896e-44,162,NaN,1.2534558711446916e-39,NaN:::3:::3:::1
+//⚠️ 输出不稳定，形如 dst::29,<垃圾>,81,233,<垃圾>,162,NaN,<垃圾>,NaN:::3:::3:::1
 ```
 
 ##
