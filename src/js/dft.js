@@ -54,30 +54,40 @@ module.exports = function applyDft(cv, guards) {
     const colOneArray = [];
     const colLastArray = [];
 
-    const realMat = cv.Mat.zeros(M, N, this.type());
-    const imagMat = cv.Mat.zeros(M, N, this.type());
+    // 两个输出 Mat 先分配、后逐元素填。空 Mat（第一次写 PTR(0, 0) 就越界）或不支持的
+    // depth 会在填的中途抛出，那时调用方拿不到这两个 Mat 的引用，只能在这里释放。
+    let realMat = null;
+    let imagMat = null;
+    try {
+      realMat = cv.Mat.zeros(M, N, this.type());
+      imagMat = cv.Mat.zeros(M, N, this.type());
 
-    for (let m = 0; m <= M - 1; m += 1) {
-      colOneArray.push(this.PTR(m, 0)[0]);
-      colLastArray.push(this.PTR(m, N - 1)[0]);
-      for (let n = 1, i = 1; n <= N - 2; n += 2, i += 1) {
-        realMat.PTR(m, i)[0] = this.PTR(m, n)[0];
-        imagMat.PTR(m, i)[0] = this.PTR(m, n + 1)[0];
+      for (let m = 0; m <= M - 1; m += 1) {
+        colOneArray.push(this.PTR(m, 0)[0]);
+        colLastArray.push(this.PTR(m, N - 1)[0]);
+        for (let n = 1, i = 1; n <= N - 2; n += 2, i += 1) {
+          realMat.PTR(m, i)[0] = this.PTR(m, n)[0];
+          imagMat.PTR(m, i)[0] = this.PTR(m, n + 1)[0];
+        }
       }
+
+      realMat.PTR(0, 0)[0] = colOneArray[0];
+      realMat.PTR(midRow, 0)[0] = colOneArray[M - 1];
+      realMat.PTR(0, midCol)[0] = colLastArray[0];
+      realMat.PTR(midRow, midCol)[0] = colLastArray[M - 1];
+      for (let m = 1, i = 1; m <= M - 2; m += 2, i += 1) {
+        realMat.PTR(i, 0)[0] = colOneArray[m];
+        imagMat.PTR(i, 0)[0] = colOneArray[m + 1];
+
+        realMat.PTR(i, midCol)[0] = colLastArray[m];
+        imagMat.PTR(i, midCol)[0] = colLastArray[m + 1];
+      }
+
+      return { r: realMat, i: imagMat };
+    } catch (e) {
+      if (realMat) realMat.delete();
+      if (imagMat) imagMat.delete();
+      throw e;
     }
-
-    realMat.PTR(0, 0)[0] = colOneArray[0];
-    realMat.PTR(midRow, 0)[0] = colOneArray[M - 1];
-    realMat.PTR(0, midCol)[0] = colLastArray[0];
-    realMat.PTR(midRow, midCol)[0] = colLastArray[M - 1];
-    for (let m = 1, i = 1; m <= M - 2; m += 2, i += 1) {
-      realMat.PTR(i, 0)[0] = colOneArray[m];
-      imagMat.PTR(i, 0)[0] = colOneArray[m + 1];
-
-      realMat.PTR(i, midCol)[0] = colLastArray[m];
-      imagMat.PTR(i, midCol)[0] = colLastArray[m + 1];
-    }
-
-    return { r: realMat, i: imagMat };
   };
 };

@@ -21,13 +21,15 @@
  * __dirname 定位 .wasm。
  *
  * ⚠️ 这里曾经写着「两个变体的 glue 内容也不同，不能共用一份」。那是**错的**：
- * 实测两份 glue 逐字节相同（SHA-256 均为 da1f9d19…，各 143,365 B）。分目录的
+ * 实测两份 glue 逐字节相同（4.14.0 产物上 SHA-256 均为 da1f9d19…、各 143,365 B；
+ * 5.0.0 产物上均为 33711c08…、各 143,496 B）。分目录的
  * 理由只有 .wasm 同名这一条。反过来也别依赖「它们永远相同」——同样没有依据。
  *
  * ── 变体怎么选 ────────────────────────────────────────────────────────────
  * 优先级：loadOpenCV({ simd })  >  环境变量 OPENCV_SIMD  >  运行时探测。
  * 规则与理由见 ./simd-detect.js 的 resolveVariant()。一句话：被**明确点名**的
- * 变体如果不存在就抛错，只有自动模式才回落到 baseline。
+ * 变体如果不存在就抛错，只有自动模式才回落到 baseline。进程里已经加载过一个变体
+ * 时，点名另一个也抛错，自动模式则沿用已加载的那个（理由见 loadOpenCV 开头）。
  *
  * ⚠️ 就绪判据只能看 typeof cv.Mat === "function"。新产物 require() 返回
  * Promise，await 之后 cv.onRuntimeInitialized 属性**依然存在**，用它判断就绪
@@ -70,11 +72,39 @@ function isGlueMissing(e, variant) {
   );
 }
 
+/** 「是谁点名要这个变体的」，用在错误消息里。 */
+function whoAsked(choice) {
+  return choice.source === "option"
+    ? `loadOpenCV({ simd: ${choice.variant === "simd"} })`
+    : "环境变量 OPENCV_SIMD";
+}
+
 let warnedSimdFallback = false;
+
+/** 本进程已经加载的变体；null 表示还没加载过。 */
+let loadedVariant = null;
 
 module.exports = async function loadOpenCV(options) {
   const choice = resolveVariant(options);
   let variant = choice.variant;
+
+  // 一个进程里只能加载一个变体。OpenCV 的 UMD 外壳把 Module 泄漏成隐式全局变量，
+  // 第二个变体的 glue 一旦被 require，会先把自己的 JS 辅助函数写到已加载的那个实例上
+  // （实测 cv.matFromArray 被换掉、长度校验随之丢失），然后才在 embind 注册时抛
+  // "Cannot register public name 'IntVector' twice"。所以必须在 require 之前拦下：
+  //   - 被点名（options / OPENCV_SIMD）的是另一个变体：抛错，已加载的实例不受影响；
+  //   - 自动模式：本来就允许回落，此时沿用已加载的那个是唯一可行的选择。
+  if (loadedVariant !== null && variant !== loadedVariant) {
+    if (choice.source === "probe") {
+      variant = loadedVariant;
+    } else {
+      throw new Error(
+        `${whoAsked(choice)} 要求 ${variant} 变体，但本进程已经加载了 ${loadedVariant} 变体。\n` +
+          `一个进程里只能加载一个变体：第二个变体的 glue 会先改写已加载的实例，再在 ` +
+          `embind 注册时失败。要对比两个变体请开两个进程（test/simd-compare.js 就是这么做的）。`,
+      );
+    }
+  }
 
   let glue;
   try {
@@ -84,12 +114,8 @@ module.exports = async function loadOpenCV(options) {
       // 被显式点名的变体不存在 —— 抛错，绝不悄悄换一个。
       // 「OPENCV_SIMD=1 跑一遍测试」如果实际跑的是 baseline，那份绿灯就是谎报，
       // 而这正是双产物一致性测试唯一的依靠。
-      const how =
-        choice.source === "option"
-          ? `loadOpenCV({ simd: ${variant === "simd"} })`
-          : `环境变量 OPENCV_SIMD`;
       throw new Error(
-        `${how} 明确要求 ${variant} 变体，但 dist/${variant}/opencv.js 加载失败：` +
+        `${whoAsked(choice)} 明确要求 ${variant} 变体，但 dist/${variant}/opencv.js 加载失败：` +
           `${(e && e.message) || e}\n` +
           `不会自动回落到另一个变体——那会让「强制 ${variant} 跑一遍」变成谎报。\n` +
           `补齐产物：build/build.sh${variant === "simd" ? " --simd" : ""} 后 npm run assemble`,
@@ -113,6 +139,7 @@ module.exports = async function loadOpenCV(options) {
     variant = "baseline";
     glue = requireGlue(variant);
   }
+  loadedVariant = variant;
 
   const cv = await glue;
 
@@ -127,8 +154,8 @@ module.exports = async function loadOpenCV(options) {
   // 返回的校验器由后面三个模块在各自的函数入口使用。
   const guards = applyGuards(cv);
 
-  // access.rawPtr 是给逐像素循环用的原生访问器查表：那些循环的下标已经由各自的
-  // 入口校验证明合法，不必再逐像素走一遍 PTR() 的边界检查（那样要慢 1.8–2.1x，
+  // access.pixels 让逐像素写入的循环按地址直接读写 wasm 堆：那些循环的下标已经由
+  // 各自的入口校验证明合法，不必逐像素走 PTR() 或原生 *Ptr()（那样要慢上百倍，
   // 倍数以 npm run bench 的 inplace-ops 门禁输出为准）。
   const access = applyTypedAccess(cv, guards);
 

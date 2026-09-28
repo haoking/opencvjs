@@ -8,7 +8,7 @@
 // cloneAndRelease 上方注释）。2.0 起这三个方法叫 roiClone/colClone/diagClone，
 // 原生方法不再被覆盖——因此基准侧写的就是原生 roi()，不再需要 1.x 的 _roi() 转义名。
 //
-// src/js/mat-region.js 那条注释引用的是多次测量的区间（5.8–8.6×）。区间的下界与
+// CHANGELOG.md 1.0.0 条目引用的是多次测量的区间（5.8–8.6×）。区间的下界与
 // 上界都来自这套固定配置的重复测量——本文件把它钉死，下面是最初那次原始测量：
 //
 //   图像:  64×64  CV_32FC1
@@ -63,7 +63,7 @@ const ROUNDS = 4; // 第 1 轮是预热轮，丢弃；取第 2..4 轮的最小�
 // `process.on("uncaughtException", ex => { if (!(ex instanceof ExitStatus)) throw ex })`，
 // 在该处理器内部再次抛出会让 Node 以退出码 7 结束，并把那条 194 万字符的源码行
 // 整个打进 stderr（实测 5.6MB 垃圾输出）。2.0 的 wasm glue 已不再安装任何
-// process.on 处理器（实测 `grep -o 'process\.on(' dist/opencv.js` 无匹配），
+// process.on 处理器（实测 `grep -o 'process\.on(' dist/*/opencv.js` 无匹配），
 // 所以这条具体的坑没有了；写法保留是因为门禁要的本来就是明确的退出码，
 // 而不是一段栈回溯。
 if (ROUNDS < 2) {

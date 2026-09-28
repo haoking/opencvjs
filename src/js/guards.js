@@ -21,10 +21,11 @@
  *    `cv.matFromArray` 一切正常，所以问题只在于「错误信息不可用」，不是「模块报废」。）
  *
  * 2. **更危险的一类根本不 abort。** embind 生成的 `*Ptr(row, col)` 不做任何边界检查：
- *      3×3 CV_32FC1（共 36 字节）上 `mat.PTR(9, 9)` 返回 base+144 字节处的
+ *      3×3 CV_32FC1（共 36 字节）上 `mat.floatPtr(9, 9)` 返回 base+144 字节处的
  *      Float32Array —— 读写都落在别的对象的堆上，不报任何错。
  *    `replaceMatOnRect` / `rectAdd` / `rectSubtract` / `replaceMatOnCol` / `addOnCol` /
- *    `replaceMatOnPoint` / `replaceMatOnRow` 全都由 `PTR()` 逐像素驱动，因此一个越界的
+ *    `replaceMatOnPoint` / `replaceMatOnRow` 同样不查边界——它们按地址直接读写 wasm
+ *    堆（typed-access 的 pixels()），途中没有任何检查——因此一个越界的
  *    Rect 或列号就是一次静默的堆破坏。这类错误比 (1) 危险得多，也正是 1.x 在
  *    `replaceMatOnRow` 上踩过的坑（见 README 的「2.0 修复」条目）。
  *
@@ -46,10 +47,10 @@
  *   - `PTR()` 自己查边界（它是文档化的公开 API，用户会直接调）。代价是真实的：
  *     实测 +49%（+23.7 ns/次）。
  *   - 扩展层内部的逐像素循环**不走 PTR()**，而是在入口用 guards 一次性证明整个
- *     循环的下标范围合法，循环里直接用 typed-access 的 rawPtr() 取到的原生访问器。
- *     不这么做的话这些方法要慢 **1.8–2.1x**，因为每个像素都要多付两次 embind
- *     getter。这个倍数不要在注释里各写各的：`npm run bench` 的 inplace-ops 门禁
- *     每次运行都会打印「退化参照（循环调 PTR）」那一行，以它为准。
+ *     循环的下标范围合法，循环里用 typed-access 的 pixels() 按地址直接读写 wasm 堆，
+ *     连原生的 *Ptr() 也不调。改回逐像素调 PTR()（每像素两次 embind getter 加一次
+ *     访问器调用）要慢上百倍。倍数不要在注释里各写各的：`npm run bench` 的
+ *     inplace-ops 门禁每次运行都会打印「退化参照」那几行，以它为准。
  *
  * 入口校验本身很便宜：一次 roiClone 的校验合计约 26 ns，对照该函数本身约 700 ns
  * 不足 4%，性能门禁（npm run bench，20000 次 roiClone）实测无可测退化。
@@ -117,7 +118,7 @@ module.exports = function applyGuards(cv) {
      * 这两条边界是分开定的，不是一句 `Number.isFinite` 顺手带出来的：
      *
      *  - 非 number 一律拒。这才是真正要抓的 bug：`mat.addConstant(undefined)`
-     *    在 addWeighted 里一路算下去，返回一整个 NaN 的 Mat 且不报错。
+     *    在底层的 convertTo 里一路算下去，返回一整个 NaN 的 Mat 且不报错。
      *  - NaN 拒。作为运算数它没有任何正当用途——`x + NaN` / `x * NaN` 会把整个
      *    Mat 一次性毁掉，而这正是上游某处已经出错的信号。
      *  - **±Infinity 放行。** 它是合法的 IEEE-754 值，在代价图 / 距离图上是标准
@@ -126,14 +127,30 @@ module.exports = function applyGuards(cv) {
      *    整片 -Infinity），拒掉它就是在砍一个原本正确的用法。曾经因为图省事写成
      *    `Number.isFinite` 而误伤，已改回。
      *
-     * ⚠️ 与 `arrayLike` 的不对称是**有意的**：这里校验的是**运算数**（一个标量
-     * 作用到整个 Mat 上），而 `arrayLike` 里流过的是**数据**（写进指定的若干格）。
-     * 往某些像素里写 NaN 表示「此处无效」是正当写法，所以那条路径不查元素值。
+     * ⚠️ 与 `arrayLike` / `value` 的不对称是**有意的**：这里校验的是**运算数**（一个
+     * 标量作用到整个 Mat 上），而那两条路径上流过的是**数据**（写进指定的若干格）。
+     * 往某些像素里写 NaN 表示「此处无效」是正当写法，所以它们不拒 NaN。
      */
     number(value, label, where) {
       if (typeof value !== "number" || Number.isNaN(value)) {
         throw new TypeError(
           `${where}: ${label} 必须是数（NaN 除外，±Infinity 可以），实际收到 ${describe(value)}`,
+        );
+      }
+      return value;
+    },
+
+    /**
+     * 写进像素的**数据**：必须是 number，NaN 与 ±Infinity 都放行。
+     *
+     * 与上面 number() 的区别就是那段「运算数与数据」的不对称：往某一格写 NaN 表示
+     * 「此处无效」是正当写法（replaceMatOnRow / replaceMatOnCol 的 arrayLike 也不查
+     * 元素值）。非数仍然拒——字符串、undefined 写进 TypedArray 会被静默转成 NaN 或 0。
+     */
+    value(value, label, where) {
+      if (typeof value !== "number") {
+        throw new TypeError(
+          `${where}: ${label} 必须是 number（NaN / ±Infinity 可以），实际收到 ${describe(value)}`,
         );
       }
       return value;
@@ -294,6 +311,21 @@ module.exports = function applyGuards(cv) {
             ` —— 两者类型必须一致`,
         );
       }
+    },
+
+    /**
+     * Mat 的类型必须在 allowed 之内。what 是受此限制的那个东西（以空格结尾），
+     * 例如 "NORM_HAMMING / NORM_HAMMING2 "，拼进消息里说明为什么只收这些类型。
+     */
+    type(mat, allowed, what, where) {
+      const got = mat.type();
+      if (!allowed.includes(got)) {
+        throw new TypeError(
+          `${where}: ${what}只接受 ${allowed.map(typeName).join(" / ")}，` +
+            `实际收到 ${typeName(got)}`,
+        );
+      }
+      return got;
     },
 
     /** Mat 的通道数必须在 allowed 之内。 */

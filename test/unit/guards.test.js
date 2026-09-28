@@ -263,6 +263,16 @@ const CASES = [
     error: RangeError,
     needs: ["col = 9", "0..2"],
   },
+  {
+    name: "replaceMatOnPoint 的值不是数（数据可以是 NaN，但必须是 number）",
+    call: (cv, m) => m.replaceMatOnPoint("1", 0, 0),
+    error: TypeError,
+    needs: [
+      "Mat.replaceMatOnPoint(value, row, col)",
+      "value 必须是 number",
+      'string "1"',
+    ],
+  },
   // —— 标量运算的常数 ——
   {
     name: "addConstant 收到 undefined（原本静默产出整片 NaN）",
@@ -287,6 +297,39 @@ const CASES = [
     call: (cv, m) => m.addOnCol(NaN, 0),
     error: TypeError,
     needs: ["Mat.addOnCol(constant, col)", "number NaN"],
+  },
+  {
+    // 被除数用 Scalar 填充，而 Scalar 只有 4 个分量：>4 通道的 Mat 在 C++ 里 abort。
+    name: "constantDivide 在 5 通道 Mat 上（Scalar 填不满，原本 abort 抛裸数字）",
+    call: (cv) => {
+      const planes = new cv.MatVector();
+      const one = cv.matFromArray(1, 1, cv.CV_32FC1, [2]);
+      const m5 = new cv.Mat();
+      try {
+        for (let k = 0; k < 5; k += 1) planes.push_back(one);
+        cv.merge(planes, m5);
+        m5.constantDivide(8);
+      } finally {
+        planes.delete();
+        one.delete();
+        m5.delete();
+      }
+    },
+    error: TypeError,
+    needs: ["Mat.constantDivide(constant)", "实际收到 5 通道"],
+  },
+  // —— reshapeRows 的行数 ——
+  {
+    name: "reshapeRows 的行数不是整数（原本抛的是 RangeError）",
+    call: (cv, m) => m.reshapeRows(1.5),
+    error: TypeError,
+    needs: ["Mat.reshapeRows(rows)", "rows 必须是整数", "number 1.5"],
+  },
+  {
+    name: "reshapeRows 的行数不能整除像素数",
+    call: (cv, m) => m.reshapeRows(4),
+    error: RangeError,
+    needs: ["Mat.reshapeRows(rows)", "9 个像素无法整除为 4 行"],
   },
   // —— norm2 的尺寸 / 类型不匹配（加 guards 前：cv.subtract abort，裸数字）——
   {
@@ -320,6 +363,18 @@ const CASES = [
     call: (cv) => cv.norm2(1, 2),
     error: TypeError,
     needs: ["src1 必须是 cv.Mat", "number 1"],
+  },
+  {
+    name: "norm2 的 normType 不是可用的范数类型（原本 abort 抛裸数字）",
+    call: (cv, m) => cv.norm2(m, m, 3),
+    error: RangeError,
+    needs: ["cv.norm2(src1, src2, normType)", "normType = 3"],
+  },
+  {
+    name: "norm2 在非 CV_8UC1 上用 NORM_HAMMING（原本 abort 抛裸数字）",
+    call: (cv, m) => cv.norm2(m, m, cv.NORM_HAMMING),
+    error: TypeError,
+    needs: ["cv.norm2(src1, src2, normType)", "CV_8UC1", "CV_32FC1"],
   },
   // —— dftSplit 的通道数 ——
   {
@@ -401,7 +456,14 @@ const CASES = [
   },
   {
     name: "空 Mat 上的 PTR",
-    call: (cv) => new cv.Mat().PTR(0, 0),
+    call: (cv) => {
+      const empty = new cv.Mat();
+      try {
+        empty.PTR(0, 0);
+      } finally {
+        empty.delete();
+      }
+    },
     error: RangeError,
     needs: ["Mat.PTR(row, col)", "该 Mat 在这个方向上是空的"],
   },
@@ -516,10 +578,6 @@ test("guards: 贴边但合法的输入不受影响", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 就地写入的那批方法在**入口**就把下标校验掉了，循环里走的是 access.rawPtr() 取到
-// 的原生访问器，不再逐像素过 PTR()。这两条守卫钉住这个分工的两端。
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 // ±Infinity 必须放行。
 //
 // 这是一次真实的误伤：guards.number 起初图省事写成 `Number.isFinite`，把 ±Infinity
@@ -566,7 +624,9 @@ test("guards: ±Infinity 是合法运算数，不能被误伤", async () => {
     assert.deepStrictEqual(Array.from(c.DATA()), [-Infinity, 2, 3, 4]);
 
     // NaN 仍然拒 —— 两条边界是分开定的，不是一句 isFinite 顺手带出来的
-    assert.throws(() => mk().addConstant(NaN), TypeError);
+    const d = mk();
+    out.push(d);
+    assert.throws(() => d.addConstant(NaN), TypeError);
   } finally {
     for (const m of out) m.delete();
   }
@@ -579,15 +639,22 @@ test("guards: 写进数据里的 NaN / Infinity 不受限制（运算数与数�
     // arrayLike 只查长度、不查元素值：往指定像素写 NaN 表示「此处无效」是正当写法。
     // 这条不对称是有意的，别在后续改动里「顺手统一」掉。
     mat.replaceMatOnRow([Infinity, NaN], 0);
+    // replaceMatOnPoint 写的也是一格数据（曾被当成运算数拒收 NaN，已改）。
+    mat.replaceMatOnPoint(NaN, 1, 1);
     const got = Array.from(mat.DATA());
     assert.strictEqual(got[0], Infinity);
     assert.ok(Number.isNaN(got[1]));
-    assert.deepStrictEqual(got.slice(2), [3, 4]);
+    assert.strictEqual(got[2], 3);
+    assert.ok(Number.isNaN(got[3]));
   } finally {
     mat.delete();
   }
 });
 
+// ---------------------------------------------------------------------------
+// 就地写入的那批方法在**入口**就把下标校验掉了，循环里按地址直接读写 wasm 堆
+// （access.pixels()），不再逐像素过 PTR()。这两条守卫钉住这个分工的两端。
+// ---------------------------------------------------------------------------
 test("guards: 就地写入方法报的是自己的函数名，不是 Mat.PTR", async () => {
   const cv = await getCv();
   const mat = mat3(cv);
@@ -641,8 +708,8 @@ test("guards: 逐像素循环不经过 PTR()（经过就是每像素多两次 em
   const src = cv.matFromArray(2, 2, cv.CV_32FC1, [10, 20, 30, 40]);
   const realPTR = cv.Mat.prototype.PTR;
   // 把 PTR 换成地雷：循环里只要碰它一次就炸。这是唯一能观察到「循环走没走
-  // rawPtr」的办法，而这正是最容易被后来的改动悄悄改回去的地方——走 PTR 会让
-  // 这些方法慢 1.8–2.1x，倍数见 test/bench/inplace-ops.bench.js 的门禁输出。
+  // PTR」的办法，而这正是最容易被后来的改动悄悄改回去的地方——走 PTR 会让
+  // 这些方法慢上百倍，倍数见 test/bench/inplace-ops.bench.js 的门禁输出。
   cv.Mat.prototype.PTR = function () {
     throw new Error("循环里调了 PTR()");
   };
@@ -691,11 +758,16 @@ test("guards: 重复加载不会把 matFromArray 一层层包起来，PTR 也不
     "function",
     "重复加载后 PTR 丢了",
   );
-  assert.throws(
-    () => cv.matFromArray(2, 2, cv.CV_8UC1, [1, 2, 3, 4]).PTR(9, 9),
-    RangeError,
-    "重复加载后 PTR 的边界校验失效",
-  );
+  const probe = cv.matFromArray(2, 2, cv.CV_8UC1, [1, 2, 3, 4]);
+  try {
+    assert.throws(
+      () => probe.PTR(9, 9),
+      RangeError,
+      "重复加载后 PTR 的边界校验失效",
+    );
+  } finally {
+    probe.delete();
+  }
   assert.strictEqual(
     firstPTR.length,
     cv.Mat.prototype.PTR.length,
@@ -733,5 +805,35 @@ test("guards: 拦下一次错误调用后，Mat 与模块都完好", async () =>
     );
   } finally {
     mat.delete();
+  }
+});
+
+test("guards: dftSplit 在空 Mat 上抛错时，释放它已经分配的两个 Mat", async () => {
+  const cv = await getCv();
+  // dftSplit 先 zeros() 出实部 / 虚部两个 Mat，再逐元素写；空 Mat 上写第一个元素
+  // 就会抛 RangeError。把 zeros 包一层，记下它分配出的每个 Mat，抛错之后逐个
+  // 检查是否已被释放——这是 JS 侧唯一能观察到 wasm 堆泄漏的办法。
+  const realZeros = cv.Mat.zeros;
+  const made = [];
+  const tracked = function zeros(...args) {
+    const m = realZeros.apply(this, args);
+    made.push(m);
+    return m;
+  };
+  // embind 的重载分发器会回头读 cv.Mat.zeros.overloadTable，换函数时要一并带上。
+  Object.assign(tracked, realZeros);
+  cv.Mat.zeros = tracked;
+  const empty = new cv.Mat(0, 3, cv.CV_32FC1);
+  try {
+    assert.throws(() => empty.dftSplit(), RangeError);
+    assert.ok(made.length > 0, "前提：dftSplit 应先分配了输出 Mat");
+    assert.ok(
+      made.every((m) => m.isDeleted()),
+      `dftSplit 抛错后有 ${made.filter((m) => !m.isDeleted()).length} 个 Mat 没被释放`,
+    );
+  } finally {
+    cv.Mat.zeros = realZeros;
+    empty.delete();
+    for (const m of made) if (!m.isDeleted()) m.delete();
   }
 });

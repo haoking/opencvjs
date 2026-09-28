@@ -113,8 +113,8 @@ test(".d.ts 声明的 cv 顶层符号集与运行时严格相等", async () => {
   const declared = declaredSymbols(readDts(), "cv");
 
   // 规模下限：两个集合都空时「相等」也成立，那样这条门禁就什么都没查。
-  // 本产物实测 1450 个顶层符号；取 1000 作下限，既能拦住空集，也不会因为上游
-  // 增删几个符号就误报。
+  // 5.0.0 产物实测 1653 个顶层符号（4.14.0 时 1450）；取 1000 作下限，既能拦住
+  // 空集，也不会因为上游增删几个符号就误报。
   assert.ok(
     runtime.length > 1000,
     `运行时只 dump 到 ${runtime.length} 个顶层符号 —— 加载或 dump 出了问题`,
@@ -150,16 +150,21 @@ test("Mat 的成员必须包含 embind 的 delete()（只 dump Mat.prototype 会
   // delete / isDeleted / deleteLater / isAliasOf 挂在 ClassHandle.prototype 上，
   // 不在 Mat.prototype 上。mat.delete() 出现在本项目每一个示例里——漏掉它，
   // TS 用户抄任何一个示例都会报错。
-  for (const name of ["delete", "isDeleted", "deleteLater", "isAliasOf"]) {
-    assert.ok(
-      declared.has(name),
-      `.d.ts 的 Mat 里缺少 ${name}() —— dump 只取了 Mat.prototype，没走原型链`,
-    );
-    assert.strictEqual(
-      typeof cv.matFromArray(1, 1, cv.CV_8UC1, [1])[name],
-      "function",
-      `运行时 Mat 上没有 ${name}`,
-    );
+  const probe = cv.matFromArray(1, 1, cv.CV_8UC1, [1]);
+  try {
+    for (const name of ["delete", "isDeleted", "deleteLater", "isAliasOf"]) {
+      assert.ok(
+        declared.has(name),
+        `.d.ts 的 Mat 里缺少 ${name}() —— dump 只取了 Mat.prototype，没走原型链`,
+      );
+      assert.strictEqual(
+        typeof probe[name],
+        "function",
+        `运行时 Mat 上没有 ${name}`,
+      );
+    }
+  } finally {
+    probe.delete();
   }
 });
 

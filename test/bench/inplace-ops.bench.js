@@ -3,60 +3,59 @@
 // 就地写入类操作的性能回归门禁。
 //
 // ── 这个门禁防的是什么 ────────────────────────────────────────────────────────
-// replaceMatOnRect / rectAdd / rectSubtract / replaceMatOnCol / addOnCol 这几个方法
-// 是逐像素写入的。它们**不调用 Mat.PTR()**：下标范围已经由各自的入口 guards 一次性
-// 证明合法，循环里用的是 typed-access 的 rawPtr() 在循环外取到的原生访问器名。
+// replaceMatOnRect / rectAdd / rectSubtract / replaceMatOnCol / addOnCol 这五个方法是
+// 逐像素写入的。它们在入口用 guards 一次性证明下标范围合法，循环里按地址直接读写
+// wasm 堆（typed-access 的 pixels()），**一次 embind 调用都不做**。
 //
-// 「图省事直接在循环里调 PTR()」是随时可能被写回去的改动 —— 代码更短、行为也完全
-// 正确，只是慢。慢多少：PTR() 自己要查边界，而边界要读 this.rows / this.cols，那是
-// **两个 embind getter**，每次读取都是一次跨语言调用。本文件每次运行都会把这个倍数
-// 打印在「退化参照（循环调 PTR）」那一行上，本机实测落在 **1.8–2.1x**。
-//
-// ⚠️ 别把这个倍数抄进别处的注释再各自漂移 —— 源码里曾经同时存在 38% / 82% / 105%
-// 三种说法（分别来自三组口径不同的对照），互相差到一倍。要引用就引用本门禁的输出。
+// 最容易被写回去的是「逐像素调访问器」：原生的 *Ptr(i, j)（3.0.0 就是这么写的），
+// 或者更短的 PTR(i, j)。代码更短、行为也正确，只是每个像素都要跨一次语言边界、再新建
+// 一个 TypedArray（PTR 还要多读 rows / cols 两个 embind getter）——慢上百倍。本文件
+// 每次运行都把这两种写法作为「退化参照」一起测、把倍数打印出来。**别把倍数抄进别处的
+// 注释**：源码里曾经同时存在 38% / 82% / 105% 三种说法（三组口径不同的对照），互相
+// 差到一倍；要引用就引用本门禁的输出。
 //
 // ── 为什么 region-ops.bench.js 覆盖不到 ──────────────────────────────────────
-// 那个门禁测的是 roiClone()，而 roiClone() 内部是「原生 roi + clone」，**根本不经过
-// PTR，也不逐像素循环**。把上面这几个方法的循环改回调 PTR，它照样一路绿灯。也就是
-// 说，在本文件出现之前，一次约 2x 的退化能悄悄合进主干。这正是本项目一直在清的
-// 「会说谎的绿灯」，所以补上这个门禁。
+// 那个门禁测的是 roiClone()，而 roiClone() 内部是「原生 roi + clone」，**根本不逐像素
+// 循环**。把上面这几个方法的循环改回逐像素调访问器，它照样一路绿灯——在本文件出现
+// 之前，这样一次退化能悄悄合进主干。这正是本项目一直在清的「会说谎的绿灯」。
 //
 // ── 门禁的形状（与直觉相反的一点）────────────────────────────────────────────
-// 直觉的写法是「对照组 = 循环调 PTR 的版本，阈值 1.5×」。**那是无效的**，方向反了：
-// 被测实现比对照组快一倍，比值恒在 0.5 附近；真有人把循环改回 PTR，比值升到 1.0，
-// 距离 1.5 的阈值还远得很 —— 门禁照样打印「达标」。用第七节那组实测数据验算过：
+// 直觉的写法是「对照组 = 退化写法，阈值 1.5×」。**那是无效的**，方向反了：被测实现比
+// 退化写法快得多，比值远小于 1；真有人把循环改回退化写法，比值也只升到 1.0 左右，
+// 离 1.5 的阈值还远——门禁照样打印「达标」。所以基准取的是**「按地址直接读写堆」的
+// 手写参照**，也就是被测实现该有的样子（和 region-ops.bench.js 拿被测实现所封装的原语
+// 当基准同理），阈值为参照 × 1.5。这个形状对「循环变慢」这件事本身报警，不只针对某一
+// 种写法。退化参照照样每轮都测，同时用来检查本门禁**还有没有鉴别力**，见
+// MIN_DISCRIMINATION 那段。
 //
-//   现状 actual=176.73  对照=362.01  阈值 543.0  → PASS（对）
-//   退化 actual=362.01  对照=362.01  阈值 543.0  → PASS（错，本该 FAIL）
+// ── 次数、规模与比较口径 ──────────────────────────────────────────────────────
+// 快慢两类实现差两个数量级：用同一个次数，要么快的那一方只跑几毫秒、测不准，要么
+// 慢的那一方一轮就要几秒。所以各用各的次数，比较的是**每次调用**的耗时。
 //
-// 所以对照组取的是**「循环走原生访问器」的参照实现**（和 region-ops.bench.js 一样：
-// 拿被测实现所封装的那个原语当基准），阈值 baseline × 1.5：
+// 规模刻意取大（512×512 上写 256×256、列长 512）。被测实现每次调用有一笔与像素数
+// 无关的固定开销：入口校验要读 rows / cols 等 embind getter，取地址也要读 data /
+// step。在 32×32 上循环本身只要约 1 µs，那笔固定开销就占到三四成，比值贴着 1.5
+// 的阈值来回晃（实测 1.46–1.48x），门禁会随机报红。本门禁防的是**每像素**的开销
+// 退化，规模一大，固定开销的占比可以忽略，退化照样一眼可见。
 //
-//   现状 actual=176.73  对照=176.73  阈值 265.1  → PASS
-//   退化 actual=362.01  对照=176.73  阈值 265.1  → FAIL ✔
-//
-// 这个形状还更稳：它对「循环变慢」这件事本身报警，不只针对 PTR 这一种写法。
-// 「循环调 PTR」的版本仍然每轮都测，但只作为参照打印出来 —— 它同时用来检查本门禁
-// **还有没有鉴别力**，见下面 MIN_DISCRIMINATION 那段。
-//
-// 测量方法与 region-ops.bench.js 一致：三个版本逐轮轮换起跑顺序、丢弃第 1 轮（JIT
-// 分层编译与 embind 调用桥的一次性预热会被先跑的那一方整体付掉，是测量顺序造成的
-// 伪影）、取第 2 轮起的最小值。
+// 测量方法与 region-ops.bench.js 一致：各实现逐轮轮换起跑顺序、丢弃第 1 轮（JIT 分层
+// 编译与 embind 调用桥的一次性预热会被先跑的那一方整体付掉，是测量顺序造成的伪影）、
+// 取第 2 轮起的最小值。
 const { getCv } = require("../helpers");
 
-const SIZE = 64; // 源图 64×64 CV_32FC1
-const RECT = { x: 1, y: 1, width: 32, height: 32 };
+const SIZE = 512; // 源图 512×512 CV_32FC1
+const RECT = { x: 1, y: 1, width: 256, height: 256 };
+const COL = 3;
 const ROUNDS = 4; // 第 1 轮是预热轮，丢弃；取第 2..4 轮的最小值
 
-// 被测实现相对参照实现允许的倍数。region-ops.bench.js 用的也是 1.5，理由相同：
-// 两者做的是同一件事，比值理应接近 1x，留 50% 给测量噪声。
+// 被测实现相对参照允许的倍数。多出来的只该是入口校验与取堆视图的固定开销，
+// 留 50% 给测量噪声（region-ops.bench.js 用的也是 1.5，理由相同）。
 const LIMIT_FACTOR = 1.5;
 
-// 「循环调 PTR」的版本至少要比参照实现慢这么多，本门禁才有鉴别力可言 —— 因为
-// LIMIT_FACTOR 是 1.5，如果 PTR 版本只慢 20%，那么把循环改回 PTR 也过得了门禁。
-// 实测这个比值是 1.9–2.1，余量充足。真跌到 1.5 以下就要发声，而不是继续报绿：
-// 那意味着 embind getter 变便宜了（门禁失去意义，该删或该重新定标），或者被测实现
-// 已经在偷偷做等价的事。
+// 每个退化参照至少要比参照慢这么多，本门禁才有鉴别力可言：如果退化写法只慢 20%，
+// 那么把循环改回那种写法也过得了 1.5 倍的门禁。真跌到这里以下就要发声，而不是继续
+// 报绿——那意味着 embind 调用变便宜了（门禁该重新定标），或者被测实现已经在偷偷做
+// 等价的事。
 const MIN_DISCRIMINATION = 1.5;
 
 // ROUNDS < 2 时 rounds.slice(1) 是空数组，Math.min() 返回 Infinity，阈值随之变成
@@ -72,33 +71,15 @@ if (ROUNDS < 2) {
   process.exit(1);
 }
 
-/** 复刻 typed-access.js 的 depth → 原生访问器映射，供参照实现使用。 */
-function ptrTable(cv) {
-  const table = [];
-  for (const [depth, method] of [
-    [cv.CV_8U, "ucharPtr"],
-    [cv.CV_8S, "charPtr"],
-    [cv.CV_16U, "ushortPtr"],
-    [cv.CV_16S, "shortPtr"],
-    [cv.CV_32S, "intPtr"],
-    [cv.CV_32F, "floatPtr"],
-    [cv.CV_64F, "doublePtr"],
-  ]) {
-    table[depth] = method;
-  }
-  return table;
-}
-
-function measure(n, fn) {
+/** 跑 n 次，返回每次调用的平均耗时（微秒）。 */
+function perCallMicros(n, fn) {
   const start = process.hrtime.bigint();
   for (let i = 0; i < n; i += 1) fn();
-  return Number(process.hrtime.bigint() - start) / 1e6;
+  return Number(process.hrtime.bigint() - start) / 1e3 / n;
 }
 
 async function main() {
   const cv = await getCv();
-  const TABLE = ptrTable(cv);
-  const raw = (mat) => TABLE[mat.depth()];
 
   const data = new Array(SIZE * SIZE);
   for (let i = 0; i < data.length; i += 1) data[i] = i % 7;
@@ -112,147 +93,185 @@ async function main() {
   const rect = new cv.Rect(RECT.x, RECT.y, RECT.width, RECT.height);
   const colArr = new Array(SIZE).fill(2);
 
-  // 每个用例三份实现：
-  //   reference —— 参照：循环外取一次原生访问器（= 被测实现该有的样子），作为基准
+  /**
+   * 参照实现用的寻址：每次调用都重新取（被测实现也是每次调用都取），CV_32F 专用。
+   * 堆视图最后取，理由同 typed-access.js 的 pixels()。
+   */
+  function layout(m) {
+    const base = m.data.byteOffset / 4;
+    const rowStep = m.step[0] / 4;
+    const pixelStep = m.elemSize() / 4;
+    return { heap: cv.HEAPF32, base, rowStep, pixelStep };
+  }
+
+  // 每个用例四份实现：
+  //   reference —— 参照：按地址直接读写堆（= 被测实现该有的样子），作为基准
   //   actual    —— 被测：dist/ 里真正发布的那个方法
-  //   viaPTR    —— 退化参照：循环里逐像素调 PTR()（本门禁要防的写法）
-  const CASES = [
-    {
-      name: "replaceMatOnRect 32×32",
-      n: 1500,
+  //   nativePtr —— 退化参照：循环里逐像素调原生 floatPtr()（3.0.0 的写法）
+  //   viaPTR    —— 退化参照：循环里逐像素调 PTR()
+  // fast / slow 是两类实现各自的调用次数。
+  // 参照与退化参照都不收「(旧值, 新值) => 值」这种回调：三个用例共用同一段函数
+  // 字面量，回调的调用点会变成多态、V8 不再内联，参照自己就先慢了一截，门禁随之
+  // 变松。被测实现也是出于同一个原因拆成固定形状的内核（见 mat-region.js）。
+  // sign：0 = 拷贝，1 = 累加，-1 = 相减。
+  const CASES = [];
+  for (const [name, sign] of [
+    ["replaceMatOnRect", 0],
+    ["rectAdd", 1],
+    ["rectSubtract", -1],
+  ]) {
+    CASES.push({
+      name: `${name} ${RECT.width}×${RECT.height}`,
+      fast: 1000,
+      slow: 10,
       reference() {
-        const d = raw(mat);
-        const s = raw(src);
-        for (let i = 0; i < rect.height; i += 1) {
-          for (let j = 0; j < rect.width; j += 1) {
-            mat[d](i + rect.y, j + rect.x)[0] = src[s](i, j)[0];
+        const d = layout(mat);
+        const s = layout(src);
+        const { x, y, width: w, height: h } = rect;
+        for (let i = 0; i < h; i += 1) {
+          let di = d.base + (y + i) * d.rowStep + x * d.pixelStep;
+          let si = s.base + i * s.rowStep;
+          if (sign === 0) {
+            for (
+              let j = 0;
+              j < w;
+              j += 1, di += d.pixelStep, si += s.pixelStep
+            ) {
+              d.heap[di] = s.heap[si];
+            }
+          } else {
+            for (
+              let j = 0;
+              j < w;
+              j += 1, di += d.pixelStep, si += s.pixelStep
+            ) {
+              d.heap[di] += sign * s.heap[si];
+            }
           }
         }
       },
-      actual: () => mat.replaceMatOnRect(src, rect),
+      actual: () => mat[name](src, rect),
+      nativePtr() {
+        for (let i = 0; i < rect.height; i += 1) {
+          for (let j = 0; j < rect.width; j += 1) {
+            const px = mat.floatPtr(i + rect.y, j + rect.x);
+            const v = src.floatPtr(i, j)[0];
+            px[0] = sign === 0 ? v : px[0] + sign * v;
+          }
+        }
+      },
       viaPTR() {
         for (let i = 0; i < rect.height; i += 1) {
           for (let j = 0; j < rect.width; j += 1) {
-            mat.PTR(i + rect.y, j + rect.x)[0] = src.PTR(i, j)[0];
+            const px = mat.PTR(i + rect.y, j + rect.x);
+            const v = src.PTR(i, j)[0];
+            px[0] = sign === 0 ? v : px[0] + sign * v;
           }
         }
       },
-    },
-    {
-      name: "rectAdd 32×32",
-      n: 1500,
+    });
+  }
+  for (const [name, replace] of [
+    ["replaceMatOnCol", true],
+    ["addOnCol", false],
+  ]) {
+    CASES.push({
+      name: `${name} ${SIZE} 行`,
+      fast: 100000,
+      slow: 2000,
       reference() {
-        const d = raw(mat);
-        const s = raw(src);
-        for (let i = 0; i < rect.height; i += 1) {
-          for (let j = 0; j < rect.width; j += 1) {
-            mat[d](rect.y + i, rect.x + j)[0] += src[s](i, j)[0];
-          }
+        const rows = mat.rows;
+        const d = layout(mat);
+        let k = d.base + COL * d.pixelStep;
+        if (replace) {
+          for (let i = 0; i < rows; i += 1, k += d.rowStep)
+            d.heap[k] = colArr[i];
+        } else {
+          for (let i = 0; i < rows; i += 1, k += d.rowStep) d.heap[k] += 1;
         }
       },
-      actual: () => mat.rectAdd(src, rect),
-      viaPTR() {
-        for (let i = 0; i < rect.height; i += 1) {
-          for (let j = 0; j < rect.width; j += 1) {
-            mat.PTR(rect.y + i, rect.x + j)[0] += src.PTR(i, j)[0];
-          }
+      actual: replace
+        ? () => mat.replaceMatOnCol(colArr, COL)
+        : () => mat.addOnCol(1, COL),
+      nativePtr() {
+        for (let i = 0; i < SIZE; i += 1) {
+          const px = mat.floatPtr(i, COL);
+          px[0] = replace ? colArr[i] : px[0] + 1;
         }
       },
-    },
-    {
-      name: "rectSubtract 32×32",
-      n: 1500,
-      reference() {
-        const d = raw(mat);
-        const s = raw(src);
-        for (let i = 0; i < rect.height; i += 1) {
-          for (let j = 0; j < rect.width; j += 1) {
-            mat[d](rect.y + i, rect.x + j)[0] -= src[s](i, j)[0];
-          }
+      viaPTR() {
+        for (let i = 0; i < SIZE; i += 1) {
+          const px = mat.PTR(i, COL);
+          px[0] = replace ? colArr[i] : px[0] + 1;
         }
       },
-      actual: () => mat.rectSubtract(src, rect),
-      viaPTR() {
-        for (let i = 0; i < rect.height; i += 1) {
-          for (let j = 0; j < rect.width; j += 1) {
-            mat.PTR(rect.y + i, rect.x + j)[0] -= src.PTR(i, j)[0];
-          }
-        }
-      },
-    },
-    {
-      name: "replaceMatOnCol 64 行",
-      n: 15000,
-      reference() {
-        const d = raw(mat);
-        for (let i = 0; i < SIZE; i += 1) mat[d](i, 3)[0] = colArr[i];
-      },
-      actual: () => mat.replaceMatOnCol(colArr, 3),
-      viaPTR() {
-        for (let i = 0; i < SIZE; i += 1) mat.PTR(i, 3)[0] = colArr[i];
-      },
-    },
-    {
-      name: "addOnCol 64 行",
-      n: 15000,
-      reference() {
-        const d = raw(mat);
-        for (let i = 0; i < SIZE; i += 1) mat[d](i, 3)[0] += 1;
-      },
-      actual: () => mat.addOnCol(1, 3),
-      viaPTR() {
-        for (let i = 0; i < SIZE; i += 1) mat.PTR(i, 3)[0] += 1;
-      },
-    },
+    });
+  }
+
+  const IMPLS = [
+    ["reference", "fast"],
+    ["actual", "fast"],
+    ["nativePtr", "slow"],
+    ["viaPTR", "slow"],
   ];
 
   let failed = false;
 
   for (const c of CASES) {
-    const rounds = { reference: [], actual: [], viaPTR: [] };
-    const keys = ["reference", "actual", "viaPTR"];
+    const rounds = Object.fromEntries(IMPLS.map(([key]) => [key, []]));
     for (let r = 0; r < ROUNDS; r += 1) {
       // 逐轮轮换起跑顺序，防止某一方系统性地总是先跑而吃到预热成本
-      for (let k = 0; k < keys.length; k += 1) {
-        const key = keys[(r + k) % keys.length];
-        rounds[key].push(measure(c.n, c[key]));
+      for (let k = 0; k < IMPLS.length; k += 1) {
+        const [key, count] = IMPLS[(r + k) % IMPLS.length];
+        rounds[key].push(perCallMicros(c[count], c[key]));
       }
     }
     const best = (key) => Math.min(...rounds[key].slice(1));
     const reference = best("reference");
     const actual = best("actual");
+    const nativePtr = best("nativePtr");
     const viaPTR = best("viaPTR");
     const limit = reference * LIMIT_FACTOR;
+    const us = (v) => `${v.toFixed(2).padStart(8)} µs`;
+    const ratio = (v) => `${(v / reference).toFixed(2)}x`;
 
-    console.log(`\n${c.name}   (${c.n} 次 × ${ROUNDS} 轮，丢弃预热轮取最小值)`);
     console.log(
-      `  参照（循环走原生访问器）  ${reference.toFixed(1).padStart(7)} ms   ← 基准`,
+      `\n${c.name}   （每次调用的耗时；快 ${c.fast} 次 / 慢 ${c.slow} 次 × ${ROUNDS} 轮，丢弃预热轮取最小值）`,
     );
     console.log(
-      `  被测（dist/ 里的实现）    ${actual.toFixed(1).padStart(7)} ms   ${(actual / reference).toFixed(2)}x`,
+      `  参照（按地址直接读写堆）          ${us(reference)}   ← 基准`,
     );
     console.log(
-      `  退化参照（循环调 PTR）    ${viaPTR.toFixed(1).padStart(7)} ms   ${(viaPTR / reference).toFixed(2)}x   ← 本门禁要防的写法`,
+      `  被测（dist/ 里的实现）            ${us(actual)}   ${ratio(actual)}`,
     );
-    console.log(`  阈值 ${limit.toFixed(1)} ms`);
+    console.log(
+      `  退化参照（循环调原生 floatPtr）   ${us(nativePtr)}   ${ratio(nativePtr)}   ← 3.0.0 的写法`,
+    );
+    console.log(
+      `  退化参照（循环调 PTR）            ${us(viaPTR)}   ${ratio(viaPTR)}   ← 本门禁要防的写法`,
+    );
+    console.log(`  阈值 ${limit.toFixed(2)} µs`);
 
     if (actual > limit) {
       console.error(
-        `❌ 性能退化：${c.name} 比「循环走原生访问器」慢了 ` +
-          `${(actual / reference).toFixed(2)}x —— 循环里是不是又逐像素调 PTR() 了？` +
-          `（PTR 要读 rows/cols 两个 embind getter，那是两次跨语言调用）`,
+        `❌ 性能退化：${c.name} 比「按地址直接读写堆」慢了 ${ratio(actual)} —— ` +
+          `循环里是不是又逐像素调访问器了？（每像素一次跨语言调用、一个新 TypedArray）`,
       );
       failed = true;
     }
-    if (viaPTR < reference * MIN_DISCRIMINATION) {
-      console.error(
-        `❌ 本门禁已失去鉴别力：${c.name} 上「循环调 PTR」只比参照慢 ` +
-          `${(viaPTR / reference).toFixed(2)}x，而阈值是 ${LIMIT_FACTOR}x —— ` +
-          `也就是说把循环改回 PTR 也能通过，门禁形同虚设。` +
-          `请重新定标 LIMIT_FACTOR，或确认 embind getter 是否已变便宜（若是，` +
-          `这个门禁连同 rawPtr 那套优化都该重新评估，而不是继续报绿）。`,
-      );
-      failed = true;
+    for (const [label, value] of [
+      ["循环调原生 floatPtr", nativePtr],
+      ["循环调 PTR", viaPTR],
+    ]) {
+      if (value < reference * MIN_DISCRIMINATION) {
+        console.error(
+          `❌ 本门禁已失去鉴别力：${c.name} 上「${label}」只比参照慢 ${ratio(value)}，` +
+            `而阈值是 ${LIMIT_FACTOR}x —— 把循环改回那种写法也能通过，门禁形同虚设。` +
+            `请重新定标 LIMIT_FACTOR，或确认 embind 调用是否已变便宜（若是，这个门禁` +
+            `连同按地址读写堆的那套写法都该重新评估，而不是继续报绿）。`,
+        );
+        failed = true;
+      }
     }
   }
 
