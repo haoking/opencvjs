@@ -95,8 +95,8 @@ extension layer as separate modules under `src/js/`.
       in-place writes, scalar arithmetic, and type-dispatching accessors (`DATA()` / `PTR()`)
 - [x] **Two wasm builds, picked at runtime.** The package ships both a `-msimd128` build and a
       non-SIMD fallback; `loadOpenCV()` probes the engine with `WebAssembly.validate()` and loads
-      the right one — **callers do nothing**. Measured on two architectures: up to **13.13x**
-      (`absdiff`), but `dft` is **0.91x on both** — see
+      the right one — **callers do nothing**. Measured on two architectures: up to **15.88x**
+      (`absdiff`), but `dft` is **0.90x on both** — see
       [SIMD 实测加速比](#simd-实测加速比) and [何时该手动关掉 SIMD](#何时该手动关掉-simd).
       Override with `loadOpenCV({ simd })` or `OPENCV_SIMD`; a variant named explicitly but
       missing **throws** rather than silently falling back
@@ -193,10 +193,10 @@ extension layer as separate modules under `src/js/`.
   npm 包里是拆分形态：`opencv.js`（约 143 KB 的 glue）+ `opencv_js.wasm`，必须同目录、
   文件名不能改；扩展层是 CommonJS 模块，`<script>` 直接引 glue 只能拿到原生 OpenCV，
   要用扩展层得走打包器。
-- **SIMD 在部分算子上更慢，且哪些算子更慢与架构有关。** 实测 `dft CV_32FC1` 在
-  **arm64 与 x86-64 上都是 0.91x**（比 baseline 慢 9%，两个架构复现，是真实退化）；
-  `cvtColor RGBA2GRAY` 在 arm64 上 1.00x、在 **x86-64 上 0.84x**。SIMD 不是无脑赢。
-  完整的两架构数据见 [SIMD 实测加速比](#simd-实测加速比)，
+- **SIMD 在个别算子上更慢。** 实测 `dft CV_32FC1` 在 5.0.0 上 **arm64 与 x86-64 都是
+  0.90x**（比 baseline 慢 10%；4.14.0 时两个架构都是 0.91x——跨版本、跨架构复现，是
+  真实退化）。SIMD 不是无脑赢。4.14.0 时 x86-64 上 `cvtColor` 的 0.84x 在 5.0.0 上
+  没有复现（1.01x）。完整的两架构数据见 [SIMD 实测加速比](#simd-实测加速比)，
   应对办法见 [何时该手动关掉 SIMD](#何时该手动关掉-simd)。
 
 ## Requirements
@@ -296,54 +296,56 @@ baseline 是必需的回退，两份都会随包发布——3.0.0 的包解包 *
 
 - **arm64** —— 3.0.0 发布的 5.0.0 产物，node v22.22.2 / darwin-arm64（本机）。噪声底
   用两份**相同**的二进制标定过：**±3%**，所以 0.97–1.03 之间的比值不代表真实差异。
-- **x86-64** —— **4.14.0 产物**（2.1.0 时的 CI 样本），node v22.23.1 / linux-x64
-  （GitHub Actions `ubuntu-24.04`）。**5.0.0 产物还没在 x86-64 上重测**；这是共享
-  runner，也**没有**做同样的噪声标定，个位数百分比的差异不必当真。
+- **x86-64** —— 5.0.0 产物（打了 `v_round` 补丁的 3.1.0 候选，build-wasm 运行
+  36375538578 里 verify 作业的 CI 样本），node v22.23.2 / linux-x64（GitHub Actions
+  `ubuntu-24.04`）。这是共享 runner，**没有**做同样的噪声标定，个位数百分比的差异
+  不必当真。补丁只改了 `v_round` 一个函数，两列可以并排看。4.14.0 时两个架构的数据见
+  [`CHANGELOG.md`](CHANGELOG.md) 的 2.1.0 一节。
 
-| 操作                            | arm64（5.0.0） | x86-64（4.14.0） | 上游 2020 年数据 |
-| ------------------------------- | -------------- | ---------------- | ---------------- |
-| `absdiff` 8UC3 256²             | **13.75x**     | **13.13x**       | —                |
-| `add` 8UC1 256²                 | **12.58x**     | **11.23x**       | —                |
-| `resize` 8UC4 256²→128²         | **4.29x**      | **4.36x**        | 1.77x            |
-| `pyrDown` 32FC4 256²            | **3.35x**      | **3.41x**        | 3.09x            |
-| `GaussianBlur` 8UC1 256² k=5    | **3.33x**      | **2.60x**        | 3.36x            |
-| `warpAffine` 8UC1 256²          | 2.09x          | 2.00x            | —                |
-| `Sobel` 32FC1 256²              | 2.05x          | 1.84x            | —                |
-| `blur` 32FC1 256² k=5           | 1.60x          | 1.44x            | **0.519x**       |
-| `replaceMatOnRect`（扩展层）    | 1.00x          | 1.04x            | —                |
-| `cvtColor` RGBA2GRAY 8UC4 256²  | 0.99x          | **0.84x**        | —                |
-| `roiClone` 64² 取 32²（扩展层） | 0.98x          | 1.03x            | —                |
-| `dft` 32FC1 256²                | **0.90x**      | **0.91x**        | —                |
+| 操作                            | arm64（5.0.0） | x86-64（5.0.0） | 上游 2020 年数据 |
+| ------------------------------- | -------------- | --------------- | ---------------- |
+| `absdiff` 8UC3 256²             | **13.75x**     | **15.88x**      | —                |
+| `add` 8UC1 256²                 | **12.58x**     | **12.90x**      | —                |
+| `resize` 8UC4 256²→128²         | **4.29x**      | **4.18x**       | 1.77x            |
+| `pyrDown` 32FC4 256²            | **3.35x**      | **3.39x**       | 3.09x            |
+| `GaussianBlur` 8UC1 256² k=5    | **3.33x**      | **2.60x**       | 3.36x            |
+| `warpAffine` 8UC1 256²          | 2.09x          | **2.87x**       | —                |
+| `Sobel` 32FC1 256²              | 2.05x          | 2.04x           | —                |
+| `blur` 32FC1 256² k=5           | 1.60x          | 1.42x           | **0.519x**       |
+| `replaceMatOnRect`（扩展层）    | 1.00x          | 0.97x           | —                |
+| `cvtColor` RGBA2GRAY 8UC4 256²  | 0.99x          | 1.01x           | —                |
+| `roiClone` 64² 取 32²（扩展层） | 0.98x          | 0.94x           | —                |
+| `dft` 32FC1 256²                | **0.90x**      | **0.90x**       | —                |
 
 三件值得注意的事：
 
-- **`dft` 一直是那个退化**：arm64 上 5.0.0 实测 0.90x，4.14.0 时两个架构都是 0.91x。
-  同一个结果跨版本、跨架构、跨 OS 复现，排除了偶然。这是真实退化，不是噪声。应对
-  办法见下一节。
-- **`cvtColor` 的退化有架构差异**：arm64 上 0.99x（噪声底内，等于无变化），x86-64
-  上 4.14.0 时掉到 **0.84x**。那只有一个 CI 样本、未做噪声标定，但 16% 的差距远超
-  任何合理的噪声幅度，倾向于认为是真实的。也就是说「SIMD 在某算子上更慢」这件事
-  本身还依赖架构，不能只测一台机器就下结论。
+- **`dft` 一直是那个退化**：5.0.0 在 arm64 与 x86-64 上实测都是 0.90x，4.14.0 时两个
+  架构都是 0.91x。同一个结果跨版本、跨架构、跨 OS 复现，排除了偶然。这是真实退化，
+  不是噪声。应对办法见下一节。
+- **4.14.0 时 x86-64 上 `cvtColor` 的 0.84x 在 5.0.0 上没有复现**：这次是 1.01x，
+  arm64 上 0.99x，都在噪声范围内。当时认为那 16% 的差距「倾向于真实」；现在看，要么
+  是 5.0.0 改了这个内核，要么那一个 CI 样本本身就偏了——两次都只有单个样本、版本也
+  不同，分不清是哪一种。教训是：共享 runner 上的单个样本不足以给一个算子定性。
 - **上游那个反例没有复现。** 上游 2020 年测得 `blur CV_32FC1` 是 0.519x（慢一倍），
-  这里是 arm64 **1.60x** / x86-64 **1.44x**，都是加速。而同一组数据里
+  这里是 arm64 **1.60x** / x86-64 **1.42x**，都是加速。而同一组数据里
   `GaussianBlur`（3.33x vs 上游 3.36x）与 `pyrDown`（3.35x vs 3.09x）在 arm64 上几乎
   吻合——所以不是整体标定问题，是**逐算子的差异**。结论：那组六年前的逐 kernel 数据
   **不能整体照搬**（六年里 OpenCV 的 SIMD 内核与 emscripten 的代码生成都变了），
   具体算子只能自己实测。顺带一提，`GaussianBlur` 在 x86-64 上是 2.60x、arm64 上
   3.33x —— 同一个算子跨架构也能差这么多。
 
-两个扩展层用例（`roiClone` / `replaceMatOnRect`）在 0.98–1.04x 之间，符合预期：
+两个扩展层用例（`roiClone` / `replaceMatOnRect`）在 0.94–1.00x 之间，符合预期：
 `roiClone` 是原生 `roi()` + `clone()`（一次内存拷贝），`replaceMatOnRect` 是 JS 侧按
 地址读写 wasm 堆的循环，都不经过 `-msimd128` 会向量化的那些 OpenCV 内核。
 
 ### 何时该手动关掉 SIMD
 
 **默认不用管。** 12 个用例里 8 个明显更快（5 个在 3x 以上，两个在 10x 以上），3 个在
-噪声底内，只有 DFT 更慢（arm64，5.0.0）。
+噪声底内，只有 DFT 更慢（arm64，5.0.0）。x86-64 上明确更慢的同样只有 DFT。
 
 **性能上唯一有明确证据的例外是 DFT。** 如果你的负载以 `cv.dft()`（含 `DFT_INVERSE`
-逆变换）为主，SIMD 变体会慢约 10%（arm64 上 5.0.0 实测 0.90x；4.14.0 时两个架构都是
-0.91x）。这时显式关掉：
+逆变换）为主，SIMD 变体会慢约 10%（5.0.0 在 arm64 与 x86-64 上实测都是 0.90x；
+4.14.0 时两个架构都是 0.91x）。这时显式关掉：
 
 ```javascript
 const cv = await require("@haoking/opencvjs")({ simd: false });
@@ -360,8 +362,8 @@ OPENCV_SIMD=0 node your-app.js
 它们很容易把 DFT 的 10% 赚回来。所以只有在 DFT 确实占主导时才值得这么做，
 **并且请自己实测**，不要照搬这里的结论。
 
-如果你在 x86-64 上跑大量 `cvtColor`，那里 4.14.0 时实测是 0.84x，同样可以考虑；但那
-只有一个 CI 样本、5.0.0 也还没重测，不如 DFT 那条结论硬。
+此前这里还有第二条：x86-64 上大量跑 `cvtColor` 时可以考虑关掉（4.14.0 时实测
+0.84x）。5.0.0 上重测是 1.01x，没有复现，这一条已不成立。
 
 **正确性上还有一个例外：3.0.0 及更早发布的 simd 产物在「浮点 → 整数取整」上有偏差**
 （有符号整型的负数结果偏 1，见 [Known Issues](#known-issues)）。在用打了补丁的产物
@@ -440,8 +442,8 @@ CI 里 `build-wasm.yml` 用三变体矩阵并行构建、逐个跑冒烟测试�
 ### Single-file build
 
 给浏览器 `<script>` 直接引用的单文件形态：`build/build.sh --single-file` 把 wasm 以
-base64 内联进 `opencv.js`（体积 +33%；5.0.0 上按 baseline wasm 的 base64 长度估算约
-16 MB 单个文件，未实测）。
+base64 内联进 `opencv.js`（体积 +33%；5.0.0 上实测 16,283,334 B，约 16.3 MB 单个
+文件）。
 
 **它不在 npm 包里。** `assemble.sh` 会拒绝大于 2 MB 的 glue，正是为了挡住它被误打
 进包——27 MB 的包已经够大，再塞一份约 16 MB 的重复产物没有道理。

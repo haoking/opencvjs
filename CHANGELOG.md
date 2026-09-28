@@ -66,6 +66,43 @@ simd 变体验证过：15 个算子 × 5 种整型 depth 的扫描里与 baselin
   测试的 `OPENCV_ARTIFACT`，为冒烟测试 simd 设过它之后组装，会把 SIMD 的 wasm 装进
   `dist/baseline/`）。`OPENCV_SMOKE_REQUIRED` 与其余开关一样只认 `"1"`。
 
+### 候选产物实测（发版前在分支上构建）
+
+build-wasm 运行 36375538578（`fix/review-3.1.0` 分支，`aada7fb`）。三个变体的构建日志
+里各有一行「已打补丁: /patches/opencv-wasm-v_round.patch」。verify 作业在两个变体上各跑
+237 项，全部通过，一致性用例是强制跑的；本机用同一份产物再跑一遍也全过，三个变体的
+冒烟测试都过。取整扫描（15 个算子 × 5 种整型 depth）与 baseline 逐元素相同
+（0 / 270,791）。
+
+| 产物                      | 3.0.0        | 3.1.0 候选   | 变化       |
+| ------------------------- | ------------ | ------------ | ---------- |
+| `baseline/opencv_js.wasm` | 12,104,983 B | 12,104,988 B | +5 B       |
+| 　gzip                    | 3,517,017 B  | 3,517,024 B  | +7 B       |
+| 　brotli                  | 2,565,667 B  | 2,566,869 B  | +1,202 B   |
+| `simd/opencv_js.wasm`     | 14,595,094 B | 14,581,383 B | −13,711 B  |
+| 　gzip                    | 4,030,751 B  | 4,029,197 B  | −1,554 B   |
+| 　brotli                  | 2,879,930 B  | 2,881,231 B  | +1,301 B   |
+| glue `opencv.js`（每份）  | 143,496 B    | 143,496 B    | 逐字节相同 |
+| 单文件 `opencv.js`        | 未实测       | 16,283,334 B | —          |
+| npm 包（解包）            | 27.2 MB      | 27.3 MB      | —          |
+| npm 包（tarball）         | 7.8 MB       | 7.8 MB       | —          |
+
+（gzip 为 `gzip -9`，brotli 为 q11、窗口 24 位，与 3.0.0 一节同一口径；用这套参数重算
+3.0.0 的产物，与那张表逐字节吻合。）
+
+- **simd 变小是补丁本身的效果**：每处内联的 `v_round` 都从 splat + add 换成了一条
+  `f32x4.nearest`。在同一台机器上打补丁前后各构建一次，差值是 −13,709 B，与上表吻合。
+- **baseline 与 3.0.0 只差构建信息里的三个字符串**：`getBuildInformation()` 的
+  Version control、Timestamp、Host。代码没有变化，因为它以 `CV_ENABLE_INTRINSICS=OFF`
+  构建，不包含被补丁改动的头文件。brotli 的 ±1 KB 是压缩器对内容细微变化的正常
+  波动，代码没变的 baseline 也多了 1,202 B。
+- **`getBuildInformation()` 的 Version control 一行从这一版起显示 `5.0.0-dirty`**：
+  构建时源码树打过补丁，git 就会这样报告。这是预期结果，不是构建出了问题；版本断言
+  读的是「General configuration for OpenCV 5.0.0」那一行，不受影响。
+- **x86-64 的 SIMD 加速比在这次运行上重测了**（5.0.0 上首次），README 的表已更新：
+  `dft` 在两个架构上都是 0.90x；4.14.0 时 x86-64 上 `cvtColor` 的 0.84x 没有复现
+  （1.01x），据此删掉了「x86-64 上大量跑 `cvtColor` 时可以考虑关掉 SIMD」那条建议。
+
 ## 3.0.0 — 2026-07-28
 
 **基线由 OpenCV 4.14.0 升到 5.0.0**（上游 2026-06-06 发布）。这是一次真正的破坏性
