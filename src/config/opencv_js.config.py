@@ -11,7 +11,7 @@
 #   真要减体积得靠 build/build.sh 的 EXTRA_CMAKE_OPTIONS 传 -DBUILD_opencv_dnn=OFF，
 #   但有风险（objdetect 的 FaceDetectorYN 走 dnn::readNet，5.x 新增的
 #   mcc_CheckerDetector 也有 setUseDnnModel），见 build/build.sh 中
-#   CMAKE_OPTION_ARG 上方的注释。
+#   「--cmake_option 透传入口」那段注释（EXTRA_CMAKE_OPTIONS）。
 #   下方 dnn = {...} 字典本身逐字保留自上游，只是不再传进 makeWhiteList()——
 #   保留它同样是为了跟进上游时 diff 保持干净。
 #

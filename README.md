@@ -20,6 +20,29 @@ build, patched in place and never rebased. **2.0 builds the artifact from source
 emsdk, pinned to `build/opencv-version.txt`) with its own export whitelist, and keeps the
 extension layer as separate modules under `src/js/`.
 
+## What changed in 3.1
+
+- **A batch of correctness fixes from a full-repository review. No API was removed**, and
+  every fix replaces a result that contradicted the docs or OpenCV's own semantics — code
+  written against the docs keeps working. Before/after table in
+  [`CHANGELOG.md`](CHANGELOG.md).
+- **In-place writes into integer Mats now saturate** like OpenCV's `saturate_cast`
+  (`rectAdd`, `addOnCol`, `replaceMatOnRect`, …): `250 + 20` on `CV_8U` gives `255`, not
+  `14`; halves round to even; `NaN` writes `0`.
+- **`cv.norm2` on integer Mats measures the real difference** (it used to saturate: `[0]`
+  vs `[10]` on `CV_8U` gave `0`), and now honours `NORM_RELATIVE` and `NORM_HAMMING`.
+- **Extension methods on native `roi()` views** (`PTR`, `replaceMatOnRow`, `sum`,
+  `reshapeRows`) no longer read or write past the view.
+- **SIMD builds round like OpenCV.** Upstream's WASM SIMD `v_round` is `trunc(x + 0.5)`;
+  `build/build.sh` now patches it, so both variants agree bit for bit on every
+  float → integer kernel. The 3.0.0 simd artifacts are affected — see
+  [Known Issues](#known-issues).
+- Two relaxations: `replaceMatOnPoint` accepts `NaN`, and `loadOpenCV()` in auto mode reuses
+  the variant already loaded in the process (explicitly asking for the other one now throws
+  before anything is loaded).
+- The seven in-place write methods address the wasm heap directly — two orders of magnitude
+  faster than 3.0.0's per-pixel accessor calls.
+
 ## What changed in 3.0
 
 - **Baseline moved from OpenCV 4.14.0 to 5.0.0.** This is a genuinely breaking upgrade.
@@ -29,8 +52,11 @@ extension layer as separate modules under `src/js/`.
   them throws `TypeError`. See [Known Issues](#known-issues) for what replaces what.
 - `cv.SVDecomp` and `cv.mulSpectrums` are **unaffected** — still native, still whitelisted;
   their 5.0.0 declarations are byte-identical to 4.14.0's.
-- Everything else in the API — the 20 extra `Mat` methods, `cv.norm2`, the SIMD/baseline
+- Everything else in the API — the 19 extra `Mat` methods, `cv.norm2`, the SIMD/baseline
   runtime probe, the entry point — is unchanged.
+- The package grows to **27.2 MB unpacked** (7.8 MB tarball): each 5.0.0 wasm is ~41–42%
+  larger raw and ~28–30% larger after gzip/brotli than its 4.14.0 counterpart. Full
+  numbers in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## What changed in 2.1
 
@@ -65,7 +91,7 @@ extension layer as separate modules under `src/js/`.
 
 ## Features
 
-- [x] 20 extra `cv.Mat` methods plus `cv.norm2` on top of a stock OpenCV build — region copies,
+- [x] 19 extra `cv.Mat` methods plus `cv.norm2` on top of a stock OpenCV build — region copies,
       in-place writes, scalar arithmetic, and type-dispatching accessors (`DATA()` / `PTR()`)
 - [x] **Two wasm builds, picked at runtime.** The package ships both a `-msimd128` build and a
       non-SIMD fallback; `loadOpenCV()` probes the engine with `WebAssembly.validate()` and loads
@@ -80,7 +106,7 @@ extension layer as separate modules under `src/js/`.
       does not
 - [x] **Arguments are checked before they reach wasm** (`src/js/guards.js`) — on every extension
       method **and on `PTR()` itself**: out-of-range rects and row/column indices, mismatched
-      sizes/types, non-finite constants and already-`delete()`d Mats all raise a standard
+      sizes/types, `NaN` or non-number constants and already-`delete()`d Mats all raise a standard
       `TypeError` / `RangeError` naming the function, the argument, the value received and the
       range expected. Without that layer a bad `Rect` aborts inside C++ and emscripten rethrows it
       as a **bare number** (a heap pointer — not an `Error`, `e.message` is `undefined`), while a
@@ -91,24 +117,29 @@ extension layer as separate modules under `src/js/`.
       ecosystem declare `SIFT` / `PCA` / `FlannBasedMatcher`, which this build does not have, and
       omit `FaceDetectorYN`, which it does — so code type-checks and then throws at runtime
 - [x] Zero runtime dependencies, zero test dependencies (`node:test` only)
-- [x] `npm test` runs 205 assertions (0 fail, node v22.22.2): 84 region-op correctness cases
+- [x] `npm test` runs 237 assertions (0 fail, node v22.22.2): 84 region-op correctness cases
       across 7 depths × 4 channel counts × 3 APIs, 29 `clone()` deep-copy and copy-semantics
-      cases, 21 regression cases for the defects 2.0 fixed, 50 argument-validation cases,
-      12 SIMD-detection cases, 6 `.d.ts`-vs-runtime consistency cases, 2 baseline-vs-SIMD
-      output-parity cases, and 1 wasm-artifact smoke test. The 3 artifact-dependent ones skip
-      unless `OPENCV_ARTIFACT` / `dist/simd/` are present, and turn from skip into hard failure
-      under `OPENCV_SMOKE_REQUIRED=1` / `OPENCV_PARITY_REQUIRED=1` (both set in CI)
-- [x] The same 205 assertions run twice in CI — once forced onto `baseline`, once onto `simd`.
+      cases, 21 regression cases for the defects 2.0 fixed, 24 regression cases for defects
+      fixed after 3.0.0 (native views, `±Infinity` in data, `norm2`, `constantDivide`,
+      saturating in-place writes, single-variant loading), 57 argument-validation cases,
+      12 SIMD-detection cases, 6 `.d.ts`-vs-runtime consistency cases, 1 artifact-version
+      check, 2 baseline-vs-SIMD output-parity cases, and 1 wasm-artifact smoke test.
+      The 3 artifact-dependent ones skip unless `OPENCV_ARTIFACT` / `dist/simd/` are present,
+      and turn from skip into hard failure under `OPENCV_SMOKE_REQUIRED=1` /
+      `OPENCV_PARITY_REQUIRED=1` (both set in CI)
+- [x] The same 237 assertions run twice in CI — once forced onto `baseline`, once onto `simd`.
       Plus an output-parity check that feeds identical deterministic input to both variants
-      and compares 14 operations element-wise (bit-exact for integer kernels and the extension
+      and compares 16 operations element-wise (bit-exact for integer kernels and the extension
       layer, 1e-5 relative for float kernels, whose SIMD paths may reassociate accumulation)
 - [x] `npm run bench` runs two performance gates, each comparing the shipped method against the
       primitive it is built on (alternating rounds, warm-up round discarded, minimum taken):
       `region-ops` — `roiClone()` 14.6–14.8 ms vs the native `roi()` + `clone()` it wraps
       13.7–14.3 ms (20000 iterations, 64×64 `CV_32FC1`, `Rect(1, 1, 32, 32)`); `inplace-ops` —
-      the five per-pixel write methods vs a raw-accessor reference loop, which catches the one
-      shortcut that would otherwise slip through: routing those loops back through `PTR()` costs
-      **1.8–2.1x** and `region-ops` cannot see it (`roiClone` never touches `PTR`)
+      the five per-pixel write methods vs a hand-written loop that reads and writes the wasm heap
+      directly, i.e. what they are supposed to cost. It catches any fallback to per-pixel embind
+      calls, which `region-ops` cannot see (`roiClone` never loops per pixel): going back through
+      the native `*Ptr()` accessors or `PTR()` costs orders of magnitude more, and the gate prints
+      both of those as reference lines
 
 ## Known Issues
 
@@ -130,6 +161,23 @@ extension layer as separate modules under `src/js/`.
   - **特征点**：`AKAZE`/`BRISK`/`KAZE`/`AgastFeatureDetector` 没有等价替代。
     产物里仍有 `ORB`、`MSER`、`FastFeatureDetector`、`GFTTDetector`、
     `SimpleBlobDetector`。
+- **SIMD 变体的「浮点 → 整数取整」与 OpenCV 不一致（3.0.0 及更早发布的产物）。**
+  上游 OpenCV 的 wasm SIMD 后端把 `v_round` 写成 `trunc(x + 0.5)`：有符号整型的负数
+  结果一律偏大 1（`-20.0` 取整成 `-19`），`.5` 也一律向上进位，而 `cvRound` 是四舍
+  六入五成双。所有要把浮点结果取整成整数的内核都受影响——`addWeighted`、带缩放的
+  `convertTo`、`divide`、`multiply`、`CV_16S` 上的 `GaussianBlur` / `blur` / `resize` /
+  `Sobel`，以及建立在它们之上的 `addConstant` / `mulConstant` / `constantSubtract` /
+  `constantDivide`：实测 `CV_8S` / `CV_16S` 上约一半的值偏 1，无符号类型只在 `.5` 上
+  差 1。baseline 变体不受影响。
+  `build/build.sh` 现在构建时会给上游源码打补丁修正（`build/patches/opencv-wasm-v_round.patch`，
+  上游 4.x / 5.x 分支都还没修），双产物一致性测试也补上了这条路径的用例，**用新产物
+  发布的版本不再有此问题**。在那之前，处理有符号整型数据请用 `OPENCV_SIMD=0`（或
+  `loadOpenCV({ simd: false })`）。
+- **`CV_32S` 上的 `addConstant` / `constantSubtract` / `mulConstant` / `constantDivide`
+  溢出时不饱和，而是得到 `INT_MIN`**（`2147483647` 加 10 得 `-2147483648`）。这是
+  上游语义：OpenCV 的 `saturate_cast<int>(double)` 就是 `cvRound`，越界时 wasm 与
+  x86 上都得到 `0x80000000`，两个变体一样。就地写入的方法（`addOnCol` / `rectAdd`
+  等）不走 OpenCV，会正确饱和。
 - **`dftSplit()` 的正确性没有任何证据支撑**（已标 `@deprecated`，代码保留）。它把
   `cv.dft()` 的 CCS 紧凑输出拆成实部/虚部两个 Mat，但这个展开约定从未被独立验证过；
   1.x 时代它唯一的消费者是那个返回 `NaN` 的手写 `mulSpectrums()`，所以也不存在
@@ -140,7 +188,7 @@ extension layer as separate modules under `src/js/`.
   `process.env` 没有；`resolveVariant` 对 `process` 做了 `typeof` 保护，逻辑上安全，
   但没有实测过）。
   这**不是**「拿不到单文件形态」的意思：`build/build.sh --single-file` 会产出 1.x 那样
-  的单文件产物（wasm base64 内联，约 11 MB），它只是**不进 npm 包**——见
+  的单文件产物（wasm base64 内联，5.0.0 上约 16 MB），它只是**不进 npm 包**——见
   [Single-file build](#single-file-build)。
   npm 包里是拆分形态：`opencv.js`（约 143 KB 的 glue）+ `opencv_js.wasm`，必须同目录、
   文件名不能改；扩展层是 CommonJS 模块，`<script>` 直接引 glue 只能拿到原生 OpenCV，
@@ -200,7 +248,8 @@ dist/
 一份 glue，与同目录的 `.wasm` 原样配对。
 
 > ℹ️ 本文档此前在这里写着「两个变体的 glue 内容也不同，不能共用一份」。**那句话是
-> 错的**：实测这两份 glue **逐字节相同**（SHA-256 均为 `da1f9d19…`，各 143,365 B）。
+> 错的**：实测这两份 glue **逐字节相同**（4.14.0 产物上 SHA-256 均为 `da1f9d19…`、
+> 各 143,365 B；5.0.0 产物上均为 `33711c08…`、各 143,496 B）。
 > 分目录的理由只有 `.wasm` 同名这一条。每个目录仍要各放一份 glue，但那是因为 glue
 > 按 `__dirname` 找 `.wasm`，不是因为内容不同；反过来也不能依赖「它们永远相同」。
 
@@ -228,65 +277,73 @@ loadCV.detectSimd(); // boolean：当前引擎支不支持 SIMD（不需要先�
 > 是 SIMD。同理，`OPENCV_SIMD` 的值拼错（`ture`）会抛错而不是被忽略。
 
 > ⚠️ **一个进程里只能加载一个变体。** OpenCV 的 UMD 外壳把 `Module` 泄漏成了隐式
-> 全局变量（`Module = {}`，没有声明关键字，而外壳不是严格模式），第二个变体会撞上
-> 第一个的 embind 注册表并抛 `Cannot register public name 'IntVector' twice`。
-> 正常用法不受影响；确实要对比两个变体请开两个进程（`test/simd-compare.js` 就是这么做的）。
+> 全局变量（`Module = {}`，没有声明关键字，而外壳不是严格模式）。第二个变体的 glue
+> 一旦被加载，会先改写已加载实例上的 JS 辅助函数（实测 `cv.matFromArray` 的长度
+> 校验就此丢失），再撞上 embind 注册表抛 `Cannot register public name 'IntVector' twice`。
+> 所以本进程加载过一个变体之后，`loadOpenCV()` 会在碰到另一个变体之前就拦下：
+> 点名（`{ simd }` 或 `OPENCV_SIMD`）要另一个变体会直接抛错，已加载的实例不受影响；
+> 不点名的自动模式则沿用已加载的那个。正常用法不受影响；确实要对比两个变体请开两个
+> 进程（`test/simd-compare.js` 就是这么做的）。
 
 SIMD 的浏览器覆盖率是 **93.57%**（Chrome 91+ / Firefox 89+ / Safari 16.4+），所以
-baseline 是必需的回退，两份都会随包发布——代价是包体积从 8.3 MB 涨到 **19.4 MB**
-（解包；tarball 6.0 MB）。SIMD 那份 wasm 本身就比 baseline 大 21.7%
-（10,363,503 B vs 8,515,975 B；brotli 后 2.25 MB vs 1.99 MB）。
+baseline 是必需的回退，两份都会随包发布——3.0.0 的包解包 **27.2 MB**（tarball
+7.8 MB；只带一份 wasm 的 2.0.0 是 8.3 MB）。SIMD 那份 wasm 本身就比 baseline 大 20.6%
+（14,595,094 B vs 12,104,983 B；brotli 后 2.88 MB vs 2.57 MB，5.0.0）。
 
 ### SIMD 实测加速比
 
-两个架构各测了一趟，真实产物，每个变体独立进程、启动顺序前后各一趟取最小值
-（`npm run simd:compare`）：
+真实产物，每个变体独立进程、启动顺序前后各一趟取最小值（`npm run simd:compare`）：
 
-- **arm64** —— node v22.22.2 / darwin-arm64（本机）。噪声底用两份**相同**的二进制
-  标定过：**±3%**，所以 0.97–1.03 之间的比值不代表真实差异。
-- **x86-64** —— node v22.23.1 / linux-x64（GitHub Actions `ubuntu-24.04`）。共享
-  runner，**没有**做同样的噪声标定，个位数百分比的差异不必当真。
+- **arm64** —— 3.0.0 发布的 5.0.0 产物，node v22.22.2 / darwin-arm64（本机）。噪声底
+  用两份**相同**的二进制标定过：**±3%**，所以 0.97–1.03 之间的比值不代表真实差异。
+- **x86-64** —— **4.14.0 产物**（2.1.0 时的 CI 样本），node v22.23.1 / linux-x64
+  （GitHub Actions `ubuntu-24.04`）。**5.0.0 产物还没在 x86-64 上重测**；这是共享
+  runner，也**没有**做同样的噪声标定，个位数百分比的差异不必当真。
 
-| 操作                            | arm64      | x86-64     | 上游 2020 年数据 |
-| ------------------------------- | ---------- | ---------- | ---------------- |
-| `absdiff` 8UC3 256²             | **12.81x** | **13.13x** | —                |
-| `add` 8UC1 256²                 | **10.37x** | **11.23x** | —                |
-| `resize` 8UC4 256²→128²         | **4.37x**  | **4.36x**  | 1.77x            |
-| `GaussianBlur` 8UC1 256² k=5    | **3.32x**  | **2.60x**  | 3.36x            |
-| `pyrDown` 32FC4 256²            | **3.27x**  | **3.41x**  | 3.09x            |
-| `Sobel` 32FC1 256²              | 2.07x      | 1.84x      | —                |
-| `warpAffine` 8UC1 256²          | 1.65x      | 2.00x      | —                |
-| `blur` 32FC1 256² k=5           | 1.55x      | 1.44x      | **0.519x**       |
-| `roiClone` 64² 取 32²（扩展层） | 1.00x      | 1.03x      | —                |
-| `replaceMatOnRect`（扩展层）    | 0.95x      | 1.04x      | —                |
-| `cvtColor` RGBA2GRAY 8UC4 256²  | 1.00x      | **0.84x**  | —                |
-| `dft` 32FC1 256²                | **0.91x**  | **0.91x**  | —                |
+| 操作                            | arm64（5.0.0） | x86-64（4.14.0） | 上游 2020 年数据 |
+| ------------------------------- | -------------- | ---------------- | ---------------- |
+| `absdiff` 8UC3 256²             | **13.75x**     | **13.13x**       | —                |
+| `add` 8UC1 256²                 | **12.58x**     | **11.23x**       | —                |
+| `resize` 8UC4 256²→128²         | **4.29x**      | **4.36x**        | 1.77x            |
+| `pyrDown` 32FC4 256²            | **3.35x**      | **3.41x**        | 3.09x            |
+| `GaussianBlur` 8UC1 256² k=5    | **3.33x**      | **2.60x**        | 3.36x            |
+| `warpAffine` 8UC1 256²          | 2.09x          | 2.00x            | —                |
+| `Sobel` 32FC1 256²              | 2.05x          | 1.84x            | —                |
+| `blur` 32FC1 256² k=5           | 1.60x          | 1.44x            | **0.519x**       |
+| `replaceMatOnRect`（扩展层）    | 1.00x          | 1.04x            | —                |
+| `cvtColor` RGBA2GRAY 8UC4 256²  | 0.99x          | **0.84x**        | —                |
+| `roiClone` 64² 取 32²（扩展层） | 0.98x          | 1.03x            | —                |
+| `dft` 32FC1 256²                | **0.90x**      | **0.91x**        | —                |
 
 三件值得注意的事：
 
-- **`dft` 在两个架构上都是 0.91x** —— 同一个数字在两台不同架构、不同 OS、不同 node
-  小版本的机器上复现，排除了偶然。这是真实退化，不是噪声。应对办法见下一节。
-- **`cvtColor` 的退化有架构差异**：arm64 上 1.00x（噪声底内，等于无变化），x86-64 上
-  掉到 **0.84x**。x86-64 那趟只有一个 CI 样本、未做噪声标定，但 16% 的差距远超任何
-  合理的噪声幅度，倾向于认为是真实的。也就是说「SIMD 在某算子上更慢」这件事本身还
-  依赖架构，不能只测一台机器就下结论。
-- **上游那个反例在两个平台都没有复现。** 上游 2020 年测得 `blur CV_32FC1` 是 0.519x
-  （慢一倍），这里是 arm64 **1.55x** / x86-64 **1.44x**，都是加速。而同一组数据里
-  `GaussianBlur`（3.32x vs 上游 3.36x）与 `pyrDown`（3.27x vs 3.09x）在 arm64 上几乎
+- **`dft` 一直是那个退化**：arm64 上 5.0.0 实测 0.90x，4.14.0 时两个架构都是 0.91x。
+  同一个结果跨版本、跨架构、跨 OS 复现，排除了偶然。这是真实退化，不是噪声。应对
+  办法见下一节。
+- **`cvtColor` 的退化有架构差异**：arm64 上 0.99x（噪声底内，等于无变化），x86-64
+  上 4.14.0 时掉到 **0.84x**。那只有一个 CI 样本、未做噪声标定，但 16% 的差距远超
+  任何合理的噪声幅度，倾向于认为是真实的。也就是说「SIMD 在某算子上更慢」这件事
+  本身还依赖架构，不能只测一台机器就下结论。
+- **上游那个反例没有复现。** 上游 2020 年测得 `blur CV_32FC1` 是 0.519x（慢一倍），
+  这里是 arm64 **1.60x** / x86-64 **1.44x**，都是加速。而同一组数据里
+  `GaussianBlur`（3.33x vs 上游 3.36x）与 `pyrDown`（3.35x vs 3.09x）在 arm64 上几乎
   吻合——所以不是整体标定问题，是**逐算子的差异**。结论：那组六年前的逐 kernel 数据
   **不能整体照搬**（六年里 OpenCV 的 SIMD 内核与 emscripten 的代码生成都变了），
   具体算子只能自己实测。顺带一提，`GaussianBlur` 在 x86-64 上是 2.60x、arm64 上
-  3.32x —— 同一个算子跨架构也能差这么多。
+  3.33x —— 同一个算子跨架构也能差这么多。
 
-两个扩展层用例（`roiClone` / `replaceMatOnRect`）在 0.95–1.04x 之间，符合预期：
-它们是 JS 侧的逐像素循环，不走 wasm 内核，本来就不该有变化。
+两个扩展层用例（`roiClone` / `replaceMatOnRect`）在 0.98–1.04x 之间，符合预期：
+`roiClone` 是原生 `roi()` + `clone()`（一次内存拷贝），`replaceMatOnRect` 是 JS 侧按
+地址读写 wasm 堆的循环，都不经过 `-msimd128` 会向量化的那些 OpenCV 内核。
 
 ### 何时该手动关掉 SIMD
 
-**默认不用管。** 12 个算子里 10 个更快，其中 4 个是 3x 以上，两个是 10x 以上。
+**默认不用管。** 12 个用例里 8 个明显更快（5 个在 3x 以上，两个在 10x 以上），3 个在
+噪声底内，只有 DFT 更慢（arm64，5.0.0）。
 
-**唯一有明确证据的例外是 DFT。** 如果你的负载以 `cv.dft()` / `cv.idft()` 为主，
-SIMD 变体会慢约 9%（两个架构一致）。这时显式关掉：
+**性能上唯一有明确证据的例外是 DFT。** 如果你的负载以 `cv.dft()`（含 `DFT_INVERSE`
+逆变换）为主，SIMD 变体会慢约 10%（arm64 上 5.0.0 实测 0.90x；4.14.0 时两个架构都是
+0.91x）。这时显式关掉：
 
 ```javascript
 const cv = await require("@haoking/opencvjs")({ simd: false });
@@ -300,11 +357,15 @@ OPENCV_SIMD=0 node your-app.js
 
 **代价是全进程的。** 变体是进程级的，不能按算子切换（一个进程只能加载一个变体，
 见上）。关掉 SIMD 意味着同一进程里 `absdiff` / `add` 那两位数的加速比也一起没了 ——
-它们很容易把 DFT 的 9% 赚回来。所以只有在 DFT 确实占主导时才值得这么做，
+它们很容易把 DFT 的 10% 赚回来。所以只有在 DFT 确实占主导时才值得这么做，
 **并且请自己实测**，不要照搬这里的结论。
 
-如果你在 x86-64 上跑大量 `cvtColor`，那里实测是 0.84x，同样可以考虑；但那只有一个
-CI 样本，不如 DFT 那条结论硬。
+如果你在 x86-64 上跑大量 `cvtColor`，那里 4.14.0 时实测是 0.84x，同样可以考虑；但那
+只有一个 CI 样本、5.0.0 也还没重测，不如 DFT 那条结论硬。
+
+**正确性上还有一个例外：3.0.0 及更早发布的 simd 产物在「浮点 → 整数取整」上有偏差**
+（有符号整型的负数结果偏 1，见 [Known Issues](#known-issues)）。在用打了补丁的产物
+发版之前，处理有符号整型数据请关掉 SIMD。
 
 拿不准就自己跑一趟：
 
@@ -312,8 +373,9 @@ CI 样本，不如 DFT 那条结论硬。
 npm run simd:compare   # 需要本地已 assemble 两个变体
 ```
 
-它只打印数字、不作门禁（**刻意永远 exit 0**）——实测确实有更慢的项，把「必须更快」
-做成门禁，结果只会是以后有人删门禁或只挑有利的算子来测。
+它只打印数字、不作门禁（**不会因为任何一项更慢而非零退出**，只有执行失败才 exit 1）——
+实测确实有更慢的项，把「必须更快」做成门禁，结果只会是以后有人删门禁或只挑有利的
+算子来测。
 
 ### TypeScript
 
@@ -342,7 +404,7 @@ const data: Float32Array = roi.data32F;
 范围与限制：
 
 - **保证**符号存在性与运行时严格一致（数量由产物决定，不是写死的；4.14.0 实测
-  1450 个顶层符号、75 个 Mat 成员，**5.0.0 的数字待构建后回填**）。
+  1450 个顶层符号、75 个 Mat 成员，5.0.0 实测 1653 个顶层符号、75 个 Mat 成员）。
 - **不保证**每个原生函数的参数类型精确——那需要解析 OpenCV 的 C++ 签名并复现 embind
   的重载分发规则，超出本项目范围。未逐条标注的原生绑定一律是 `(...args: any[]): any`。
   本项目自己写的扩展层（`roiClone` / `DATA` / `PTR` / `replaceMatOn*` 等）有准确签名。
@@ -358,7 +420,7 @@ const data: Float32Array = roi.data32F;
 ./build/build.sh --simd         # → build/out/simd/       opencv.js + opencv_js.wasm
 ./build/build.sh --single-file  # → build/out/singlefile/ 只有 opencv.js（wasm 已内联）
 npm run assemble                # 两个变体 + src/js/ → dist/（含 index.d.ts）
-npm test                        # 205 项
+npm test                        # 237 项
 npm run bench                   # 两个性能门禁（test/bench/*.bench.js 全跑）
 npm run simd:compare            # baseline vs simd 的实测加速比（只报数字，不是门禁）
 ```
@@ -378,10 +440,11 @@ CI 里 `build-wasm.yml` 用三变体矩阵并行构建、逐个跑冒烟测试�
 ### Single-file build
 
 给浏览器 `<script>` 直接引用的单文件形态：`build/build.sh --single-file` 把 wasm 以
-base64 内联进 `opencv.js`（体积 +33%，约 11 MB 单个文件）。
+base64 内联进 `opencv.js`（体积 +33%；5.0.0 上按 baseline wasm 的 base64 长度估算约
+16 MB 单个文件，未实测）。
 
 **它不在 npm 包里。** `assemble.sh` 会拒绝大于 2 MB 的 glue，正是为了挡住它被误打
-进包——19.4 MB 的包已经够大，再塞一份 11 MB 的重复产物没有道理。
+进包——27 MB 的包已经够大，再塞一份约 16 MB 的重复产物没有道理。
 
 拿它的两个途径：
 
@@ -463,11 +526,11 @@ Mat.sum(): 接收者 Mat 已被 delete() —— 释放后的 Mat 不能再使用
    > 不要依赖具体数值。**
 
 2. **越界的行列号根本不会 abort。** embind 生成的 `*Ptr(row, col)` 不做边界检查：
-   3×3 `CV_32FC1`（共 36 字节）上 `mat.PTR(9, 9)` 返回 base+144 字节处的
+   3×3 `CV_32FC1`（共 36 字节）上 `mat.floatPtr(9, 9)` 返回 base+144 字节处的
    `Float32Array`，读写都落在别人的堆上，不报任何错。`replaceMatOnRect` /
    `rectAdd` / `rectSubtract` / `replaceMatOnCol` / `addOnCol` / `replaceMatOnPoint` /
-   `replaceMatOnRow` 全都由 `PTR()` 逐像素驱动，所以一个越界的 `Rect` 或列号就是一次
-   静默的堆破坏。这类比第 1 类危险得多。
+   `replaceMatOnRow` 同样不查边界——它们按地址直接读写 wasm 堆——所以一个越界的
+   `Rect` 或列号就是一次静默的堆破坏。这类比第 1 类危险得多。
 
 `PTR()` 自己也查边界（它是公开 API，用户会绕开上面那些方法直接调）：
 
@@ -485,14 +548,15 @@ mat2.delete();
 > ⚠️ **每个下标只校验一次。** `rows` / `cols` 是 embind getter，每读一次都是一次跨
 > 语言调用——给 `PTR()` 加边界检查实测让它慢 49%（+23.7 ns/次）。所以扩展层内部
 > 那些逐像素的循环**不走 `PTR()`**：它们在入口用一次校验证明整个循环的下标范围
-> 合法，循环里直接用原生访问器。不这么分工的话这些方法要慢 **1.8–2.1x**
-> （倍数以 `npm run bench` 的 inplace-ops 门禁每次打印的那一行为准）。
+> 合法，循环里按地址直接读写 wasm 堆，连原生访问器都不调。改回逐像素调 `PTR()` 或
+> 原生 `*Ptr()` 要慢上百倍（倍数以 `npm run bench` 的 inplace-ops 门禁每次打印的
+> 「退化参照」为准）。
 >
 > `DATA()` 不收参数，没有可越界的入参。
 
 **标量运算数的取值范围**：`addConstant` / `constantSubtract` / `mulConstant` /
-`constantDivide` / `addOnCol` / `replaceMatOnPoint` 拒绝非数与 `NaN`，但**放行
-`±Infinity`** —— 它是合法的 IEEE-754 值，在代价图 / 距离图上是标准哨兵：
+`constantDivide` / `addOnCol` 拒绝非数与 `NaN`，但**放行 `±Infinity`** —— 它是合法的
+IEEE-754 值，在代价图 / 距离图上是标准哨兵：
 
 ```javascript
 let mat3 = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
@@ -501,9 +565,17 @@ mat3.delete();
 ```
 
 写进**数据**里的 `NaN` / `Infinity` 完全不受限制（`replaceMatOnRow` / `replaceMatOnCol`
-只查数组长度、不查元素值）——往某些像素写 `NaN` 表示「此处无效」是正当写法。
+只查数组长度、不查元素值，`replaceMatOnPoint` 只查是不是 number）——往某些像素写
+`NaN` 表示「此处无效」是正当写法。
 被拒的只有作为**运算数**的 `NaN`：`x + NaN` 会把整个 Mat 一次性毁掉，而那通常是
 上游已经出错的信号。
+
+**就地写入的数值语义**：`replaceMatOnRect` / `rectAdd` / `rectSubtract` /
+`replaceMatOnCol` / `addOnCol` / `replaceMatOnRow` / `replaceMatOnPoint` 写进整型 Mat
+时与 OpenCV 的 `saturate_cast` 一致——四舍六入五成双，钳到该类型的取值范围，`NaN`
+得 0（`CV_8U` 上 250 加 20 得 255，不会回绕成 14；`CV_32S` 同样钳住，不会溢出）。
+浮点 Mat 原样写入。src 与 this 共享内存（同一个 Mat，或同一块父 Mat 上的视图）时
+按拷贝语义：先整体读出 src，再写。
 
 ### Commonly
 
@@ -710,7 +782,7 @@ let dst = mat1.reshapeRows(1);
 console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
 //dst::1,2,3,4,5,6,7,8,9:::1:::9
 mat1.reshapeRows(4);
-//RangeError: reshapeRows(4)：3×3 的 9 个像素无法整除为 4 行
+//RangeError: Mat.reshapeRows(rows): 3×3 的 9 个像素无法整除为 4 行
 mat1.delete();
 dst.delete();
 ```
@@ -768,6 +840,13 @@ Number dst = cv.norm2(src1, src2, normType = cv.NORM_L2)
 src1 First input mat
 
 src2 Second input mat
+
+normType 与 OpenCV C++ 的 `cv::norm(src1, src2, normType)` 同义：
+`NORM_INF` / `NORM_L1` / `NORM_L2` / `NORM_L2SQR`；`NORM_HAMMING` / `NORM_HAMMING2`
+（只接受 `CV_8UC1`，数的是 `src1 XOR src2` 里不同的位）；以上都可再按位或上
+`NORM_RELATIVE`，得到 ‖src1 − src2‖ / ‖src2‖。其余值抛 `RangeError`。
+整型 Mat 的差值按真实的差计算，不按 depth 饱和（8U 上 `[0]` 与 `[10]` 的距离是 10，
+与参数顺序无关）。
 
 dst ‖src1 − src2‖
 
@@ -1665,7 +1744,7 @@ let aspectRatio = rect.width / rect.height;
 
 ```javascript
 let area = cv.contourArea(cnt, false);
-let rect = cv.boundingRect(cnt));
+let rect = cv.boundingRect(cnt);
 let rectArea = rect.width * rect.height;
 let extent = area / rectArea;
 ```
@@ -1845,7 +1924,7 @@ cv.threshold(gray, gray, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
 cv.distanceTransform(opening, distTrans, cv.DIST_L2, 5);
 ```
 
-**mage Watershed**
+**Image Watershed**
 
 ```javascript
 //cv.connectedComponents (image, labels, connectivity = 8, ltype = cv.CV_32S)
@@ -1881,7 +1960,7 @@ cv.grabCut(src, mask, rect, bgdModel, fgdModel, 1, cv.GC_INIT_WITH_RECT);
 ```javascript
 //cv.calcOpticalFlowPyrLK (prevImg, nextImg, prevPts, nextPts, status, err, winSize = new cv.Size(21, 21), maxLevel = 3, criteria = new cv.TermCriteria(cv.TermCriteria_COUNT+ cv.TermCriteria_EPS, 30, 0.01), flags = 0, minEigThreshold = 1e-4)
 let criteria = new cv.TermCriteria(
-  cv.TERM_CRITERIA_EPS | cv.TERM_CRITERIA_COUNT,
+  cv.TermCriteria_EPS | cv.TermCriteria_COUNT,
   10,
   0.03,
 );

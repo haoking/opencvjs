@@ -8,7 +8,7 @@
 1. **加载方式**：包入口返回 Promise，必须 `await`。
 2. **不再覆盖 OpenCV 原生方法**：`roi` / `col` / `diag` / `reshape` 归还原生，
    本项目的修复版改名为 `roiClone` / `colClone` / `diagClone` / `reshapeRows`。
-3. **12 个手写方法删除**，改用产物里的原生等价函数（1.x 的手写版有几个本来就是坏的）。
+3. **8 个手写方法删除**，改用产物里的原生等价函数（1.x 的手写版有几个本来就是坏的）。
 
 下面每一条都给出改法。本文里所有输出值都是在 2.0 的产物上实际跑出来的。
 
@@ -45,7 +45,7 @@ const loadCV = require("@haoking/opencvjs");
 不再是「一个 .js 文件」。扩展层是 CommonJS 模块，浏览器里要用得走打包器。详见
 README 的 Installation 一节。
 
-> ℹ️ **2.0.0 之后 `dist/` 的布局又变了一次**（见 CHANGELOG 的 Unreleased 一节）：
+> ℹ️ **2.0.0 之后 `dist/` 的布局又变了一次**（见 CHANGELOG 的 2.1.0 一节）：
 > glue 与 `.wasm` 移进了 `dist/baseline/` 与 `dist/simd/` 两个子目录，入口按运行时
 > 是否支持 WebAssembly SIMD 自动选择。`main` / `types` 的路径不变、`loadOpenCV()`
 > 的调用方式向后兼容，只有直接深引用 `@haoking/opencvjs/dist/opencv.js` 的代码会断。
@@ -100,7 +100,7 @@ console.log("colClone::" + m2.colClone(2).data32F); //colClone::5,6,11,12,17,18 
 ```javascript
 const m = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 const flat = m.reshapeRows(1); // 1×9
-m.reshapeRows(4); // RangeError: reshapeRows(4)：3×3 的 9 个像素无法整除为 4 行
+m.reshapeRows(4); // RangeError: Mat.reshapeRows(rows): 3×3 的 9 个像素无法整除为 4 行
 ```
 
 ---
