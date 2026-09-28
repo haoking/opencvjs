@@ -107,8 +107,14 @@ const skip = HAS_SIMD ? false : "dist/simd/ 不存在（本地通常只构了 ba
 // 高频项），量级很小的那些元素即使相对误差很大也能过。上游有同样的性质。本表的
 // 输入固定在 [−100,100)，各用例输出量级 O(1)–O(10³)，`MAX(maxval, 1.)` 那个下限
 // 从不生效。真要收紧得给每个算子写双精度参照实现，成本远超收益——双产物一致性
-// 的主力保证是「同一套 205 项断言在两个变体上各跑一遍」，本文件是补充而非替代。
+// 的主力保证是「同一套 237 项断言在两个变体上各跑一遍」，本文件是补充而非替代。
 const TOL = 1e-5;
+
+// 每个子进程的时限。execFileSync 是同步调用，会占住事件循环，下面那条用例自己的
+// timeout（node:test 靠定时器实现）在它返回之前根本没机会触发——子进程一旦挂起
+// （例如 wasm 初始化卡住），整套测试会一直挂到 CI 作业的硬限。所以时限必须设在
+// execFileSync 上，由它直接杀子进程。两个变体串行跑，80s × 2 仍在用例的 180s 之内。
+const CHILD_TIMEOUT_MS = 80000;
 
 test(
   "两个变体的 wasm 二进制确实不同 —— --simd 没有被静默丢掉",
@@ -146,11 +152,13 @@ test(
         execFileSync(process.execPath, [RUNNER, v, f], {
           stdio: ["ignore", "inherit", "inherit"],
           env: { ...process.env, OPENCV_DIST: DIST },
+          timeout: CHILD_TIMEOUT_MS,
+          killSignal: "SIGKILL",
         });
         out[v] = JSON.parse(fs.readFileSync(f, "utf8"));
       }
 
-      // 先把 14 个用例全部算完，最后一次性断言。
+      // 先把全部用例算完，最后一次性断言。
       //
       // 不在第一个不合格的用例上就抛：首次真实 SIMD 构建时正是 pyrDown 先抛，
       // 于是排在它后面的 Sobel / dft / 两个扩展层用例一个都没跑，报告里看不出
@@ -200,8 +208,8 @@ test(
         const threshold = TOL * Math.max(normInf, 1);
         // 无论过不过都把数字打出来：「逐位相同」和「差 1.3e-7」是两个不同的事实，
         // 只报一个「通过」会把它丢掉。逐位相同与否是**构建相关**的偶然性质
-        // （本轮 14 个用例里 12 个逐位相同），所以只报告、不断言——一旦哪天不再
-        // 相同，CI 日志里看得见，但不会因此误报失败。
+        // （2.1.0 首次真实构建时 14 个用例里 12 个逐位相同），所以只报告、不断言
+        // ——一旦哪天不再相同，CI 日志里看得见，但不会因此误报失败。
         t.diagnostic(
           `${c.name}: ${nDiff === 0 ? "逐位相同" : `${nDiff}/${a.length} 元素不同`}` +
             `  max|a-b|=${maxAbs.toExponential(2)}` +

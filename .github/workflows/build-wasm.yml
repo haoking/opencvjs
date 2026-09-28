@@ -171,8 +171,9 @@ jobs:
         run: npm test
 
       - name: SIMD 实测收益（仅报告，不作门禁）
-        # 不设 continue-on-error 也不会挡住 job：test/simd-compare.js 刻意永远
-        # exit 0。SIMD 不是无脑赢——上游 2020 年的逐 kernel 数据里 blur CV_32FC1
-        # 只有 0.519x。把「SIMD 必须更快」做成门禁，结果只会是以后有人删门禁、
-        # 或者只挑有利的算子来测。这一步的产出是数字，不是判决。
+        # 不设 continue-on-error 也不会因为「某项更慢」挡住 job：test/simd-compare.js
+        # 刻意不拿加速比做判决，只有执行本身失败才 exit 1。SIMD 不是无脑赢——上游
+        # 2020 年的逐 kernel 数据里 blur CV_32FC1 只有 0.519x。把「SIMD 必须更快」
+        # 做成门禁，结果只会是以后有人删门禁、或者只挑有利的算子来测。这一步的产出
+        # 是数字，不是判决。
         run: npm run simd:compare

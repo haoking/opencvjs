@@ -5,17 +5,17 @@
 // 本地开发时未设置 OPENCV_ARTIFACT 就跳过——常规 npm test 不该因为本机没有
 // 构建产物而失败。
 //
-// 但在「本来就该有产物」的场合，跳过必须变成失败：这个测试是 60–150 分钟
-// wasm 构建的**唯一**验证。实测过，未设 OPENCV_ARTIFACT 时
-// `node --test test/smoke/*.test.js` 退出码是 0——env 名字写错、路径拼错、
-// 上游步骤没产出目录，任何一种都会让那 2.5 小时的构建在「零验证」下把
-// workflow 报绿。门禁报绿却什么都没查，比没有门禁更糟。
+// 但在「本来就该有产物」的场合，跳过必须变成失败：这个测试是 wasm 构建作业
+// （实测约 11 分钟，见 build-wasm.yml 顶部）里的**唯一**验证。实测过，未设
+// OPENCV_ARTIFACT 时 `node --test test/smoke/*.test.js` 退出码是 0——env 名字
+// 写错、路径拼错、上游步骤没产出目录，任何一种都会让整场构建在「零验证」下
+// 把 workflow 报绿。门禁报绿却什么都没查，比没有门禁更糟。
 //
 // 判据用的是 OPENCV_SMOKE_REQUIRED，**不是** process.env.CI。
 // 用 CI 是错的，已实测：GitHub Actions 给每个步骤都设 CI=true，而
 // .github/workflows/ci.yml 的 `npm test` glob（test/*/*.test.js）也会匹配到
-// 本文件——那条链路测的是仓库里现成的 asm.js，本来就没有、也不该有 wasm
-// 产物。以 CI 为判据会让 ci.yml 在 Node 18/20/22 三个矩阵项上全部失败
+// 本文件——那条链路测的是组装后的 dist/，不设 OPENCV_ARTIFACT，本文件在那里
+// 本就该跳过。以 CI 为判据会让 ci.yml 在 Node 18/20/22 三个矩阵项上全部失败
 // （本机 `CI=true npm test` 实测 fail 1、exit 1）。真正需要这条守卫的是
 // build-wasm.yml 里那个专门的冒烟步骤，它显式声明 OPENCV_SMOKE_REQUIRED=1。
 //
@@ -37,9 +37,11 @@ const artifact = process.env.OPENCV_ARTIFACT;
 const SINGLE_FILE = process.env.OPENCV_SMOKE_SINGLE_FILE === "1";
 const INLINE_THRESHOLD = 2 * 1024 * 1024;
 
-if (!artifact && process.env.OPENCV_SMOKE_REQUIRED) {
+// 与 OPENCV_PARITY_REQUIRED 一样只认 "1"：按真值判断的话 OPENCV_SMOKE_REQUIRED=0
+// 反而会被当成「必须真跑」。
+if (!artifact && process.env.OPENCV_SMOKE_REQUIRED === "1") {
   throw new Error(
-    "OPENCV_SMOKE_REQUIRED 已置位但 OPENCV_ARTIFACT 未设置 —— " +
+    "OPENCV_SMOKE_REQUIRED=1 但 OPENCV_ARTIFACT 未设置 —— " +
       "冒烟测试是 wasm 构建的唯一验证，静默跳过等于让整场构建" +
       "在零验证下报绿。本地开发不设这两个变量时会正常跳过。",
   );
@@ -128,6 +130,25 @@ test(
       cv.CascadeClassifier,
       undefined,
       "CascadeClassifier 又出现了 —— 产物可能不是 5.x 构建",
+    );
+
+    // 上面那条只分得清 4.x / 5.x。版本号本身也要对上 build/opencv-version.txt，
+    // 否则同为 5.x 的另一个小版本照样报绿（test/unit/artifact-version.test.js 在
+    // 组装后的 dist/ 上查同一件事）。
+    const wantVersion = fs
+      .readFileSync(
+        path.join(__dirname, "..", "..", "build", "opencv-version.txt"),
+        "utf8",
+      )
+      .trim();
+    const versionLine = /General configuration for OpenCV (\S+)/.exec(
+      cv.getBuildInformation(),
+    );
+    assert.ok(versionLine, "getBuildInformation() 里找不到版本行");
+    assert.strictEqual(
+      versionLine[1],
+      wantVersion,
+      `产物是 OpenCV ${versionLine[1]}，但 build/opencv-version.txt 钉的是 ${wantVersion}`,
     );
 
     // dnn 的 JS 绑定应已被裁掉（注意：dnn 的 C++ 代码仍在产物中——白名单只

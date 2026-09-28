@@ -3,8 +3,11 @@
 #
 # 用法: build/assemble.sh [baseline 产物目录] [simd 产物目录]
 #
-#   baseline 目录默认取 $OPENCV_ARTIFACT，再默认 build/out/baseline
+#   baseline 目录默认取 $OPENCV_ARTIFACT_BASELINE，再默认 build/out/baseline
 #   simd     目录默认取 $OPENCV_ARTIFACT_SIMD，再默认 build/out/simd
+#   （baseline 这里曾经读的是 $OPENCV_ARTIFACT——那是冒烟测试「待测产物目录」的
+#     变量。为冒烟测试 simd 变体 export 过它之后再组装，dist/baseline/ 里装进去的
+#     就是 SIMD 的 wasm，强制 baseline 的那一趟测试实际测的是 simd。）
 #   （二者分别是 build/build.sh 与 build/build.sh --simd 的输出位置，
 #     也是 build-wasm.yml 上传的那两个 artifact 解压后的目录。）
 #
@@ -22,7 +25,8 @@
 #    与同目录的 .wasm 原样配对——glue 在 Node 下按 __dirname 定位 .wasm。
 #
 #    ⚠️ 这里曾经写着「两个变体的 glue 内容也不同，不能共用一份」。那是**错的**：
-#    实测两份 glue 逐字节相同（SHA-256 均为 da1f9d19…）。分目录的理由只有 .wasm
+#    实测两份 glue 逐字节相同（4.14.0 产物上 SHA-256 均为 da1f9d19…，5.0.0 产物上
+#    均为 33711c08…）。分目录的理由只有 .wasm
 #    同名这一条。反过来也别依赖「它们永远相同」——同样没有依据。
 #
 #    扩展层（index.js 等）仍留在 dist/ 顶层：它是与变体无关的纯 JS，且
@@ -38,7 +42,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BASELINE_SRC="${1:-${OPENCV_ARTIFACT:-${REPO_ROOT}/build/out/baseline}}"
+BASELINE_SRC="${1:-${OPENCV_ARTIFACT_BASELINE:-${REPO_ROOT}/build/out/baseline}}"
 SIMD_SRC="${2:-${OPENCV_ARTIFACT_SIMD:-${REPO_ROOT}/build/out/simd}}"
 DIST_DIR="${REPO_ROOT}/dist"
 

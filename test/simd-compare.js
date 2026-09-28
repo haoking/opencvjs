@@ -34,26 +34,10 @@ const path = require("path");
 const DIST = process.env.OPENCV_DIST || path.join(__dirname, "..", "dist");
 const ROUNDS = 4; // 第 1 轮预热，丢弃
 
-/** 确定性输入。两个变体必须拿到同样的数据，否则比的是不同的工作量。 */
-function lcg(seed) {
-  let s = seed >>> 0;
-  return () => {
-    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-    return s;
-  };
-}
-function bytes(n, seed) {
-  const rnd = lcg(seed);
-  const out = new Array(n);
-  for (let i = 0; i < n; i += 1) out[i] = rnd() % 256;
-  return out;
-}
-function floats(n, seed) {
-  const rnd = lcg(seed);
-  const out = new Array(n);
-  for (let i = 0; i < n; i += 1) out[i] = (rnd() % 20000) / 100 - 100;
-  return out;
-}
+// 确定性输入。两个变体必须拿到同样的数据，否则比的是不同的工作量。
+// 与双产物一致性用例共用同一份生成器（variant-cases.js 的子进程执行器有
+// require.main 守卫，require 它只取导出、不会执行）。
+const { bytes, floats } = require("./variant-cases");
 
 // ---------------------------------------------------------------------------
 // 用例。setup(cv) 建一次输入，op(cv, ctx) 跑一次操作，teardown 收尸。
@@ -183,7 +167,8 @@ const CASES = [
   },
   {
     name: "扩展层 replaceMatOnRect 64x64 写 32x32",
-    iters: 2000,
+    // 按地址直接写堆之后单次只要约 2 µs，次数取大，一轮才有几十毫秒可测。
+    iters: 50000,
     setup: (cv) => ({
       a: cv.matFromArray(64, 64, cv.CV_32FC1, floats(4096, 14)),
       p: cv.matFromArray(32, 32, cv.CV_32FC1, floats(1024, 15)),
@@ -229,11 +214,17 @@ async function child(variant, outFile) {
 }
 
 // --- 父进程：交替启动顺序各跑一趟，取每个变体两趟的最小值 --------------------
+// 子进程时限。execFileSync 是同步的，挂起的子进程会把父进程一起拖住；时限设在
+// 调用上，由它直接杀掉子进程。一个变体正常跑完约十秒，10 分钟只防挂死。
+const CHILD_TIMEOUT_MS = 10 * 60 * 1000;
+
 function runChild(variant, tmp, tag) {
   const f = path.join(tmp, `${variant}-${tag}.json`);
   execFileSync(process.execPath, [__filename, variant, f], {
     stdio: ["ignore", "inherit", "inherit"],
     env: { ...process.env, OPENCV_DIST: DIST },
+    timeout: CHILD_TIMEOUT_MS,
+    killSignal: "SIGKILL",
   });
   return JSON.parse(fs.readFileSync(f, "utf8"));
 }

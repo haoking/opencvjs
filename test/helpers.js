@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("fs");
 const path = require("path");
 
 /**
@@ -12,6 +13,36 @@ const path = require("path");
  * OPENCV_DIST 可指向别处的 dist 布局（例如直接测 CI 下载下来的目录）。
  */
 const DIST = process.env.OPENCV_DIST || path.join(__dirname, "..", "dist");
+
+/**
+ * dist/ 里的扩展层必须与 src/js/ 逐字节相同，否则直接失败。
+ *
+ * 测试跑的是 dist/，而 dist/ 只在 npm run assemble 时才从 src/js/ 拷一份过去。改了
+ * src/js/ 却忘了 assemble，整套测试会在**旧代码**上照样全绿——测的根本不是刚改的
+ * 那份。这里在任何用例开始之前比一遍（本模块被每个测试文件与门禁 require）。
+ * 不在仓库里跑（拿不到 src/js/）时无从比较，跳过。
+ */
+function assertDistMatchesSource() {
+  const srcDir = path.join(__dirname, "..", "src", "js");
+  if (!fs.existsSync(srcDir)) return;
+  const stale = fs
+    .readdirSync(srcDir)
+    .filter((name) => name.endsWith(".js"))
+    .filter((name) => {
+      const built = path.join(DIST, name);
+      return (
+        !fs.existsSync(built) ||
+        !fs.readFileSync(built).equals(fs.readFileSync(path.join(srcDir, name)))
+      );
+    });
+  if (stale.length > 0) {
+    throw new Error(
+      `${DIST} 与 src/js/ 不同步（${stale.join(", ")}）—— 先 npm run assemble，` +
+        `否则测到的是上一次组装时的旧代码`,
+    );
+  }
+}
+assertDistMatchesSource();
 
 const DEPTHS = ["8U", "8S", "16U", "16S", "32S", "32F", "64F"];
 const CHANNELS = [1, 2, 3, 4];

@@ -13,6 +13,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # 作业级兜底。不设就是 GitHub 的默认 360 分钟：任何一步挂住（例如某个子进程
+    # 的 wasm 初始化卡死），都会把整条矩阵拖满 6 小时。正常一趟几分钟。
+    timeout-minutes: 30
     strategy:
       matrix:
         node: ["18", "20", "22"]
