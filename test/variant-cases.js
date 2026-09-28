@@ -60,6 +60,14 @@ function floats(n, seed) {
   return out;
 }
 
+/** CV_16S 全值域的有符号整数：取整缺陷只在负数与 .5 上露面，两者都要有。 */
+function shorts(n, seed) {
+  const rnd = lcg(seed);
+  const out = new Array(n);
+  for (let i = 0; i < n; i += 1) out[i] = (rnd() % 65536) - 32768;
+  return out;
+}
+
 /** 按 depth 取对应的 TypedArray 视图并拷成普通数组。 */
 function dump(cv, mat) {
   switch (mat.depth()) {
@@ -90,10 +98,15 @@ function dump(cv, mat) {
 // exact = false 只要求相对误差 <= 容差：浮点 SIMD 内核会改变累加与乘加的结合
 //               顺序（可分离滤波、点积、变换），末位差异是规范允许的。
 //
-// 选点覆盖三类：① 上游 2020 年那组逐 kernel 数据里 SIMD 影响最大的几个
+// 选点覆盖四类：① 上游 2020 年那组逐 kernel 数据里 SIMD 影响最大的几个
 // （resize 8UC4 1.77x / pyrDown 32FC4 3.09x / gaussianBlur 3.36x，以及**反例**
 // blur CV_32FC1 0.519x）；② 本项目自己的扩展层；③ 几个最常用的逐元素与几何
-// 变换内核。规模刻意压小——这张表比的是**数值**，不是速度，速度归
+// 变换内核；④ 有符号整型上「浮点 → 整数取整」的路径（addWeighted、带缩放的
+// convertTo 以及建立在它上面的扩展方法）。第 ④ 类是后补的：上游 wasm SIMD 后端的
+// v_round 写成 trunc(x + 0.5)，负数偏 1、.5 进位也与 cvRound 不同，而前三类恰好
+// 全都绕开了这条路径，于是 CI 一直是绿的。build/patches/opencv-wasm-v_round.patch
+// 修正它；这两个用例取的运算都是精确的（整数加减、× 0.5、× 1.5），结果恰为 .5 的
+// 地方全凭取整规则定胜负，没打补丁的 simd 产物必然过不了。规模刻意压小——这张表比的是**数值**，不是速度，速度归
 // test/simd-compare.js 管。
 // ---------------------------------------------------------------------------
 const CASES = [
@@ -304,9 +317,39 @@ const CASES = [
       return out;
     },
   },
+  {
+    name: "扩展层 addConstant / constantSubtract / mulConstant(0.5) 16SC1（float→int 取整）",
+    exact: true,
+    run(cv) {
+      const a = cv.matFromArray(64, 64, cv.CV_16SC1, shorts(4096, 20));
+      const r1 = a.addConstant(3);
+      const r2 = a.constantSubtract(7);
+      // 奇数 × 0.5 恰为 .5：进位规则在这里定胜负
+      const r3 = a.mulConstant(0.5);
+      const out = [...dump(cv, r1), ...dump(cv, r2), ...dump(cv, r3)];
+      for (const m of [a, r1, r2, r3]) m.delete();
+      return out;
+    },
+  },
+  {
+    name: "convertTo ×1.5 与 addWeighted 0.5/0.5 8SC1（float→int 取整）",
+    exact: true,
+    run(cv) {
+      const signed = (seed) => bytes(4096, seed).map((v) => v - 128);
+      const a = cv.matFromArray(64, 64, cv.CV_8SC1, signed(21));
+      const b = cv.matFromArray(64, 64, cv.CV_8SC1, signed(22));
+      const d1 = new cv.Mat();
+      const d2 = new cv.Mat();
+      a.convertTo(d1, -1, 1.5, 0);
+      cv.addWeighted(a, 0.5, b, 0.5, 0, d2);
+      const out = [...dump(cv, d1), ...dump(cv, d2)];
+      for (const m of [a, b, d1, d2]) m.delete();
+      return out;
+    },
+  },
 ];
 
-module.exports = { CASES, lcg, bytes, floats, dump };
+module.exports = { CASES, lcg, bytes, floats, shorts, dump };
 
 // --- 子进程执行器 -----------------------------------------------------------
 if (require.main === module) {

@@ -26,7 +26,7 @@
 #
 #   ⚠️ 单文件变体走的是 baseline（不带 SIMD），这是刻意的：它的使用场景是
 #   <script> 直接引用，那条路径上**没有任何回退机制**——运行时探测器
-#   （src/js/simd.js）只服务于 CommonJS 入口 dist/index.js。SIMD 的浏览器
+#   （src/js/simd-detect.js）只服务于 CommonJS 入口 dist/index.js。SIMD 的浏览器
 #   覆盖率是 93.57%（Chrome 91+ / Firefox 89+ / Safari 16.4+），发一个无回退的
 #   SIMD 单文件版等于让 6.4% 的浏览器直接白屏。需要 SIMD 的用户走 npm 包，
 #   那条路径有探测和回退。
@@ -66,6 +66,10 @@
 #       em++: error: '.../upstream/bin/wasm2js --emscripten -O ../../bin/opencv_js.wasm ...' failed
 #     ——直接给出 bin/opencv_js.wasm 这个路径。(注意这是 --disable_wasm
 #     构建的失败输出,不是成功日志;它能证明的只是文件名,不是别的。)
+# 对上游源码的补丁:
+#   build/patches/*.patch 在容器里 clone 完 OpenCV 之后逐个 git apply（每个文件开头
+#   写着为什么需要它）。目前只有一个：wasm SIMD 后端的 v_round 把负数算偏 1、.5 的
+#   进位也与 cvRound 不同，见 opencv-wasm-v_round.patch。补丁对不上时构建直接失败。
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -73,7 +77,8 @@ OPENCV_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/build/opencv-version.txt")"
 IMAGE_TAG="opencvjs-build:${OPENCV_VERSION}"
 OUT_DIR="${REPO_ROOT}/build/out"
 
-# 拆分版 glue 实测约 143 KB；单文件版把 8.5 MB 的 wasm 以 base64 内联，约 11 MB。
+# 拆分版 glue 实测约 143 KB；单文件版把 wasm（5.0.0 的 baseline 约 12 MB）以 base64
+# 内联，约 16 MB。
 # 两者相差近两个数量级，2 MB 这条线落在中间任何位置都足以判别，取整为 2 MB。
 # 同一条判据在 build/assemble.sh 与 test/smoke/wasm-artifact.test.js 里各有一份。
 INLINE_THRESHOLD=$((2 * 1024 * 1024))
@@ -104,7 +109,7 @@ esac
 
 # --cmake_option 透传入口。默认不设置、默认不禁用 dnn:
 # - src/config/opencv_js.config.py 的白名单已移除 dnn,但那只影响 embind
-#   绑定生成,不影响 CMake 是否编译 dnn 模块——build_js.py:126 硬编码
+#   绑定生成,不影响 CMake 是否编译 dnn 模块——build_js.py:124（5.0.0）硬编码
 #   -DBUILD_opencv_dnn=ON,且没有 --disable_dnn 选项,产物里仍会带着 dnn 的
 #   C++ 代码,体积不会因白名单而显著减小。
 # - objdetect 对 dnn 是可选依赖(face_detect.cpp 调用 dnn::readNet),白名单
@@ -137,6 +142,7 @@ mkdir -p "${OUT_DIR}/${BUILD_SUBDIR}"
 #   消除了旧写法（把值拼进双引号字符串再整体喂给 bash -c）天然带有的注入面。
 docker run --rm \
   -v "${REPO_ROOT}/src/config:/config:ro" \
+  -v "${REPO_ROOT}/build/patches:/patches:ro" \
   -v "${OUT_DIR}/${BUILD_SUBDIR}:/out" \
   "${IMAGE_TAG}" \
   bash -euo pipefail -c '
@@ -147,6 +153,15 @@ docker run --rm \
 
     git clone --depth 1 --branch "${opencv_version}" https://github.com/opencv/opencv.git /work/opencv
     cd /work/opencv
+
+    # 本仓库对上游源码的补丁（build/patches/，每个文件开头写着为什么）。先 --check：
+    # 上游改了那段代码、补丁对不上时构建直接失败，而不是静默产出一份没打补丁的产物。
+    shopt -s nullglob
+    for patch_file in /patches/*.patch; do
+      git apply --check "${patch_file}"
+      git apply "${patch_file}"
+      echo "==> 已打补丁: ${patch_file}"
+    done
 
     build_js_args=(
       /work/build_js

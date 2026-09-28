@@ -1,0 +1,32 @@
+本仓库对上游 OpenCV 源码的补丁：修正 wasm SIMD 后端的 v_round(v_float32x4)。
+
+上游（4.x 与 5.x 分支，截至 5.0.0 均未修）把它写成 trunc(a + 0.5)：负数一律偏大 1
+（-20.0 → -19），.5 向上进位（114.5 → 115），连 0.49999997f 也会先在单精度里被
++0.5 舍成 1.0f、再截断得 1。标量路径的 cvRound() 是四舍六入五成双。于是 SIMD 变体
+在所有「浮点 → 整数取整」的内核上都与 baseline、与 OpenCV 自己的语义不一致：
+addWeighted、带缩放的 convertTo、divide、multiply、16S 上的 GaussianBlur / blur /
+resize / Sobel，以及建立在它们之上的 addConstant / mulConstant / constantSubtract /
+constantDivide。
+
+改成先 f32x4.nearest（IEEE 的 roundTiesToEven）再 trunc_sat，与 cvRound 逐位一致：
+用手工拼的 wasm 模块在 Node 里对照过 -20 / -115 / 114.5 / ±2.5 / ±3.5 / -0.5 /
+0.49999997 / ±1e10 / NaN。test/variant-cases.js 里「float→int 取整」的两个用例
+要求 baseline 与 simd 逐位相同，没打上这个补丁的 simd 产物过不了。
+
+由 build/build.sh 在 clone 源码之后 git apply；上游改了这段代码、补丁对不上时，
+构建直接失败，不会静默产出一份没打补丁的产物。
+
+--- a/modules/core/include/opencv2/core/hal/intrin_wasm.hpp
++++ b/modules/core/include/opencv2/core/hal/intrin_wasm.hpp
+@@ -1930,8 +1930,9 @@
+ 
+ inline v_int32x4 v_round(const v_float32x4& a)
+ {
+-    v128_t h = wasm_f32x4_splat(0.5);
+-    return v_int32x4(wasm_i32x4_trunc_saturate_f32x4(wasm_f32x4_add(a.val, h)));
++    // Round half to even, like cvRound(). trunc(a + 0.5) was off by one for negative
++    // values (-20.0 -> -19) and broke ties away from even (114.5 -> 115).
++    return v_int32x4(wasm_i32x4_trunc_saturate_f32x4(wasm_f32x4_nearest(a.val)));
+ }
+ 
+ inline v_int32x4 v_floor(const v_float32x4& a)
