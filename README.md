@@ -720,13 +720,17 @@ locally; `dist/` then holds baseline only and the parity tests skip. Set
   changes (see its header; `ruff.toml` explains how to diff it against upstream).
 - **Patches** applied to the OpenCV sources (`build/patches/`; each file explains itself):
   - `opencv-js-deep-clone.patch` keeps `clone()` a deep copy — with Emscripten ≥ 4.0.0,
-    upstream's override never runs and `clone()` is shallow.
+    upstream's override never runs and `clone()` is shallow
+    ([opencv#30408](https://github.com/opencv/opencv/issues/30408)).
   - `opencv-js-link-flags.patch` exports the runtime symbols the extension layer and
     users rely on (`HEAP*`, Embind error classes, `flushPendingDeletes` /
     `setDelayFunction`, instance counters, `FS_createPreloadedFile`) and raises the memory
     limit to 2 GB.
-  - `opencv-js-mcc-bindings.patch` lets the MCC bindings compile.
-  - `opencv-mcc-chart-type-init.patch` initializes the MCC detector's chart type.
+  - `opencv-js-mcc-bindings.patch` lets the MCC bindings compile
+    ([opencv#30409](https://github.com/opencv/opencv/issues/30409), together with the
+    whitelist names).
+  - `opencv-mcc-chart-type-init.patch` initializes the MCC detector's chart type
+    ([opencv#30410](https://github.com/opencv/opencv/issues/30410)).
   - `opencv-wasm-v_round.patch` makes the SIMD build round like `cvRound`.
 
 `build/fingerprint.sh` hashes all of these inputs into a 16-character fingerprint.
