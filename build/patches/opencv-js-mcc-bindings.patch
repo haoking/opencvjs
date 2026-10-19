@@ -1,0 +1,32 @@
+Patch to upstream OpenCV: make the generated bindings compile for the cv::mcc classes.
+
+The generated bindings.cpp refers to classes by their unqualified names and relies on the
+`using namespace` lines and typedefs at the top of core_bindings.cpp. cv::aruco has them;
+cv::mcc (merged from opencv_contrib in 5.0) does not, and cv::dnn::Net has no dnn_Net
+typedef. Upstream never noticed because its whitelist spells the mcc classes wrongly
+(mcc_CheckerDetector instead of mcc_CCheckerDetector), so the generator skipped them.
+src/config/opencv_js.config.py uses the real names, which needs these two lines.
+
+The create(const dnn::Net&) overload of CCheckerDetector compiles but stays unusable:
+dnn has no JS bindings in this build, so calling it throws UnboundTypeError.
+
+Applied by build/build.sh after cloning the source; a patch that no longer applies fails
+the build.
+
+--- a/modules/js/src/core_bindings.cpp
++++ b/modules/js/src/core_bindings.cpp
+@@ -91,12 +91,14 @@ using namespace cv::segmentation;  // FIXIT
+ 
+ #ifdef HAVE_OPENCV_OBJDETECT
+ using namespace cv::aruco;
++using namespace cv::mcc;
+ typedef aruco::DetectorParameters aruco_DetectorParameters;
+ typedef QRCodeDetectorAruco::Params QRCodeDetectorAruco_Params;
+ #endif
+ 
+ #ifdef HAVE_OPENCV_DNN
+ using namespace cv::dnn;
++typedef dnn::Net dnn_Net;
+ #endif
+ 
+ #ifdef HAVE_OPENCV_FEATURES

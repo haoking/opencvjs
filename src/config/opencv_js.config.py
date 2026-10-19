@@ -1,39 +1,52 @@
-# 以上游 platforms/js/opencv_js.config.py（tag 5.0.0）为基线逐字拷贝，只施加下面
-# 三处改动。其余一律保持原样，便于日后跟进新版本时 diff 干净。
+# Copied verbatim from upstream platforms/js/opencv_js.config.py (tag 5.0.0) with exactly
+# the four changes below. Everything else is left as is, so the diff stays clean when
+# moving to a new upstream version.
 #
-# 改动 1（本段注释）。
+# Change 1 (this comment).
 #
-# 改动 2：文件末尾 makeWhiteList([...]) 的参数里去掉了 dnn。
-#   目的是收窄暴露给 JS 的 API 面，**不是体积优化**——这一点极易搞反：白名单只
-#   控制 embind 绑定的生成，不影响 CMake 是否编译该模块。上游
-#   platforms/js/build_js.py:124 硬编码 -DBUILD_opencv_dnn=ON 且没有 --disable_dnn
-#   选项，所以 dnn 的 C++ 代码仍会进产物，体积不会因为这里少一个名字而下降。
-#   真要减体积得靠 build/build.sh 的 EXTRA_CMAKE_OPTIONS 传 -DBUILD_opencv_dnn=OFF，
-#   但有风险（objdetect 的 FaceDetectorYN 走 dnn::readNet，5.x 新增的
-#   mcc_CheckerDetector 也有 setUseDnnModel），见 build/build.sh 中
-#   「--cmake_option 透传入口」那段注释（EXTRA_CMAKE_OPTIONS）。
-#   下方 dnn = {...} 字典本身逐字保留自上游，只是不再传进 makeWhiteList()——
-#   保留它同样是为了跟进上游时 diff 保持干净。
+# Change 2: dnn is removed from the makeWhiteList([...]) arguments at the end of the file.
+#   This narrows the API exposed to JS; it is **not a size optimization**, which is easy to
+#   get backwards: the whitelist only controls which Embind bindings are generated, not
+#   whether CMake builds the module. Upstream platforms/js/build_js.py hard-codes
+#   -DBUILD_opencv_dnn=ON and has no --disable_dnn option, so the dnn C++ code is in the
+#   artifact either way. Shrinking it would take -DBUILD_opencv_dnn=OFF through
+#   EXTRA_CMAKE_OPTIONS in build/build.sh, which is risky (objdetect's FaceDetectorYN uses
+#   dnn::readNet, and mcc::CCheckerDetector can use a dnn model); see the comment on the
+#   --cmake_option pass-through in build/build.sh.
+#   The dnn = {...} dictionary below is kept verbatim from upstream and only no longer
+#   passed to makeWhiteList(), for the same clean diff.
 #
-# 改动 3：core 里多放行了 mulSpectrums 与 SVDecomp（紧邻 dft）。
-#   扩展层原本用手写 JS 模拟这两者——mulSpectrums 的 DFT 布局算错导致返回 NaN，
-#   svd 则内联了一份 numeric.js 的纯 JS Golub-Reinsch。放行原生实现后两者都已删除，
-#   test/unit/native-replacements.test.js 有回归断言，**不可退回手写**。
-#   两者在 5.0.0 的 modules/core/include/opencv2/core.hpp 里声明完好且与 4.14.0
-#   逐字节相同（SVDecomp:2084、mulSpectrums:2284，均带 CV_EXPORTS_W），
-#   所以只需放行、无需自己实现。
+# Change 3: core also whitelists mulSpectrums and SVDecomp (next to dft).
+#   The extension layer used to emulate both in hand-written JS: its mulSpectrums got the
+#   DFT layout wrong and returned NaN, and its svd inlined a pure-JS Golub-Reinsch from
+#   numeric.js. With the native implementations whitelisted both were removed, and
+#   test/unit/native-replacements.test.js has regression assertions — **do not go back to
+#   hand-written versions**. Both are declared with CV_EXPORTS_W in 5.0.0's
+#   modules/core/include/opencv2/core.hpp.
 #
-# ── 4.14.0 → 5.0.0 基线升级时上游自身的变化（非本项目改动，仅作备忘）──────────
-#   模块字典改名/拆分：features2d → features，calib3d → _3d + calib。
-#     （变量名只是给 makeWhiteList 的实参，embindgen 做的是扁平合并，改名不影响
-#       语义；但对应的 CMake 开关确实改了名，见 build_js.py 的
-#       -DBUILD_opencv_3d / -DBUILD_opencv_features。）
-#   移除的绑定：CascadeClassifier、HOGDescriptor、AKAZE、BRISK、KAZE、
-#     AgastFeatureDetector、groupRectangles、readNetFromCaffe、readNetFromTorch、
-#     readNetFromDarknet。
-#   新增的绑定：mcc_CheckerDetector / mcc_DetectorParameters / mcc_Checker
-#     （objdetect，由 contrib 并入主仓）。
-#   divSpectrums 从 imgproc 挪到了 core。
+# Change 4: the mcc entries in objdetect use the real class names.
+#   Upstream lists mcc_CheckerDetector / mcc_DetectorParameters / mcc_Checker, but the
+#   5.0.0 classes are mcc::CCheckerDetector / mcc::DetectorParametersMCC / mcc::CChecker,
+#   so embindgen silently skipped all three and only the mcc_ColorChart enum was bound.
+#   The entries here use the real names (which also needs
+#   build/patches/opencv-js-mcc-bindings.patch) and add processWithROI (the CV_WRAP_AS name
+#   of the ROI overload of process) and CChecker.create. Three methods are left out:
+#   getListColorChecker() and draw() use std::vector<Ptr<CChecker>>, which has no Embind
+#   registration, so calling them fails; getDetectionParams() returns a const reference,
+#   and the select_overload signature embindgen generates for it does not compile.
+#
+# Upstream's own changes in the 4.14.0 → 5.0.0 baseline upgrade (not this project's
+# changes; for reference):
+#   Module dictionaries renamed / split: features2d → features, calib3d → _3d + calib.
+#     (The variable names are only makeWhiteList arguments and embindgen merges them flat,
+#     so the renaming changes nothing; the CMake switches did change, see build_js.py's
+#     -DBUILD_opencv_3d / -DBUILD_opencv_features.)
+#   Removed bindings: CascadeClassifier, HOGDescriptor, AKAZE, BRISK, KAZE,
+#     AgastFeatureDetector, groupRectangles, readNetFromCaffe, readNetFromTorch,
+#     readNetFromDarknet.
+#   New whitelist entries: the mcc classes (objdetect, merged from opencv_contrib); see
+#     change 4.
+#   divSpectrums moved from imgproc to core.
 
 # Classes and methods whitelist
 
@@ -184,9 +197,9 @@ objdetect = {'': ['getPredefinedDictionary', 'extendDictionary',
              'QRCodeDetectorAruco_Params': ['Params'],
              'QRCodeDetectorAruco': ['QRCodeDetectorAruco', 'decode', 'detect', 'detectAndDecode', 'detectMulti', 'decodeMulti', 'detectAndDecodeMulti', 'setDetectorParameters', 'setArucoParameters'],
              'barcode_BarcodeDetector': ['BarcodeDetector', 'decode', 'detect', 'detectAndDecode', 'detectMulti', 'decodeMulti', 'detectAndDecodeMulti', 'decodeWithType', 'detectAndDecodeWithType'],
-             'mcc_CheckerDetector': ['process', 'getBestColorChecker', 'getListColorChecker', 'create', 'draw', 'getRefColors', 'setDetectionParams', 'getDetectionParams', 'setColorChartType', 'getColorChartType', 'setUseDnnModel', 'getUseDnnModel'],
-             'mcc_DetectorParameters': ['DetectorParametersMCC'],
-             'mcc_Checker': ['setTarget', 'setBox', 'setChartsRGB', 'setChartsYCbCr', 'setCost', 'setCenter', 'getTarget', 'getBox', 'getColorCharts', 'getChartsRGB', 'getChartsYCbCr', 'getCost', 'getCenter'],
+             'mcc_CCheckerDetector': ['process', 'processWithROI', 'getBestColorChecker', 'create', 'getRefColors', 'setDetectionParams', 'setColorChartType', 'getColorChartType', 'setUseDnnModel', 'getUseDnnModel'],
+             'mcc_DetectorParametersMCC': ['DetectorParametersMCC'],
+             'mcc_CChecker': ['create', 'setTarget', 'setBox', 'setChartsRGB', 'setChartsYCbCr', 'setCost', 'setCenter', 'getTarget', 'getBox', 'getColorCharts', 'getChartsRGB', 'getChartsYCbCr', 'getCost', 'getCenter'],
              'FaceDetectorYN': ['setInputSize', 'getInputSize', 'setScoreThreshold', 'getScoreThreshold', 'setNMSThreshold', 'getNMSThreshold',
                                 'setTopK', 'getTopK', 'detect', 'create'],
 }

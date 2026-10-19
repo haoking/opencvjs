@@ -1,0 +1,29 @@
+Patch to upstream OpenCV: initialize the chart type of mcc::CCheckerDetector.
+
+CCheckerDetectorImpl declares `ColorChart m_chartType;` without an initializer, and its
+constructor is empty. When the MCC module moved from opencv_contrib into objdetect for
+5.0, the chart type stopped being a process() argument and became a member set through
+setColorChartType(), but nothing sets it before that call. A detector used without
+setColorChartType() therefore reads whatever was left on the heap: measured on this
+build, the first detector created in a process reported a chart type that is not a valid
+ColorChart value and detected nothing, while later ones happened to reuse memory that
+held 0 and worked — the same image gave different results depending on what had been
+allocated before.
+
+The fix initializes it to MCC24, the first enumerator, which is what callers that never
+set it expect. test/unit/mcc.test.js detects a chart with a freshly created detector.
+
+Applied by build/build.sh after cloning the source; a patch that no longer applies fails
+the build instead of silently producing an unpatched artifact.
+
+--- a/modules/objdetect/src/mcc/checker_detector.hpp
++++ b/modules/objdetect/src/mcc/checker_detector.hpp
+@@ -176,7 +176,7 @@ protected:
+     bool m_useDnn = false;
+ #endif
+     DetectorParametersMCC m_params = DetectorParametersMCC();
+-    ColorChart m_chartType;
++    ColorChart m_chartType = MCC24;
+
+ private: // methods aux
+     void get_subbox_chart_physical(

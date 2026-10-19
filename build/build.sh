@@ -1,90 +1,125 @@
 #!/usr/bin/env bash
-# 在 emsdk 容器内构建 OpenCV.js。宿主机不需要任何工具链。
+# Builds OpenCV.js inside the emsdk container. The host needs no toolchain, only Docker.
 #
-# 用法: build/build.sh [--simd | --single-file]
+# Usage: build/build.sh [--simd | --single-file]
 #
-# 三个变体（互斥，最多传一个）:
+# Three variants (mutually exclusive, at most one argument):
 #
-#   参数            变体名       产物目录                 产物
-#   ------------    ----------   ----------------------   -----------------------------
-#   (无)            baseline     build/out/baseline/      opencv.js + opencv_js.wasm
+#   argument        variant      output directory         output
+#   ------------    ----------   ----------------------   ------------------------------
+#   (none)          baseline     build/out/baseline/      opencv.js + opencv_js.wasm
 #   --simd          simd         build/out/simd/          opencv.js + opencv_js.wasm
-#   --single-file   singlefile   build/out/singlefile/    opencv.js（wasm 已 base64 内联）
+#   --single-file   singlefile   build/out/singlefile/    opencv.js (wasm embedded)
 #
-#   --simd 透传给 build_js.py，实际效果是两处（对着上游 platforms/js/build_js.py
-#   核对）: CMake 侧 -DCV_ENABLE_INTRINSICS=ON（不带 --simd 时是 OFF，即基线版
-#   连标量 intrinsics 也关着）、链接侧 -msimd128。它**不**启用线程——上游的
-#   --threads 是另一个独立开关，本脚本不用它，因此产物不需要 SharedArrayBuffer，
-#   也就不需要 COOP/COEP 响应头。
+#   --simd is passed through to build_js.py, where it does two things (checked against
+#   upstream platforms/js/build_js.py): -DCV_ENABLE_INTRINSICS=ON on the CMake side (OFF
+#   without --simd, so the baseline build has even scalar intrinsics off), and -msimd128
+#   added to CMAKE_C_FLAGS / CMAKE_CXX_FLAGS, i.e. for compiling and linking. It does
+#   **not** enable threads — upstream's --threads is a separate switch this script does
+#   not use — so the output needs no SharedArrayBuffer and no COOP/COEP headers.
 #
-#   --single-file 是「不传 --disable_single_file」。上游的取反逻辑写在
-#   build_js.py 的 get_build_flags(): `if not self.options.disable_single_file:
-#   flags += "-s SINGLE_FILE=1 "`。SINGLE_FILE=1 会把 wasm 以 base64 内联进
-#   opencv.js（体积约 +33%），产出**单个**文件，浏览器 <script> 可直接引用、
-#   不必再托管 .wasm、也不受 file:// 下 fetch 被 CORS 拦截的影响。
-#   代价：多出三分之一体积、且无法与 .wasm 分开做流式编译。
+#   --single-file means "do not pass --disable_single_file": build_js.py's
+#   get_build_flags() adds `-s SINGLE_FILE=1` unless disable_single_file is set.
+#   SINGLE_FILE=1 embeds the wasm in opencv.js, producing **one** file that a browser
+#   <script> can load directly, with no separate .wasm to host and no fetch() blocked by
+#   CORS under file://. The cost is size, and no streaming compilation of a separate
+#   .wasm. Since Emscripten 4.0.18 the wasm is embedded as a UTF-8–encoded binary string
+#   by default (about 17% smaller than base64), so the script must be decoded as UTF-8:
+#   serve it with `Content-Type: text/javascript; charset=utf-8`, or load it from a page
+#   with <meta charset="utf-8"> or with <script charset="utf-8">.
 #
-#   ⚠️ 单文件变体走的是 baseline（不带 SIMD），这是刻意的：它的使用场景是
-#   <script> 直接引用，那条路径上**没有任何回退机制**——运行时探测器
-#   （src/js/simd-detect.js）只服务于 CommonJS 入口 dist/index.js。SIMD 的浏览器
-#   覆盖率是 93.57%（Chrome 91+ / Firefox 89+ / Safari 16.4+），发一个无回退的
-#   SIMD 单文件版等于让 6.4% 的浏览器直接白屏。需要 SIMD 的用户走 npm 包，
-#   那条路径有探测和回退。
+#   The single-file variant is built without SIMD on purpose: it is meant for a direct
+#   <script> include, a path with **no fallback** — the runtime detection in
+#   src/js/simd-detect.js only serves the CommonJS entry dist/index.js. A SIMD
+#   single-file build would fail outright on engines without WebAssembly SIMD (Chrome
+#   < 91, Firefox < 89, Safari < 16.4). Users who want SIMD use the npm package, which
+#   detects and falls back.
 #
-# 环境变量:
-#   EXTRA_CMAKE_OPTIONS   可选,默认不设置。透传给 build_js.py 的一个
-#                         --cmake_option 值,例如:
+#   Flags evaluated and not adopted (emsdk 6.0.12, 2026-10; ms per operation over the
+#   test/simd-compare.js cases, geometric mean against the shipped build):
+#     -flto            +0.7% baseline / +1.3% simd, within noise; wasm +28% / +24%
+#     -fwasm-exceptions +0.3%; wasm +10%; raises the engine floor to Chrome 95 /
+#                      Firefox 100 / Safari 15.2, and native failures become
+#                      WebAssembly.Exception objects instead of aborts (their text is
+#                      readable through getExceptionMessage)
+#     -mrelaxed-simd   −0.2%, no measurable gain; not every engine with SIMD has relaxed
+#                      SIMD, so it would also need a third variant
+#
+# Environment:
+#   EXTRA_CMAKE_OPTIONS   Optional, unset by default. Passed to build_js.py as one
+#                         --cmake_option value, e.g.:
 #                           EXTRA_CMAKE_OPTIONS='-DBUILD_opencv_dnn=OFF' build/build.sh
-#                         只支持单个 -D 值(build_js.py 的 --cmake_option 是
-#                         "append" 型参数,每个 -D 都要单独一个 --cmake_option;
-#                         这里没有做多值拆分)。如需一次传多个,请扩展本脚本。
-#                         默认不设置的原因见下方 --cmake_option 透传逻辑的注释。
+#                         Only a single -D value is supported: --cmake_option is an
+#                         "append" argument that takes one -D per occurrence, and this
+#                         script does not split values. Extend it if you need several.
+#                         See the pass-through below for why nothing is set by default.
 #
-#   注意 wasm 文件不叫 opencv.wasm——这不是笔误。emscripten 把 wasm 侧文件名
-#   作为编译期常量({{{ WASM_BINARY_FILE }}},定义于 emscripten 的
-#   src/preamble.js)直接写死进 opencv.js 的内容里,取值来自链接时的 CMake
-#   目标名 opencv_js(modules/js/CMakeLists.txt 里 ocv_add_executable(${the_module}...)
-#   而 the_module=opencv_js),也就是说原始产物其实是 opencv_js.js + opencv_js.wasm。
-#   随后 modules/js/src/make_umd.py 只是把 opencv_js.js 的文本内容包一层 UMD
-#   壳、另存为 opencv.js(纯文本操作,不改内容、不碰 .wasm 文件),所以最终
-#   opencv.js 内部引用的仍然是字符串 "opencv_js.wasm"。两个文件必须原名配对;
-#   如果把 .wasm 重命名成 opencv.wasm,浏览器/Node 运行时会去 fetch
-#   opencv_js.wasm 而 404。
+#   The wasm file is named opencv_js.wasm, not opencv.wasm, on purpose. Emscripten bakes
+#   the wasm file name into opencv.js at compile time ({{{ WASM_BINARY_FILE }}} in
+#   Emscripten's src/preamble.js), and the name comes from the CMake target opencv_js
+#   (modules/js/CMakeLists.txt: ocv_add_executable(${the_module} ...) with
+#   the_module=opencv_js), so the raw output is opencv_js.js + opencv_js.wasm.
+#   modules/js/src/make_umd.py then only wraps opencv_js.js in a UMD shell and saves it
+#   as opencv.js (a text operation that does not touch the .wasm), so opencv.js still
+#   refers to the string "opencv_js.wasm". The two files must stay paired under their
+#   original names: renamed to opencv.wasm, the runtime would fetch opencv_js.wasm and
+#   get a 404.
 #
-#   ⚠️ 这条正是 baseline 与 simd 必须**分目录**存放的原因：两个变体的 .wasm
-#   文件名都是编译期烘焙的 "opencv_js.wasm",谁都改不动,放同一个目录必然互相
-#   覆盖。dist/ 下的布局因此是 dist/baseline/ 与 dist/simd/ 两个子目录,各自
-#   持有配对的 opencv.js + opencv_js.wasm（见 build/assemble.sh）。
+#   This is why baseline and simd must live in **separate directories**: both variants'
+#   .wasm files carry the compile-time name "opencv_js.wasm", which cannot be changed, so
+#   one directory would make them overwrite each other. dist/ therefore has
+#   dist/baseline/ and dist/simd/, each with its own paired opencv.js + opencv_js.wasm
+#   (see build/assemble.sh).
 #
-#   两条可独立核对的旁证(都在上游仓库,不依赖本仓库任何未提交的文件):
-#   - opencv/opencv#13356 附带的完整构建日志里有
+#   Two pieces of evidence that can be checked independently (both upstream):
+#   - The full build log attached to opencv/opencv#13356 contains
 #       [100%] Linking CXX executable ../../bin/opencv_js.js
-#     ——链接目标名就是 opencv_js,产物落在 bin/ 下。(该 issue 本身报的是
-#     "构建后 bin/ 里没有 .wasm",结论是 SINGLE_FILE 把 wasm 以 base64
-#     内联进了 opencv.js;这也正是 --single-file 变体所依赖的那个行为。)
-#   - opencv/opencv#19243 的评论里有 emscripten 的报错行
+#     — the link target is opencv_js and the output lands in bin/. (The issue reports
+#     "no .wasm in bin/ after the build"; the cause was SINGLE_FILE embedding the wasm in
+#     opencv.js, the very behaviour the --single-file variant relies on.)
+#   - A comment on opencv/opencv#19243 quotes the Emscripten error line
 #       em++: error: '.../upstream/bin/wasm2js --emscripten -O ../../bin/opencv_js.wasm ...' failed
-#     ——直接给出 bin/opencv_js.wasm 这个路径。(注意这是 --disable_wasm
-#     构建的失败输出,不是成功日志;它能证明的只是文件名,不是别的。)
-# 对上游源码的补丁:
-#   build/patches/*.patch 在容器里 clone 完 OpenCV 之后逐个 git apply（每个文件开头
-#   写着为什么需要它）。目前只有一个：wasm SIMD 后端的 v_round 把负数算偏 1、.5 的
-#   进位也与 cvRound 不同，见 opencv-wasm-v_round.patch。补丁对不上时构建直接失败。
+#     — which names bin/opencv_js.wasm. (That is the failure output of a --disable_wasm
+#     build, not a success log; it proves the file name and nothing else.)
+#
+# Patches to the upstream sources:
+#   build/patches/*.patch are applied with git apply, one by one, after OpenCV is cloned
+#   in the container (each file starts with why it is needed). A patch that no longer
+#   applies fails the build. Currently:
+#   - opencv-js-deep-clone.patch: since Emscripten 4.0.0 the helpers.js code that
+#     replaces Embind's shallow clone() with mat_clone never runs, so without the patch
+#     clone() is a shallow copy.
+#   - opencv-js-link-flags.patch: exports the runtime symbols the extension layer needs
+#     (Emscripten no longer exports the HEAP* views by default), for the opencv_js target
+#     only, and raises the memory limit from 1 GB to 2 GB.
+#   - opencv-js-mcc-bindings.patch: lets the generated bindings for the MCC (Macbeth
+#     ColorChecker) classes compile.
+#   - opencv-mcc-chart-type-init.patch: initializes the MCC detector's chart type, which
+#     upstream leaves uninitialized (detection then depends on leftover heap memory).
+#   - opencv-wasm-v_round.patch: the wasm SIMD backend's v_round was off by one for
+#     negative numbers and rounded .5 differently from cvRound.
+#
+# Pinned inputs: the OpenCV tag (build/opencv-version.txt) must resolve to the commit in
+# build/opencv-commit.txt, and build/Dockerfile pins the emsdk image by digest.
+# build/fingerprint.sh hashes every build input; CI names artifacts after it.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OPENCV_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/build/opencv-version.txt")"
+# The commit that tag must resolve to. A tag can be moved upstream; checking the commit
+# keeps the build input fixed. Update both files together when moving to another release.
+OPENCV_COMMIT="$(tr -d '[:space:]' < "${REPO_ROOT}/build/opencv-commit.txt")"
 IMAGE_TAG="opencvjs-build:${OPENCV_VERSION}"
 OUT_DIR="${REPO_ROOT}/build/out"
 
-# 拆分版 glue 实测约 143 KB；单文件版把 wasm（5.0.0 的 baseline 约 12 MB）以 base64
-# 内联，约 16 MB。
-# 两者相差近两个数量级，2 MB 这条线落在中间任何位置都足以判别，取整为 2 MB。
-# 同一条判据在 build/assemble.sh 与 test/smoke/wasm-artifact.test.js 里各有一份。
+# The split glue is about 136 KB (emsdk 6.0.12); the single-file build embeds the wasm
+# (about 12 MB for 5.0.0 baseline) and is about 13 MB. Two orders of magnitude apart, so
+# any line in between tells them apart; 2 MB it is. The same threshold appears in
+# build/assemble.sh and test/smoke/wasm-artifact.test.js.
 INLINE_THRESHOLD=$((2 * 1024 * 1024))
 
 if (( $# > 1 )); then
-  echo "只接受一个变体参数（--simd 与 --single-file 互斥），收到 $#: $*" >&2
+  echo "Only one variant argument is accepted (--simd and --single-file are mutually exclusive), got $#: $*" >&2
   exit 1
 fi
 
@@ -102,44 +137,43 @@ case "${1:-}" in
     BUILD_SUBDIR="singlefile"
     ;;
   *)
-    echo "未知参数: ${1}（仅支持 --simd | --single-file）" >&2
+    echo "Unknown argument: ${1} (only --simd | --single-file)" >&2
     exit 1
     ;;
 esac
 
-# --cmake_option 透传入口。默认不设置、默认不禁用 dnn:
-# - src/config/opencv_js.config.py 的白名单已移除 dnn,但那只影响 embind
-#   绑定生成,不影响 CMake 是否编译 dnn 模块——build_js.py:124（5.0.0）硬编码
-#   -DBUILD_opencv_dnn=ON,且没有 --disable_dnn 选项,产物里仍会带着 dnn 的
-#   C++ 代码,体积不会因白名单而显著减小。
-# - objdetect 对 dnn 是可选依赖(face_detect.cpp 调用 dnn::readNet),白名单
-#   里保留的 FaceDetectorYN 要靠它。真传 -DBUILD_opencv_dnn=OFF 能否编译通过、
-#   FaceDetectorYN 会变成什么行为,都还没有验证过,有风险。
-# - 本任务的目标是先把构建链路跑通,体积优化留到链路打通之后再试。因此默认
-#   不传任何 --cmake_option,只留这一个入口给以后需要时使用。
+# The --cmake_option pass-through. Unset by default, and dnn is not disabled by default:
+# - The whitelist in src/config/opencv_js.config.py has no dnn entries, but that only
+#   affects binding generation, not whether CMake builds the dnn module: build_js.py
+#   hard-codes -DBUILD_opencv_dnn=ON and has no --disable_dnn option, so the dnn C++ code
+#   is in the output either way and the whitelist does not shrink it much.
+# - objdetect depends on dnn optionally (face_detect.cpp calls dnn::readNet), and the
+#   whitelisted FaceDetectorYN needs it, as does mcc's CCheckerDetector. Whether
+#   -DBUILD_opencv_dnn=OFF builds at all, and what those classes do then, is unverified.
 : "${EXTRA_CMAKE_OPTIONS:=}"
 
-echo "==> OpenCV ${OPENCV_VERSION}, 变体: ${BUILD_SUBDIR}"
+echo "==> OpenCV ${OPENCV_VERSION}, variant: ${BUILD_SUBDIR}"
 if [[ -n "${EXTRA_CMAKE_OPTIONS}" ]]; then
-  echo "==> 额外 CMake 参数: ${EXTRA_CMAKE_OPTIONS}"
+  echo "==> Extra CMake option: ${EXTRA_CMAKE_OPTIONS}"
 fi
 
 docker build -t "${IMAGE_TAG}" -f "${REPO_ROOT}/build/Dockerfile" "${REPO_ROOT}"
 
-# 先清空再建：留着上一次的产物会让下面那组不变量检查失去意义——构建若在
-# cp 之前失败，陈旧文件仍在原地，检查照样通过，于是一次失败的构建被报成成功。
-# 代价是构建失败时旧产物一并丢失，这是刻意的取舍：宁可重跑，也不要一个
-# 「查了但查的是上次的东西」的绿灯。
+# Clear before building: leftovers from a previous build would defeat the invariant
+# checks below — if the build failed before the cp, the stale files would still be in
+# place, the checks would pass, and a failed build would be reported as a success. The
+# old output is lost when a build fails; that is deliberate: rather rebuild than get a
+# green light that checked the previous build.
 rm -rf "${OUT_DIR:?}/${BUILD_SUBDIR}"
 mkdir -p "${OUT_DIR}/${BUILD_SUBDIR}"
 
-#   下面这段容器内脚本用单引号整体传给内层 bash -c——外层 shell 不对其做任何
-#   变量展开，脚本文本本身是纯字面量。OPENCV_VERSION/SIMD_FLAG/EXTRA_CMAKE_OPTIONS/
-#   SINGLE_FILE 一律通过位置参数（$1/$2/$3/$4，紧跟在单引号脚本之后的
-#   `bash "${...}"...`）传入，内层脚本只以 "$1".."$4" 引用、装进数组再展开
-#   (`"${arr[@]}"`)。这样即便 EXTRA_CMAKE_OPTIONS 里含引号、分号、$() 等 shell
-#   元字符，也只是不透明的字符串数据，不会被内层 bash 当脚本语法二次解析——
-#   消除了旧写法（把值拼进双引号字符串再整体喂给 bash -c）天然带有的注入面。
+# The container script below is passed to the inner bash -c in single quotes, so the
+# outer shell expands nothing in it. OPENCV_VERSION / SIMD_FLAG / EXTRA_CMAKE_OPTIONS /
+# SINGLE_FILE / OPENCV_COMMIT arrive as positional parameters ($1..$5, after the quoted
+# script), and the script only uses them as "$1".."$5" or through arrays ("${arr[@]}").
+# Even if EXTRA_CMAKE_OPTIONS contains quotes, semicolons or $(...), it stays opaque
+# data and is never parsed as shell syntax by the inner bash — unlike splicing the
+# values into a double-quoted string for bash -c, which is an injection surface.
 docker run --rm \
   -v "${REPO_ROOT}/src/config:/config:ro" \
   -v "${REPO_ROOT}/build/patches:/patches:ro" \
@@ -150,17 +184,24 @@ docker run --rm \
     simd_flag="$2"
     extra_cmake_options="$3"
     single_file="$4"
+    opencv_commit="$5"
 
     git clone --depth 1 --branch "${opencv_version}" https://github.com/opencv/opencv.git /work/opencv
     cd /work/opencv
+    actual_commit="$(git rev-parse HEAD)"
+    if [[ "${actual_commit}" != "${opencv_commit}" ]]; then
+      echo "❌ tag ${opencv_version} resolves to ${actual_commit}, expected ${opencv_commit} (build/opencv-commit.txt)" >&2
+      exit 1
+    fi
 
-    # 本仓库对上游源码的补丁（build/patches/，每个文件开头写着为什么）。先 --check：
-    # 上游改了那段代码、补丁对不上时构建直接失败，而不是静默产出一份没打补丁的产物。
+    # Patches to the upstream sources (build/patches/; each file says why). --check
+    # first: if upstream changed the code and a patch no longer applies, the build fails
+    # instead of silently producing an unpatched artifact.
     shopt -s nullglob
     for patch_file in /patches/*.patch; do
       git apply --check "${patch_file}"
       git apply "${patch_file}"
-      echo "==> 已打补丁: ${patch_file}"
+      echo "==> Applied patch: ${patch_file}"
     done
 
     build_js_args=(
@@ -171,8 +212,8 @@ docker run --rm \
       --emscripten_dir
       "$EMSDK/upstream/emscripten"
     )
-    # 取反：不要单文件时才传 --disable_single_file（上游是 store_true 的
-    # disable_* 开关，不传即 SINGLE_FILE=1）。
+    # Inverted: --disable_single_file is passed unless a single file is wanted (upstream
+    # has a store_true disable_* switch; without it SINGLE_FILE=1).
     if [[ "${single_file}" != "1" ]]; then
       build_js_args+=(--disable_single_file)
     fi
@@ -187,40 +228,43 @@ docker run --rm \
 
     cp -v /work/build_js/bin/opencv.js /out/
     if [[ "${single_file}" != "1" ]]; then
-      # 拆分构建：.wasm 必须存在，不存在就让 cp 失败（set -e）而不是静默少拷一个文件。
+      # Split build: the .wasm must exist; if it does not, let cp fail (set -e) instead of
+      # silently copying one file fewer.
       cp -v /work/build_js/bin/opencv_js.wasm /out/
     fi
-  ' bash "${OPENCV_VERSION}" "${SIMD_FLAG}" "${EXTRA_CMAKE_OPTIONS}" "${SINGLE_FILE}"
+  ' bash "${OPENCV_VERSION}" "${SIMD_FLAG}" "${EXTRA_CMAKE_OPTIONS}" "${SINGLE_FILE}" "${OPENCV_COMMIT}"
 
-# ── 产物不变量检查 ──────────────────────────────────────────────────────────
-# 在宿主机上查（而不是容器里）：查的是最终落盘的那份东西，和使用者拿到的一致。
-# 两个方向都查——只查一边等于默认另一边不会错。变体传错、上游改掉 SINGLE_FILE
-# 的取反逻辑、或 build_js.py 换了产物路径，都会在这里当场失败，而不是拖到
-# assemble 或运行时才暴露。
+# Output invariants
+# -----------------
+# Checked on the host, not in the container: what is checked is the file on disk, the
+# same one users get. Both directions are checked — checking one side assumes the other
+# cannot go wrong. A wrong variant, upstream changing the SINGLE_FILE inversion, or
+# build_js.py moving its output all fail here, right away, instead of surfacing in
+# assemble or at runtime.
 GLUE="${OUT_DIR}/${BUILD_SUBDIR}/opencv.js"
 WASM="${OUT_DIR}/${BUILD_SUBDIR}/opencv_js.wasm"
 GLUE_SIZE=$(wc -c < "${GLUE}" | tr -d '[:space:]')
 
 if [[ "${SINGLE_FILE}" == "1" ]]; then
   if (( GLUE_SIZE <= INLINE_THRESHOLD )); then
-    echo "❌ 单文件变体的 opencv.js 只有 ${GLUE_SIZE} 字节（<= ${INLINE_THRESHOLD}）——" >&2
-    echo "   SINGLE_FILE=1 没生效，wasm 没被内联进来。" >&2
+    echo "❌ The single-file variant's opencv.js is only ${GLUE_SIZE} bytes (<= ${INLINE_THRESHOLD}):" >&2
+    echo "   SINGLE_FILE=1 had no effect and the wasm was not embedded." >&2
     exit 1
   fi
   if [[ -e "${WASM}" ]]; then
-    echo "❌ 单文件变体不该有独立的 opencv_js.wasm，却存在: ${WASM}" >&2
+    echo "❌ The single-file variant should have no separate opencv_js.wasm, but it exists: ${WASM}" >&2
     exit 1
   fi
 else
   if [[ ! -f "${WASM}" ]]; then
-    echo "❌ 缺少 ${WASM} —— --disable_single_file 没生效？" >&2
+    echo "❌ ${WASM} is missing; did --disable_single_file have no effect?" >&2
     exit 1
   fi
   if (( GLUE_SIZE > INLINE_THRESHOLD )); then
-    echo "❌ ${GLUE} 有 ${GLUE_SIZE} 字节（> ${INLINE_THRESHOLD}）—— wasm 可能仍被内联进了 JS" >&2
+    echo "❌ ${GLUE} is ${GLUE_SIZE} bytes (> ${INLINE_THRESHOLD}); the wasm may still be embedded in the JS" >&2
     exit 1
   fi
 fi
 
-echo "==> 产物:"
+echo "==> Output:"
 ls -la "${OUT_DIR}/${BUILD_SUBDIR}"

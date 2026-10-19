@@ -2,46 +2,53 @@
 "use strict";
 
 /**
- * 从**组装后的 dist/ 产物本身**生成 dist/index.d.ts。
+ * Generates dist/index.d.ts from **the assembled dist/ artifacts themselves**.
  *
- * 用法: node build/gen-types.js [dist 目录]      （默认 ./dist，也认 OPENCV_DIST）
- * 由 build/assemble.sh 在组装的最后一步自动调用。
+ * Usage: node build/gen-types.js [dist dir]      (defaults to ./dist; OPENCV_DIST works too)
+ * build/assemble.sh runs it as the last assembly step.
  *
- * ── 为什么不手写 ──────────────────────────────────────────────────────────
- * 生态里现有的 OpenCV.js 类型声明（@opencvjs/types、TechStark 的 src/）**与运行时
- * 不符**：声明了运行时并不存在的 SIFT / PCA / FlannBasedMatcher，又漏掉了确实存在的
- * FaceDetectorYN。血统能追到 2019 年的 mirada，此后一直靠人手维护。后果是最难受的
- * 那一种——代码通过类型检查，然后运行时抛异常。
+ * Why not hand-written
+ * --------------------
+ * The OpenCV.js type declarations in the ecosystem (@opencvjs/types, TechStark's src/)
+ * **do not match the runtime**: they declare SIFT / PCA / FlannBasedMatcher, which do not
+ * exist at runtime, and miss FaceDetectorYN, which does. Their lineage goes back to
+ * mirada in 2019, maintained by hand ever since. The result is the worst kind of bug:
+ * code passes type checking and then throws at runtime.
  *
- * 手写声明一定会漂移，因为它和产物之间没有任何机械联系：白名单改一行、embind 的
- * 重载分发规则变一点，声明都不会自己跟着动。本项目手里有产物，所以可以不猜：
- * 顶层符号集直接取自 `Object.keys(cv)`，Mat 成员取自其原型链。
+ * Hand-written declarations always drift, because nothing ties them to the artifact: a
+ * whitelist line changes, Embind's overload dispatch changes, and the declarations stay
+ * put. This project has the artifact, so it does not have to guess: the top-level symbol
+ * set comes straight from `Object.keys(cv)`, the Mat members from its prototype chain.
  *
- * ── 这份声明保证什么、不保证什么 ──────────────────────────────────────────
- * 保证：**声明的符号集与运行时的符号集严格相等**（双向，由
- *   test/types/dts-consistency.test.js 断言；那条断言是这件事的全部意义）。
- * 不保证：每个原生函数的参数类型精确。要做到那一步得解析 OpenCV 的 C++ 签名并复现
- *   embind 的重载分发规则，超出本项目范围——所以未逐条标注的原生绑定一律是
- *   `(...args: any[]): any`。**宁可说得少，也不说错**：多一个不存在的符号，害处比
- *   少一个 any 大得多，这正是现有生态那几份 .d.ts 栽的地方。
- * 例外：本项目自己写的扩展层（roiClone / DATA / PTR / replaceMatOn* 等）给出准确
- *   签名——那些是我们自己的代码，签名有据可依。
+ * What these declarations guarantee, and what they do not
+ * -------------------------------------------------------
+ * Guaranteed: **the declared symbol set equals the runtime symbol set exactly** (both
+ *   directions, asserted by test/types/dts-consistency.test.js; that assertion is the
+ *   whole point).
+ * Not guaranteed: precise parameter types for every native function. That would mean
+ *   parsing OpenCV's C++ signatures and reproducing Embind's overload dispatch, which is
+ *   beyond this project — so every native binding without a hand-written signature is
+ *   `(...args: any[]): any`. **Rather say less than say something wrong**: one symbol
+ *   that does not exist does more harm than one `any`, which is exactly where the other
+ *   .d.ts files in the ecosystem fail.
+ * Exception: the extension layer written here (roiClone / DATA / PTR / replaceMatOn* and
+ *   so on) gets precise signatures — it is this project's own code.
  *
- * ⚠️ 不要手改 dist/index.d.ts：dist/ 每次 assemble 都会整个重建。要改签名，改本文件
- *    下面的 CV_SIGNATURES / MAT_SIGNATURES。
+ * Do not edit dist/index.d.ts by hand: dist/ is rebuilt from scratch by every assemble.
+ * To change a signature, change CV_SIGNATURES / MAT_SIGNATURES below.
  */
 
 const fs = require("fs");
 const path = require("path");
 
 // ---------------------------------------------------------------------------
-// 手写签名表。
+// Hand-written signature tables.
 //
-// 表里的每个名字都必须真实存在于运行时，否则生成直接失败（见 checkKnown）——
-// 手写的那一半同样不许漂移。
+// Every name in them must exist at runtime, or generation fails (see checkKnown): the
+// hand-written half must not drift either.
 // ---------------------------------------------------------------------------
 
-/** cv 顶层：本项目的扩展、glue 的值类型构造器、以及几个已实测的成员。 */
+/** Top-level cv: this project's extensions, the glue's value-type constructors, and a few verified members. */
 const CV_SIGNATURES = {
   Mat: "Mat: MatConstructor;",
   matFromArray:
@@ -67,20 +74,21 @@ const CV_SIGNATURES = {
 };
 
 /**
- * Mat 成员。
+ * Mat members.
  *
- * 扩展层（DATA 起往下）是本项目自己的代码，签名准确。上面那批原生成员的返回值
- * 全部在本产物上实测过（3×3 CV_32FC2）：size() 得 {width, height}，matSize/step 是
- * 普通数组，row/col/diag/roi/t/rowRange/colRange/clone 得 Mat，create() 返回
- * undefined。其余原生方法一律留给 `(...args: any[]): any`。
+ * The extension layer (from DATA down) is this project's own code, with precise
+ * signatures. The return values of the native members above it were all verified on
+ * this build (on a 3×3 CV_32FC2): size() gives {width, height}, matSize / step are plain
+ * arrays, row / col / diag / roi / t / rowRange / colRange / clone give a Mat, and
+ * create() returns undefined. Every other native method is `(...args: any[]): any`.
  */
 const MAT_SIGNATURES = {
-  // —— embind 的对象生命周期（挂在 ClassHandle.prototype 上，不在 Mat.prototype 上）——
+  // Embind object lifetime (on ClassHandle.prototype, not Mat.prototype)
   delete: "delete(): void;",
   isDeleted: "isDeleted(): boolean;",
   deleteLater: "deleteLater(): this;",
   isAliasOf: "isAliasOf(other: unknown): boolean;",
-  // —— 原生绑定中已实测的部分 ——
+  // Verified native bindings
   rows: "rows: number;",
   cols: "cols: number;",
   matSize: "matSize: number[];",
@@ -112,7 +120,7 @@ const MAT_SIGNATURES = {
   rowRange: "rowRange(start: number, end: number): Mat;",
   colRange: "colRange(start: number, end: number): Mat;",
   create: "create(rows: number, cols: number, type: number): void;",
-  // —— 本项目的扩展层 ——
+  // This project's extension layer
   DATA: "DATA(): MatTypedArray;",
   PTR: "PTR(row: number, col?: number): MatTypedArray;",
   roiClone: "roiClone(rect: Rect): Mat;",
@@ -137,20 +145,20 @@ const MAT_SIGNATURES = {
   dftSplit: "dftSplit(): { r: Mat; i: Mat };",
 };
 
-// 生成区块的标记。test/types/dts-consistency.test.js 用它们框出「声明的符号集」，
-// 因此格式必须保持「一行一个符号」。
+// Markers around the generated blocks. test/types/dts-consistency.test.js uses them to
+// extract "the declared symbol set", so the format must stay one symbol per line.
 const CV_BEGIN = "// #region generated:cv";
 const CV_END = "// #endregion generated:cv";
 const MAT_BEGIN = "// #region generated:Mat";
 const MAT_END = "// #endregion generated:Mat";
 
 /**
- * Mat 实例上所有自有可枚举成员。
+ * Every own enumerable member of a Mat instance.
  *
- * 必须走整条原型链：`delete` / `isDeleted` / `deleteLater` / `isAliasOf` 挂在 embind 的
- * ClassHandle.prototype 上，不在 Mat.prototype 上。只 dump Object.keys(cv.Mat.prototype)
- * 会漏掉它们，而 `mat.delete()` 出现在本项目**每一个**示例里——漏掉即等于让 TS 用户
- * 的每个示例都报错。
+ * The whole prototype chain must be walked: `delete` / `isDeleted` / `deleteLater` /
+ * `isAliasOf` live on Embind's ClassHandle.prototype, not on Mat.prototype. Dumping only
+ * Object.keys(cv.Mat.prototype) would miss them, and `mat.delete()` appears in **every**
+ * example of this project — every example would fail for TS users.
  */
 function dumpMatMembers(MatCtor) {
   const names = new Set();
@@ -162,7 +170,7 @@ function dumpMatMembers(MatCtor) {
   return [...names];
 }
 
-/** 沿原型链找到某个成员的属性描述符（用于区分访问器与方法）。 */
+/** Finds a member's property descriptor along the prototype chain (to tell accessors from methods). */
 function findDescriptor(MatCtor, name) {
   let proto = MatCtor.prototype;
   while (proto && proto !== Object.prototype) {
@@ -173,38 +181,41 @@ function findDescriptor(MatCtor, name) {
   return undefined;
 }
 
-/** 手写表里的名字必须都存在于运行时，否则就是又一份会说谎的声明。 */
+/** Every name in a hand-written table must exist at runtime, or this is one more lying declaration. */
 function checkKnown(table, actual, what) {
   const missing = Object.keys(table).filter((k) => !actual.includes(k));
   if (missing.length > 0) {
     throw new Error(
-      `${what} 的手写签名表里有运行时不存在的符号: ${missing.join(", ")}\n` +
-        `——这正是本文件开头描述的那种失败。请删掉它们，或确认产物是否已变。`,
+      `The hand-written signature table for ${what} has symbols that do not exist at runtime: ` +
+        `${missing.join(", ")}\nThat is exactly the failure described at the top of this ` +
+        `file. Remove them, or check whether the artifacts changed.`,
     );
   }
 }
 
 /**
- * 所有符号名都必须是合法的 JS 标识符。
+ * Every symbol name must be a valid JS identifier.
  *
- * 实测全部合法（4.14.0 产物 1450 + 75 个、5.0.0 产物 1653 + 75 个，无一例外）。
- * 这里显式挡一道，是因为一旦出现
- * 带连字符之类的名字，下面会原样吐出 `foo-bar: number;` —— 那是**无效的 TS**，而
- * 本仓库不带 TypeScript 依赖、CI 也不做类型检查，没人会发现。宁可在生成这一步炸掉，
- * 也不要发布一份编译不过的声明。真出现了，就在这里改成给名字加引号（并同步
- * test/types/dts-consistency.test.js 的解析正则）。
+ * All of them are (1450 + 75 on the 4.14.0 artifacts, 1653 + 75 on 5.0.0, 1634 + 75 on
+ * 5.0.0 built with emsdk 6.0.12, without exception). The explicit check is here because
+ * a name with, say, a hyphen would be emitted as `foo-bar: number;` — **invalid TS** — and
+ * this repository has no TypeScript dependency and CI does no type checking, so nobody
+ * would notice. Rather fail at generation than publish declarations that do not compile.
+ * If it ever happens, quote such names here (and update the parsing regex in
+ * test/types/dts-consistency.test.js).
  */
 function checkIdentifiers(names, what) {
   const bad = names.filter((n) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n));
   if (bad.length > 0) {
     throw new Error(
-      `${what} 里有不是合法标识符的符号名: ${bad.join(", ")}\n` +
-        `——原样输出会生成无效的 TS。需要给这些名字加引号，见本函数的注释。`,
+      `${what} has symbol names that are not valid identifiers: ${bad.join(", ")}\n` +
+        `Emitting them as they are would produce invalid TS; they need quoting, see the ` +
+        `comment on this function.`,
     );
   }
 }
 
-/** 一个 cv 顶层成员的自动声明（按运行时 typeof 定型）。 */
+/** The automatic declaration of a top-level cv member (typed by its runtime typeof). */
 function autoCvMember(name, value) {
   switch (typeof value) {
     case "number":
@@ -222,7 +233,7 @@ function autoCvMember(name, value) {
   }
 }
 
-/** 一个 Mat 成员的自动声明。 */
+/** The automatic declaration of a Mat member. */
 function autoMatMember(MatCtor, name) {
   const desc = findDescriptor(MatCtor, name);
   if (desc && typeof desc.value === "function") {
@@ -231,15 +242,20 @@ function autoMatMember(MatCtor, name) {
   return `${name}: any;`;
 }
 
-/** 渲染整份 .d.ts。 */
+/** Renders the whole .d.ts. */
 function render(cv) {
   const cvKeys = Object.keys(cv).sort();
   const matKeys = dumpMatMembers(cv.Mat).sort();
+  // Declared only when this runtime has it: artifacts built with emsdk 6.0.12 put delete()
+  // under Symbol.dispose on every Embind object, older ones do not.
+  const disposable =
+    typeof Symbol.dispose === "symbol" &&
+    typeof cv.Mat.prototype[Symbol.dispose] === "function";
 
-  checkKnown(CV_SIGNATURES, cvKeys, "cv 顶层");
-  checkKnown(MAT_SIGNATURES, matKeys, "Mat 成员");
-  checkIdentifiers(cvKeys, "cv 顶层");
-  checkIdentifiers(matKeys, "Mat 成员");
+  checkKnown(CV_SIGNATURES, cvKeys, "top-level cv");
+  checkKnown(MAT_SIGNATURES, matKeys, "Mat members");
+  checkIdentifiers(cvKeys, "top-level cv");
+  checkIdentifiers(matKeys, "Mat members");
 
   const known = (keys, table) => keys.filter((k) => table[k] !== undefined);
   const auto = (keys, table) => keys.filter((k) => table[k] === undefined);
@@ -248,44 +264,28 @@ function render(cv) {
   const push = (indent, text) =>
     lines.push(text ? " ".repeat(indent) + text : "");
 
-  push(
-    0,
-    "// 本文件由 build/gen-types.js 从组装后的 dist/ 产物自动生成 —— 请勿手改。",
-  );
-  push(
-    0,
-    "// 重新生成: npm run assemble（或 node build/gen-types.js [dist 目录]）",
-  );
-  push(0, "//");
-  push(
-    0,
-    "// 顶层符号取自运行时的 Object.keys(cv)，Mat 成员取自 Mat 实例的整条原型链，",
-  );
-  push(
-    0,
-    "// 因此这里声明的每一个符号都确实存在、每一个存在的符号也都被声明——两个方向都由",
-  );
-  push(
-    0,
-    "// test/types/dts-consistency.test.js 断言。生态里几份手写的 OpenCV.js 声明正是在",
-  );
-  push(
-    0,
-    "// 这一点上失守：声明了运行时没有的 SIFT / PCA / FlannBasedMatcher，又漏掉了确实",
-  );
-  push(0, "// 存在的 FaceDetectorYN，于是代码能过类型检查、运行时才抛异常。");
-  push(0, "//");
-  push(
-    0,
-    "// 未逐条标注签名的原生绑定一律是 (...args: any[]): any —— 精确到每个参数需要解析",
-  );
-  push(
-    0,
-    "// OpenCV 的 C++ 签名并复现 embind 的重载分发，超出本项目范围。本项目自己写的扩展层",
-  );
-  push(0, "// 有准确签名。");
+  for (const line of [
+    "// Generated by build/gen-types.js from the assembled dist/ artifacts. Do not edit.",
+    "// Regenerate with npm run assemble (or node build/gen-types.js [dist dir]).",
+    "//",
+    "// Top-level symbols come from the runtime's Object.keys(cv) and Mat members from the",
+    "// whole prototype chain of a Mat instance, so every symbol declared here exists and every",
+    "// existing symbol is declared; test/types/dts-consistency.test.js asserts both directions.",
+    "// That is where the hand-written OpenCV.js declarations in the ecosystem fail: they",
+    "// declare SIFT / PCA / FlannBasedMatcher, which the runtime lacks, and miss FaceDetectorYN,",
+    "// which it has, so code type-checks and then throws at runtime.",
+    "//",
+    "// Native bindings without a hand-written signature are (...args: any[]): any; precise",
+    "// parameters would need OpenCV's C++ signatures and Embind's overload dispatch, which is",
+    "// beyond this project. The extension layer written in this project has precise signatures.",
+  ]) {
+    push(0, line);
+  }
   push(0, "");
-  push(0, `// 符号数: cv 顶层 ${cvKeys.length}，Mat 成员 ${matKeys.length}`);
+  push(
+    0,
+    `// Symbols: ${cvKeys.length} top-level, ${matKeys.length} Mat members`,
+  );
   push(0, "");
   push(
     0,
@@ -294,59 +294,75 @@ function render(cv) {
   push(0, "");
   push(0, "declare namespace loadOpenCV {");
 
-  push(2, "/** loadOpenCV() 的可选参数。 */");
+  push(2, "/** Options for loadOpenCV(). */");
   push(2, "interface LoadOptions {");
   push(4, "/**");
   push(
     4,
-    " * 强制选择 wasm 变体。缺省时按 WebAssembly SIMD 运行时探测自动选择",
+    " * Forces a wasm variant. Without it, the variant is chosen by runtime WebAssembly SIMD",
   );
-  push(4, " * （环境变量 OPENCV_SIMD 的优先级介于两者之间）。");
+  push(
+    4,
+    " * detection (the OPENCV_SIMD environment variable ranks between the two).",
+  );
   push(4, " *");
-  push(4, " * 明确指定的变体若不存在会**抛错**，不会悄悄回落到另一个——那会让");
-  push(4, " * 「强制某变体跑一遍」变成谎报。");
+  push(
+    4,
+    " * A variant asked for explicitly that is missing **throws**; it never falls back to the",
+  );
+  push(
+    4,
+    ' * other one, which would turn "run everything on this variant" into a false report.',
+  );
   push(4, " */");
   push(4, "simd?: boolean;");
   push(2, "}");
   push(0, "");
   push(2, "/**");
-  push(2, " * 当前运行时是否支持 WebAssembly SIMD。");
+  push(2, " * Whether the engine supports WebAssembly SIMD.");
   push(2, " *");
   push(
     2,
-    " * 只反映引擎能力，不反映最终加载了哪个变体：OPENCV_SIMD=0 时引擎照样",
+    " * Reports the engine's capability, not which variant was loaded: with OPENCV_SIMD=0 the",
   );
-  push(2, " * 支持 SIMD，但加载的是 baseline。");
+  push(2, " * engine still supports SIMD, but baseline is loaded.");
   push(2, " */");
   push(2, "function detectSimd(): boolean;");
   push(0, "");
-  push(2, "/** 未逐条标注签名的原生绑定：既可当函数调用，也可当类 new。 */");
+  push(
+    2,
+    "/** A native binding without a hand-written signature: callable as a function or with new. */",
+  );
   push(2, "interface OpenCVBinding {");
   push(4, "(...args: any[]): any;");
   push(4, "new (...args: any[]): any;");
   push(2, "}");
   push(0, "");
-  push(2, "/** DATA() / PTR() 按 Mat 的 depth() 分发到的 TypedArray。 */");
+  push(
+    2,
+    "/** The TypedArray DATA() / PTR() return, chosen by the Mat's depth(). */",
+  );
   push(
     2,
     "type MatTypedArray = Uint8Array | Int8Array | Uint16Array | Int16Array | Int32Array | Float32Array | Float64Array;",
   );
   push(0, "");
 
-  // glue 里的值类型（纯 JS 类，构造器重载逐条对着 dist/baseline/opencv.js 的实现写）
+  // The glue's value types (plain JS classes; each constructor overload was written
+  // against the implementation in dist/baseline/opencv.js)
   for (const block of [
     [
-      "/** cv.Point —— glue 里的纯 JS 类，缺省分量为 0。 */",
+      "/** cv.Point, a plain JS class in the glue; components default to 0. */",
       "interface Point { x: number; y: number; }",
       "interface PointConstructor { new (x?: number, y?: number): Point; }",
     ],
     [
-      "/** cv.Size —— glue 里的纯 JS 类，缺省分量为 0。 */",
+      "/** cv.Size, a plain JS class in the glue; components default to 0. */",
       "interface Size { width: number; height: number; }",
       "interface SizeConstructor { new (width?: number, height?: number): Size; }",
     ],
     [
-      "/** cv.Rect —— 接受 0 / 1（另一个 Rect）/ 2（Point + Size）/ 4 个参数。 */",
+      "/** cv.Rect: takes 0, 1 (another Rect), 2 (Point + Size) or 4 arguments. */",
       "interface Rect { x: number; y: number; width: number; height: number; }",
       "interface RectConstructor {",
       "  new (): Rect;",
@@ -356,16 +372,17 @@ function render(cv) {
       "}",
     ],
     [
-      "/** cv.Range —— glue 里的纯 JS 类。 */",
+      "/** cv.Range, a plain JS class in the glue. */",
       "interface Range { start: number; end: number; }",
       "interface RangeConstructor { new (start?: number, end?: number): Range; }",
     ],
     [
       "/**",
-      " * cv.Scalar —— 原型是一个 Array 实例，四个分量缺省为 0。",
+      " * cv.Scalar: its prototype is an Array instance; the four components default to 0.",
       " *",
-      " * ⚠️ 静态方法 cv.Scalar.all(v) 在 glue 里写成 `return Scalar(v, v, v, v)`（漏了 new），",
-      " * 调用即抛 `TypeError: this.push is not a function`。这里照实声明它存在，但别用。",
+      " * The static cv.Scalar.all(v) is written `return Scalar(v, v, v, v)` in the glue (no",
+      " * new), so calling it throws `TypeError: this.push is not a function`. It is declared",
+      " * because it exists, but do not use it.",
       " */",
       "interface Scalar extends Array<number> {}",
       "interface ScalarConstructor {",
@@ -374,7 +391,7 @@ function render(cv) {
       "}",
     ],
     [
-      "/** cv.RotatedRect —— 接受 0 或 3 个参数。 */",
+      "/** cv.RotatedRect: takes 0 or 3 arguments. */",
       "interface RotatedRect { center: Point; size: Size; angle: number; }",
       "interface RotatedRectConstructor {",
       "  new (): RotatedRect;",
@@ -385,7 +402,7 @@ function render(cv) {
       "}",
     ],
     [
-      "/** cv.TermCriteria —— 接受 0 或 3 个参数。 */",
+      "/** cv.TermCriteria: takes 0 or 3 arguments. */",
       "interface TermCriteria { type: number; maxCount: number; epsilon: number; }",
       "interface TermCriteriaConstructor {",
       "  new (): TermCriteria;",
@@ -394,11 +411,12 @@ function render(cv) {
     ],
     [
       "/**",
-      " * cv.MinMaxLoc —— 接受 0 或 4 个参数。",
+      " * cv.MinMaxLoc: takes 0 or 4 arguments.",
       " *",
-      " * ⚠️ minLoc / maxLoc 带上 undefined 不是保守起见：0 参构造器在 glue 里写的是",
-      " * `this.minLoc = Point(0, 0)`，漏了 new，于是 `new cv.MinMaxLoc().minLoc` 实测",
-      " * 就是 undefined。与 cv.Scalar.all 是同一类 glue 缺陷。4 参构造器正常。",
+      " * minLoc / maxLoc include undefined for a reason: the 0-argument constructor in the",
+      " * glue does `this.minLoc = Point(0, 0)` without new, so `new cv.MinMaxLoc().minLoc` is",
+      " * undefined. The same kind of glue bug as cv.Scalar.all. The 4-argument constructor",
+      " * works.",
       " */",
       "interface MinMaxLoc { minVal: number; maxVal: number; minLoc: Point | undefined; maxLoc: Point | undefined; }",
       "interface MinMaxLocConstructor {",
@@ -408,10 +426,10 @@ function render(cv) {
     ],
     [
       "/**",
-      " * cv.Circle —— 接受 0 或 2 个参数。",
+      " * cv.Circle: takes 0 or 2 arguments.",
       " *",
-      " * ⚠️ center 带上 undefined 的理由同 MinMaxLoc：0 参构造器里的 `Point(0, 0)` 漏了",
-      " * new，`new cv.Circle().center` 实测是 undefined。",
+      " * center includes undefined for the same reason as MinMaxLoc: `Point(0, 0)` in the",
+      " * 0-argument constructor lacks new, and `new cv.Circle().center` is undefined.",
       " */",
       "interface Circle { center: Point | undefined; radius: number; }",
       "interface CircleConstructor {",
@@ -421,15 +439,16 @@ function render(cv) {
     ],
     [
       "/**",
-      " * cv.Mat 的构造器。",
+      " * The cv.Mat constructor.",
       " *",
-      " * ⚠️ embind **只按参数个数分发**，所以每个参数个数上只有一个签名。下面这五个是",
-      " * 实测存在的全部：0 参、1 参（拷贝构造）、2 参（Size + type）、3 参（rows + cols +",
-      " * type）、4 参（再加 Scalar）。特别注意**没有** (Size, type, Scalar) —— 那是 3 个",
-      " * 参数，会被分发到 (rows, cols, type)，实测静默得到一个 0×5 的畸形 Mat 而不报错。",
+      " * Embind dispatches **on argument count only**, so there is one signature per count.",
+      " * These five are all that exist: 0 arguments, 1 (copy), 2 (Size + type), 3 (rows +",
+      " * cols + type) and 4 (plus a Scalar). Note that there is **no** (Size, type, Scalar):",
+      " * that is 3 arguments, dispatched to (rows, cols, type), and silently gives a malformed",
+      " * 0×5 Mat instead of an error.",
       " *",
-      " * ⚠️ 本产物**没有** Symbol.dispose（实测 Mat 原型链上没有任何 symbol 属性），",
-      " * 所以不能用 TS 5.2 的 `using`。Mat 一律由调用方显式 delete()。",
+      " * Mats are freed with delete(), or with `using` where the runtime has Symbol.dispose",
+      " * (see Mat below).",
       " */",
       "interface MatConstructor {",
       "  new (): Mat;",
@@ -448,35 +467,48 @@ function render(cv) {
     push(0, "");
   }
 
-  // ── Mat 成员 ──
+  // Mat members
   push(2, "interface Mat {");
   push(4, MAT_BEGIN);
-  push(4, "// 本项目的扩展层与已实测的原生成员（准确签名）");
+  push(
+    4,
+    "// This project's extension layer and verified native members (precise signatures)",
+  );
   for (const name of known(matKeys, MAT_SIGNATURES)) {
     push(4, MAT_SIGNATURES[name]);
   }
   const autoMat = auto(matKeys, MAT_SIGNATURES);
   if (autoMat.length > 0) {
     push(0, "");
-    push(4, "// 其余原生绑定（存在性来自运行时，签名未逐条标注）");
+    push(
+      4,
+      "// Other native bindings (existence from the runtime, signatures not annotated)",
+    );
     for (const name of autoMat) push(4, autoMatMember(cv.Mat, name));
   }
   push(4, MAT_END);
+  if (disposable) {
+    push(
+      4,
+      "/** delete() under Symbol.dispose, so `using m = …` frees the Mat at scope exit. */",
+    );
+    push(4, "[Symbol.dispose](): void;");
+  }
   push(2, "}");
   push(0, "");
 
-  // ── cv 顶层 ──
-  push(2, "/** await loadOpenCV() 之后拿到的 cv 对象。 */");
+  // Top-level cv
+  push(2, "/** The cv object that await loadOpenCV() resolves to. */");
   push(2, "interface CV {");
   push(4, CV_BEGIN);
-  push(4, "// 准确签名");
+  push(4, "// Precise signatures");
   for (const name of known(cvKeys, CV_SIGNATURES)) {
     push(4, CV_SIGNATURES[name]);
   }
   push(0, "");
   push(
     4,
-    "// 其余符号（存在性来自运行时 Object.keys(cv)，按 typeof 自动定型）",
+    "// Other symbols (existence from the runtime's Object.keys(cv), typed by typeof)",
   );
   for (const name of auto(cvKeys, CV_SIGNATURES)) {
     push(4, autoCvMember(name, cv[name]));
@@ -485,6 +517,18 @@ function render(cv) {
   push(2, "}");
   push(0, "}");
   push(0, "");
+  if (disposable) {
+    // Without this, projects compiling against plain ES2022 libs (no esnext.disposable and
+    // no @types/node) fail on the [Symbol.dispose] member above with TS2550. It is the
+    // same declaration TypeScript's lib and @types/node make, and merges with both
+    // (checked with TypeScript 5.9 and 7.0).
+    push(0, "declare global {");
+    push(2, "interface SymbolConstructor {");
+    push(4, "readonly dispose: unique symbol;");
+    push(2, "}");
+    push(0, "}");
+    push(0, "");
+  }
   push(0, "export = loadOpenCV;");
   push(0, "");
 
@@ -499,23 +543,27 @@ async function main() {
   );
   const entry = path.join(distDir, "index.js");
   if (!fs.existsSync(entry)) {
-    throw new Error(`找不到 ${entry} —— 先跑 build/assemble.sh`);
+    throw new Error(`${entry} not found; run build/assemble.sh first`);
   }
-  // 固定用 baseline 变体生成（{ simd: false }，而不是靠环境变量——手动跑本脚本
-  // 时没人会记得设）。声明只有一份，而它必须同时描述两个变体；来源必须确定，
-  // 否则同一份源码在装了/没装 SIMD 产物的机器上会生成不同的 .d.ts。
-  // 两个变体的 API 面是否一致由测试来对：CI 带 OPENCV_SIMD=1 再跑一遍整套测试，
-  // 其中 test/types/dts-consistency.test.js 会拿 SIMD 运行时的符号集来对这份声明。
+  // Always generate from the baseline variant ({ simd: false } rather than an environment
+  // variable nobody remembers when running this by hand). There is one declaration file
+  // and it must describe both variants, so its source must be fixed; otherwise the same
+  // sources would generate different .d.ts files on machines with and without the SIMD
+  // artifacts. Whether both variants expose the same API is for the tests: CI runs the
+  // whole suite again with OPENCV_SIMD=1, and test/types/dts-consistency.test.js then
+  // checks these declarations against the SIMD runtime's symbol set.
   const cv = await require(entry)({ simd: false });
   if (typeof cv.Mat !== "function") {
-    throw new Error("cv.Mat 不是构造函数 —— wasm 运行时未就绪");
+    throw new Error(
+      "cv.Mat is not a constructor; the wasm runtime is not ready",
+    );
   }
   const out = path.join(distDir, "index.d.ts");
   fs.writeFileSync(out, render(cv));
   const cvCount = Object.keys(cv).length;
   const matCount = dumpMatMembers(cv.Mat).length;
   console.log(
-    `==> ${out}（cv 顶层 ${cvCount} 个符号，Mat 成员 ${matCount} 个）`,
+    `==> ${out} (${cvCount} top-level symbols, ${matCount} Mat members)`,
   );
 }
 
@@ -530,7 +578,7 @@ module.exports = {
 
 if (require.main === module) {
   main().catch((e) => {
-    console.error(`❌ 生成 .d.ts 失败: ${(e && e.message) || e}`);
+    console.error(`❌ Generating .d.ts failed: ${(e && e.message) || e}`);
     process.exit(1);
   });
 }

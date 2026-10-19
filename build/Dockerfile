@@ -1,18 +1,29 @@
-# 锁死 emsdk 版本 —— 官方 nightly 仍钉在 2019 年的 1.39.0,不可参照。
+# Pins the emsdk version, by tag and by image digest.
 #
-# 选 3.1.64(2024-07 发布)的理由(下面两条都可直接在上游源码里核对,
-# 不依赖本仓库任何未提交的文件):
-# - 必须 < 4.0.20:emscripten 自 4.0.20 起,Embind 要求 C++17,opencv 的
-#   modules/js/CMakeLists.txt 会在 cmake 配置阶段直接 FATAL_ERROR,除非额外
-#   传 --cmake_option="-DCMAKE_CXX_STANDARD=17"。3.1.64 在这条线以下,
-#   build_js.py 不加任何额外参数就能配置成功。
-# - 最好 >= 3.1.54:emscripten 3.1.54 起废弃旧的 DEMANGLE_SUPPORT 链接参数,
-#   同一份 CMakeLists.txt 会按版本号跳过它;3.1.64 走的是"无需该参数"的分支。
-# 升级此版本号时必须重跑 Task 10 的冒烟测试;若升到 >= 4.0.20,还需通过
-# build.sh 的 EXTRA_CMAKE_OPTIONS 环境变量补上 -DCMAKE_CXX_STANDARD=17。
-FROM emscripten/emsdk:3.1.64
+# 6.0.12 (released 2026-10-08, the latest when this was written). Compatibility points
+# checked when upgrading from 3.1.64, all verifiable in the upstream sources:
+# - Since Emscripten 4.0.20 Embind requires C++17, and OpenCV's modules/js/CMakeLists.txt
+#   stops with FATAL_ERROR when CMAKE_CXX_STANDARD is unset or below 17. OpenCV 5.0.0's
+#   cmake/OpenCVDetectCXXCompiler.cmake defaults to ocv_update(CMAKE_CXX_STANDARD 17),
+#   so build_js.py configures without extra arguments (the build log says
+#   "C++ standard: 17"). The old reason for staying below 4.0.20 only applied to
+#   OpenCV 4.x, which defaults to C++11.
+# - Since Emscripten 4.0.7 the HEAP8 etc. views are not exported by default, and the
+#   extension layer addresses the heap through them:
+#   build/patches/opencv-js-link-flags.patch exports them for opencv_js, together with
+#   other runtime symbols that are no longer exported by default (see that file).
+# - Since Emscripten 4.0.0 --post-js runs after the runtime has initialized, so the hook
+#   in OpenCV's helpers.js that replaces the shallow clone() with mat_clone never fires:
+#   build/patches/opencv-js-deep-clone.patch fixes that.
+# - build_js.py still passes the legacy setting USE_PTHREADS=0, which 6.0.12's
+#   tools/settings.py still accepts (LEGACY_SETTINGS) with a deprecation warning.
+# When changing this version: rebuild all three variants with the new image, run the
+# smoke test and the variant parity test, and re-check the points listed in the
+# CHANGELOG entry for the 3.1.64 → 6.0.12 upgrade (exported symbols, the shape of an
+# abort, deep clone()). Update the digest together with the tag.
+FROM emscripten/emsdk:6.0.12@sha256:77638e6c215a65f25a704c0c831d5c2463a8c0468a58c6cb82489dbe621dfa05
 
-# 基础镜像 emscripten/emsdk 的 stage_deploy 层已预装 python3 / git / cmake，
-# 此处不再重复安装。若将来换基础镜像，需重新确认这三者存在。
+# The emscripten/emsdk image already has python3, git and cmake (its stage_deploy layer),
+# so nothing is installed here. Check that all three exist if the base image ever changes.
 
 WORKDIR /work

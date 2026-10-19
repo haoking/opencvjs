@@ -1,29 +1,29 @@
 name: Build WASM
 
 on:
-  # tag 触发已于 2026-07-28 恢复：构建链路经 run 30325183668 验证成功，
-  # 实测全程 10.8 分钟（远低于当初预估的 60–150 分钟），产物与四项冒烟
-  # 断言全部通过。代价可控，故让 release tag 自动产出 wasm 产物。
+  # Release tags build automatically. Anything else is dispatched by hand: ci.yml asks for
+  # a dispatch when no artifacts match the current build inputs.
   push:
     tags: ["v*"]
   workflow_dispatch:
 
-# 串行化整条 workflow，以免同时烧掉两份构建。
+# Serializes the whole workflow so two builds never burn CI time at once.
 #
-# group 必须是常量：用 `build-wasm-${{ github.ref }}` 时，两个不同 tag /
-# 分支的 ref 不同就落进两个不同的 group，照样并发——只有同一个 ref 上的
-# 重复触发才会被串行化，防不住它本来要防的场景。
+# The group must be a constant: with `build-wasm-${{ github.ref }}`, two different tags or
+# branches land in two groups and still run concurrently — only repeated triggers on the
+# same ref would be serialized, which does not prevent what this is meant to prevent.
 #
-# cancel-in-progress: false（而非 true）是因为取消一个跑到一半的构建同样
-# 是浪费——排队等它跑完更划算。
+# cancel-in-progress: false (not true) because cancelling a build halfway is just as
+# wasteful; waiting for it to finish is cheaper.
 #
-# ⚠️ 这一段是**workflow 级**的，作用对象是整个 run，不是单个 job。所以三个
-# 变体的矩阵作业属于同一个 run、共用同一个并发名额，**它们之间不会互相排队、
-# 也不会互相取消**——三者仍然并行。把 concurrency 挪到 job 级才会让矩阵串行，
-# 那正是这里不能做的事。结论：加了矩阵之后 cancel-in-progress: false 依旧合适。
+# This is **workflow-level**: it applies to the whole run, not to single jobs. The three
+# matrix jobs belong to one run and share one concurrency slot, so **they neither queue
+# behind nor cancel each other** — they still run in parallel. Moving concurrency to the
+# job level would serialize the matrix, which is exactly what must not happen.
 #
-# 代价说明：一次 run 从 1 个构建变成 3 个并行构建，墙钟时间不变（约 11 分钟），
-# 但消耗的 CI 分钟数变成三倍。这是双产物 + 单文件变体的必然成本。
+# Cost: one run is three parallel builds, so the wall-clock time stays that of one build
+# while the CI minutes triple. That is the price of two npm variants plus the single-file
+# variant.
 concurrency:
   group: build-wasm
   cancel-in-progress: false
@@ -31,23 +31,26 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    # A build took about 11 minutes in CI with emsdk 3.1.64, and takes 3–4 minutes locally
+    # with 6.0.12; 45 leaves room without letting a hung build burn hours.
+    timeout-minutes: 45
     strategy:
-      # fail-fast: false —— 一个变体挂了不该连带取消另外两个。三者互相独立，
-      # 而且失败时最需要的正是「另外两个长什么样」这个对照。
+      # fail-fast: false: one failing variant must not cancel the other two. They are
+      # independent, and when one fails, the other two are exactly the comparison needed.
       fail-fast: false
       matrix:
         include:
-          # baseline 是回退产物，必须有：WebAssembly SIMD 的浏览器覆盖率只有
-          # 93.57%（Chrome 91+ / Firefox 89+ / Safari 16.4+）。
+          # baseline is the required fallback for engines without WebAssembly SIMD
+          # (Chrome < 91, Firefox < 89, Safari < 16.4).
           - variant: baseline
             flag: ""
             single_file: "0"
           - variant: simd
             flag: "--simd"
             single_file: "0"
-          # 单文件变体只上传为 artifact，**不进 npm 包**（build/assemble.sh 只组装
-          # 前两个，且会拒绝 >2MB 的 glue）。它的用途是浏览器 <script> 直接引用。
+          # The single-file variant is only uploaded as an artifact and is **not in the npm
+          # package** (build/assemble.sh assembles the other two and rejects glue over
+          # 2 MB). It is meant for a direct browser <script> include.
           - variant: singlefile
             flag: "--single-file"
             single_file: "1"
@@ -56,14 +59,14 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
-      - name: 构建 ${{ matrix.variant }} wasm
+      - name: Build the ${{ matrix.variant }} wasm
         env:
           FLAG: ${{ matrix.flag }}
-        # 写成 if 而不是 `./build/build.sh $FLAG`：baseline 的 flag 是空串，
-        # 不加引号靠分词消失掉是能工作，但那是在依赖分词行为；加了引号又会变成
-        # 一个空的位置参数。显式分支没有这个含糊地带。
+        # An if rather than `./build/build.sh $FLAG`: baseline's flag is empty, which only
+        # disappears unquoted by relying on word splitting, while quoting it passes an empty
+        # argument. Explicit branches leave no ambiguity.
         run: |
           if [ -n "$FLAG" ]; then
             ./build/build.sh "$FLAG"
@@ -71,11 +74,12 @@ jobs:
             ./build/build.sh
           fi
 
-      - name: 报告体积
+      - name: Report sizes
         env:
           VARIANT: ${{ matrix.variant }}
-        # 遍历目录里实际有什么，而不是写死 opencv.js + opencv_js.wasm ——
-        # 单文件变体只有一个文件，写死会让这一步在那个矩阵项上失败。
+        # Lists what is actually in the directory instead of hard-coding opencv.js +
+        # opencv_js.wasm: the single-file variant has one file, and hard-coding would fail
+        # this step for that matrix entry.
         run: |
           cd "build/out/$VARIANT"
           for f in *; do
@@ -85,48 +89,57 @@ jobs:
             printf '%-16s raw %9s  gzip %9s  brotli %9s\n' "$f" "$raw" "$gz" "$br"
           done
 
-      - name: 冒烟测试
-        # node:test 的 timeout 选项不保证进程退出——它只让测试结果在超时点
-        # 报 fail，若事件循环被存活的异步句柄占住（真实 wasm 加载挂起时更
-        # 可能是这种情况），node --test 进程本身会继续跑。--test-force-exit
-        # 是进程级止损；这里的 timeout-minutes 是同一件事的第二重、完全不
-        # 依赖 Node 内部机制的兜底（由 runner 直接杀掉整个进程树）。两者
-        # 互为保险，都不依赖对方生效。
+      - name: Smoke test
+        # node:test's timeout option does not guarantee the process exits: it only reports
+        # the test as failed at the deadline, and if live async handles keep the event loop
+        # busy (likely when a real wasm load hangs), the node --test process keeps running.
+        # --test-force-exit stops the process; this timeout-minutes is a second backstop
+        # that does not depend on Node at all (the runner kills the whole process tree).
+        # Each covers for the other.
         timeout-minutes: 5
         env:
           OPENCV_ARTIFACT: ${{ github.workspace }}/build/out/${{ matrix.variant }}
-          # 声明「这一趟必须真跑」。未设 OPENCV_ARTIFACT 时冒烟测试默认是
-          # skip 且 exit 0，那会让整场构建在零验证下报绿；有了这个变量，
-          # 测试文件会直接抛错而不是跳过。
-          # 用它而不是 process.env.CI，是因为 ci.yml 的 `npm test` 也在 CI 里
-          # 跑并会 glob 到同一个文件，那条链路本来就没有 wasm 产物。
+          # "This run must really test." Without OPENCV_ARTIFACT the smoke test skips and
+          # exits 0, which would report the build green with zero verification; with this
+          # variable the test file throws instead of skipping.
+          # Not process.env.CI: ci.yml's `npm test` also runs in CI and globs the same file,
+          # and that pipeline has no artifact to smoke-test.
           OPENCV_SMOKE_REQUIRED: "1"
-          # 产物形状随变体而反：单文件变体没有独立 .wasm、glue 必须 > 2MB。
-          # 用显式变量而不是让测试去猜（「目录里有没有 .wasm」那种判据，会把
-          # 一次 .wasm 意外丢失的拆分构建当成单文件变体，然后一路报绿）。
+          # The artifact's shape flips with the variant: the single-file variant has no
+          # separate .wasm and its glue must exceed 2 MB. An explicit variable rather than
+          # letting the test guess ("is there a .wasm in the directory?" would take a split
+          # build that lost its .wasm for a single-file one and report green).
           OPENCV_SMOKE_SINGLE_FILE: ${{ matrix.single_file }}
-        # 第一重守卫在 shell 里，不依赖 Node：OPENCV_ARTIFACT 未设置或目录
-        # 不存在时 `test -d ""` 直接为假，步骤立刻失败。
+        # The first guard is in the shell and does not depend on Node: with OPENCV_ARTIFACT
+        # unset or missing, `test -d ""` is false and the step fails right away.
         run: |
-          test -d "$OPENCV_ARTIFACT" || { echo "::error::OPENCV_ARTIFACT 未设置或目录不存在: '$OPENCV_ARTIFACT'"; exit 1; }
+          test -d "$OPENCV_ARTIFACT" || { echo "::error::OPENCV_ARTIFACT is unset or not a directory: '$OPENCV_ARTIFACT'"; exit 1; }
           ls test/smoke/*.test.js >/dev/null
           node --test --test-force-exit test/smoke/*.test.js
 
+      # The artifact name carries the build-input fingerprint; ci.yml looks artifacts up
+      # by it (see build/fingerprint.sh).
+      - name: Fingerprint the build inputs
+        id: fp
+        if: always()
+        run: echo "value=$(build/fingerprint.sh)" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v7
-        # if: always() —— 冒烟测试失败时，那份产物正是最需要拿来排查的东西。
-        # 没有这一行，upload 会因为前一步失败而被跳过，产物直接随 runner 销毁，
-        # 只能重跑一整趟构建才能再看一眼。
-        # 构建步骤本身失败时目录可能不存在，此时 upload-artifact 默认
-        # if-no-files-found: warn，只告警不让 job 失败——不会掩盖真正的失败。
+        # if: always(): when the smoke test fails, that artifact is exactly what is needed to
+        # investigate. Without it the upload is skipped after a failed step and the artifact
+        # disappears with the runner, so seeing it again takes a whole new build.
+        # If the build step itself failed the directory may not exist; upload-artifact then
+        # defaults to if-no-files-found: warn, which warns without failing the job and does
+        # not hide the real failure.
         if: always()
         with:
-          name: opencv-wasm-${{ matrix.variant }}
+          name: opencv-wasm-${{ matrix.variant }}-${{ steps.fp.outputs.value }}
           path: build/out/${{ matrix.variant }}/
           retention-days: 30
 
-  # 双产物一致性。放在这条 workflow 里（而不是只放 ci.yml）是因为 ci.yml 取的是
-  # **上一次成功**的构建产物：SIMD 变体若算错了，那边要等到下一次 push 才发现，
-  # 而且报错会指向一份看起来无关的产物。这里当场验，谁产出的谁负责。
+  # Variant parity, checked here as well as in ci.yml: a SIMD variant that computes wrong
+  # results fails the run that built it, before ci.yml ever selects its artifacts. The run
+  # that produced the artifacts answers for them.
   verify:
     needs: build
     runs-on: ubuntu-latest
@@ -136,44 +149,50 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
-      - uses: actions/download-artifact@v7
+      - name: Fingerprint the build inputs
+        id: fp
+        run: echo "value=$(build/fingerprint.sh)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v8
         with:
-          name: opencv-wasm-baseline
+          name: opencv-wasm-baseline-${{ steps.fp.outputs.value }}
           path: build/out/baseline
 
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
-          name: opencv-wasm-simd
+          name: opencv-wasm-simd-${{ steps.fp.outputs.value }}
           path: build/out/simd
 
-      - name: 组装 dist/（两个变体）
+      - name: Assemble dist/ (both variants)
         env:
-          # 缺 simd 时从「警告并继续」升级为「直接失败」。这条链路本来就该有
-          # 两个变体，组装出一份只有 baseline 的 dist/ 然后照常验，就是又一个
-          # 会说谎的绿灯。
+          # A missing simd artifact fails instead of warning: this pipeline is supposed to
+          # have both variants, and verifying a baseline-only dist/ would be another lying
+          # green light.
           OPENCV_REQUIRE_SIMD: "1"
         run: npm run assemble
 
-      - name: 测试（强制 baseline）+ 双产物一致性
+      - name: Test (forced baseline) + variant parity
         env:
           OPENCV_SIMD: "0"
-          # 一致性测试在 dist/simd/ 缺失时默认跳过；这里声明「必须真跑」。
+          # The parity test skips when dist/simd/ is missing; here it must really run.
           OPENCV_PARITY_REQUIRED: "1"
         run: npm test
 
-      - name: 测试（强制 simd —— 同一套断言再跑一遍）
+      - name: Test (forced simd, the same assertions again)
         env:
-          # 显式点名的变体若不存在，dist/index.js 会抛错而不是回落到 baseline。
-          # 正是这条保证了这一步测的确实是 SIMD 产物，而不是 baseline 冒名顶替。
+          # A variant named explicitly that is missing makes dist/index.js throw instead of
+          # falling back to baseline — which guarantees this step really tests the SIMD
+          # artifact, not baseline in disguise.
           OPENCV_SIMD: "1"
         run: npm test
 
-      - name: SIMD 实测收益（仅报告，不作门禁）
-        # 不设 continue-on-error 也不会因为「某项更慢」挡住 job：test/simd-compare.js
-        # 刻意不拿加速比做判决，只有执行本身失败才 exit 1。SIMD 不是无脑赢——上游
-        # 2020 年的逐 kernel 数据里 blur CV_32FC1 只有 0.519x。把「SIMD 必须更快」
-        # 做成门禁，结果只会是以后有人删门禁、或者只挑有利的算子来测。这一步的产出
-        # 是数字，不是判决。
+      - name: Measured SIMD speedup (report only, not a gate)
+        # No continue-on-error needed, and "something got slower" does not block the job:
+        # test/simd-compare.js deliberately passes no verdict on speedups and only exits 1
+        # when it fails to run. SIMD does not win everywhere — upstream's 2020 per-kernel
+        # data has blur CV_32FC1 at 0.519x — and a "SIMD must be faster" gate would only
+        # end with someone deleting it or measuring only favourable operations. This step
+        # produces numbers, not verdicts.
         run: npm run simd:compare

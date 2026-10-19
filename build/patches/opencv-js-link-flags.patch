@@ -1,0 +1,49 @@
+Patch to upstream OpenCV: link flags for the opencv_js target.
+
+1. Export the runtime symbols that newer Emscripten no longer puts on Module (cv) by
+   default. All of them were present in the emsdk 3.1.64 artifacts:
+     HEAP8 / HEAPU8 / HEAP16 / HEAPU16 / HEAP32 / HEAPU32 / HEAPF32 / HEAPF64 (since 4.0.7)
+         src/js/typed-access.js reads and writes the wasm heap through them; without them
+         every in-place write method breaks (and build/gen-types.js fails assembly first).
+     BindingError / InternalError (since 4.0.9), UnboundTypeError
+         Embind's error classes, needed for instanceof checks.
+     flushPendingDeletes / setDelayFunction (since 3.1.69)
+         The only way to actually free objects queued by deleteLater().
+     count_emval_handles (since 4.0.9), getInheritedInstanceCount, getLiveInheritedInstances
+         Leak hunting. Upstream marked the last two deprecated in 6.0.12.
+     FS_createPreloadedFile
+         The callback-style preload API; FS_preloadFile is the promise-based successor.
+   This has to live on the target: build_js.py's --build_flags end up in CMAKE_C_FLAGS /
+   CMAKE_CXX_FLAGS, which CMake's try_compile probes also use. Those probes do not link
+   Embind, and since 4.0.7 an unknown EXPORTED_RUNTIME_METHODS entry is a hard error, so
+   every configure check fails.
+
+2. Raise the memory ceiling from 1 GB to 2 GB. At 1 GB large images (8K, several
+   intermediates) aborted. Not 4 GB, all wasm32 can address: above 2 GB Emscripten treats
+   every pointer as unsigned in JS (CAN_ADDRESS_2GB, `>>> 0` throughout the glue), which
+   made Embind-heavy calls measurably slower — 20000 roiClone() calls took 21.5 ms instead
+   of 15.2 ms, and replaceMatOnRect() 24% longer — while the OpenCV kernels ran the same.
+
+Applied by build/build.sh after cloning the source; a patch that no longer applies fails
+the build. The smoke test checks every export and allocates a 1.25 GB Mat.
+
+--- a/modules/js/CMakeLists.txt
++++ b/modules/js/CMakeLists.txt
+@@ -120,9 +120,16 @@ if(COMPILE_FLAGS)
+     set_target_properties(${the_module} PROPERTIES COMPILE_FLAGS ${COMPILE_FLAGS})
+ endif()
+ 
+-set(EMSCRIPTEN_LINK_FLAGS "${EMSCRIPTEN_LINK_FLAGS} -s TOTAL_MEMORY=128MB -s WASM_MEM_MAX=1GB -s ALLOW_MEMORY_GROWTH=1")
++# 2GB, not 1GB (large images aborted) and not 4GB (pointers turn unsigned in JS, slowing every Embind call).
++set(EMSCRIPTEN_LINK_FLAGS "${EMSCRIPTEN_LINK_FLAGS} -s INITIAL_MEMORY=128MB -s MAXIMUM_MEMORY=2GB -s ALLOW_MEMORY_GROWTH=1")
+ set(EMSCRIPTEN_LINK_FLAGS "${EMSCRIPTEN_LINK_FLAGS} -s MODULARIZE=1")
+ set(EMSCRIPTEN_LINK_FLAGS "${EMSCRIPTEN_LINK_FLAGS} -s EXPORT_NAME=\"'cv'\"")
++# Runtime symbols newer Emscripten no longer exports by default but JS callers rely on:
++# the HEAP* views, Embind's error classes, flushPendingDeletes/setDelayFunction (without
++# them deleteLater() never frees anything), the instance counters used to hunt leaks, and
++# the callback-style FS_createPreloadedFile. Set on this target only: CMake's try_compile
++# probes link without Embind, and an unknown EXPORTED_RUNTIME_METHODS entry is a hard error.
++set(EMSCRIPTEN_LINK_FLAGS "${EMSCRIPTEN_LINK_FLAGS} -s EXPORTED_RUNTIME_METHODS=HEAP8,HEAPU8,HEAP16,HEAPU16,HEAP32,HEAPU32,HEAPF32,HEAPF64,BindingError,InternalError,UnboundTypeError,flushPendingDeletes,setDelayFunction,count_emval_handles,getInheritedInstanceCount,getLiveInheritedInstances,FS_createPreloadedFile")
+ # See https://github.com/opencv/opencv/issues/27513
+ # DEMANGLE_SUPPRT is deprecated at Emscripten 3.1.54 and later.
+ if(NOT EMSCRIPTEN_VERSION OR EMSCRIPTEN_VERSION VERSION_LESS "3.1.54")

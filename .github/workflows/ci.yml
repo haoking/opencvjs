@@ -2,10 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [master, rebuild-2.0]
+    branches: [master]
   pull_request:
 
-# gh run list/download 要读别的 workflow 的运行记录与产物。
+# gh api / gh run download read another workflow's runs and artifacts.
 permissions:
   contents: read
   actions: read
@@ -13,12 +13,15 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # 作业级兜底。不设就是 GitHub 的默认 360 分钟：任何一步挂住（例如某个子进程
-    # 的 wasm 初始化卡死），都会把整条矩阵拖满 6 小时。正常一趟几分钟。
+    # Job-level backstop. GitHub's default is 360 minutes: any hung step (say, a child
+    # process stuck in wasm initialization) would hold the whole matrix for 6 hours. A
+    # normal run takes a few minutes.
     timeout-minutes: 30
     strategy:
       matrix:
-        node: ["18", "20", "22"]
+        # The three supported lines: 22 (maintenance LTS, EOL 2027-04-30), 24 (LTS) and
+        # 26 (LTS from 2026-10-28). 18 and 20 reached EOL on 2025-04-30 and 2026-04-30.
+        node: ["22", "24", "26"]
     steps:
       - uses: actions/checkout@v7
 
@@ -26,67 +29,77 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      # 测试栈零依赖，无需 npm install
+      # The test stack has no dependencies, so there is no npm install
 
-      # 2.0 起测试跑在**组装后的 dist/** 上（wasm 产物 + src/js/ 扩展层），
-      # 而 wasm 产物不入 git。这里取 build-wasm.yml 最近一次成功运行上传的那份
-      # ——也正是被那条 workflow 的冒烟测试验过的同一份产物。
+      # The tests run on the assembled dist/ (wasm artifacts + src/js/), and the wasm
+      # artifacts are not in git. They are not built here either: a build is a full OpenCV
+      # compile in Docker, too slow to repeat for every Node version on every push.
       #
-      # 不在这里现场构建：build/build.sh 要跑 Docker + 完整 OpenCV 编译（实测
-      # 10.8 分钟），乘以 3 个 Node 版本、每次 push 都跑，代价与收益不成比例。
+      # Instead this takes them from a successful build-wasm.yml run whose artifact names
+      # carry the fingerprint of the current build inputs (build/fingerprint.sh), so a test
+      # never runs on artifacts built from different inputs — another branch, or a commit
+      # before the Dockerfile, a patch or the whitelist changed. Both variants come from the
+      # same run; build-wasm.yml uses fail-fast: false, so a "success" run means all three
+      # variants built and passed their smoke tests. The single-file variant is not needed:
+      # it is not part of the npm package.
       #
-      # 失败模式是显式的：产物有 30 天保留期，超期或从未构建过时下面这步直接
-      # 报错退出（而不是让测试静默地一项都不跑）。届时手动触发一次
-      # build-wasm.yml（workflow_dispatch）即可恢复。
-      - name: 取回最近一次成功构建的 wasm 产物
+      # When no such run exists (the inputs just changed, or the 30-day retention expired)
+      # this step fails loudly instead of letting the tests run on nothing. Run
+      # build-wasm.yml (workflow_dispatch) on the branch, then re-run this job.
+      - name: Fetch the wasm artifacts built from these build inputs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          run_id=$(gh run list --workflow build-wasm.yml --status success \
-                     --limit 1 --json databaseId --jq '.[0].databaseId')
+          fp=$(build/fingerprint.sh)
+          run_id=""
+          for id in $(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=opencv-wasm-baseline-${fp}&per_page=20" \
+                        --jq '.artifacts[] | select(.expired | not) | .workflow_run.id'); do
+            if [ "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}" --jq .conclusion)" = success ]; then
+              run_id=$id
+              break
+            fi
+          done
           if [ -z "$run_id" ]; then
-            echo "::error::找不到 build-wasm.yml 的成功运行——手动触发一次以产出 wasm 产物"
+            echo "::error::No successful build-wasm run has artifacts for build inputs ${fp}. Run build-wasm.yml on this branch (workflow_dispatch), then re-run this job."
             exit 1
           fi
-          echo "使用 build-wasm 运行 #$run_id 的产物"
-          # 两个变体都要取。--status success 是整趟 run 的结论，而 build-wasm.yml
-          # 的矩阵是 fail-fast: false ——任一变体失败都会把整个 run 判为 failure，
-          # 所以「success」这个筛选条件已经蕴含了三个变体全部成功。
-          # 单文件变体（opencv-wasm-singlefile）刻意不取：它不进 npm 包，
-          # build/assemble.sh 也会拒绝把内联了 wasm 的 glue 组装进 dist/。
-          gh run download "$run_id" --name opencv-wasm-baseline --dir build/out/baseline
-          gh run download "$run_id" --name opencv-wasm-simd --dir build/out/simd
+          echo "Using the artifacts of build-wasm run #${run_id} (build inputs ${fp})"
+          gh run download "$run_id" --name "opencv-wasm-baseline-${fp}" --dir build/out/baseline
+          gh run download "$run_id" --name "opencv-wasm-simd-${fp}" --dir build/out/simd
           ls -la build/out/baseline build/out/simd
 
-      - name: 组装 dist/
+      - name: Assemble dist/
         env:
-          # 缺 simd 时从「警告并继续」升级为「直接失败」：这条链路本来就该有两个
-          # 变体，组装出一份只有 baseline 的 dist/ 然后照常报绿，就是会说谎的绿灯。
+          # A missing simd artifact fails instead of warning: this pipeline is supposed to
+          # have both variants, and a baseline-only dist/ that still reports green would be
+          # a lying green light.
           OPENCV_REQUIRE_SIMD: "1"
         run: npm run assemble
 
-      # 同一套断言在两个变体上各跑一遍。这是「SIMD 版本没算错」的主要保证：
-      # 变体选择由 OPENCV_SIMD 强制，而被显式点名的变体若不存在，dist/index.js
-      # 会抛错而不是悄悄回落——否则「强制 SIMD 跑一遍」可能实际测的是 baseline。
-      - name: 运行测试（强制 baseline）+ 双产物一致性
+      # The same assertions run on both variants; this is the main guarantee that the SIMD
+      # build computes correctly. OPENCV_SIMD forces the variant, and dist/index.js throws
+      # when a variant named explicitly is missing instead of quietly falling back —
+      # otherwise "run everything with forced SIMD" might test baseline.
+      - name: Test (forced baseline) + variant parity
         env:
           OPENCV_SIMD: "0"
-          # 一致性测试在 dist/simd/ 缺失时默认跳过；这里声明「必须真跑」。
-          # 只挂在这一步上，跑一遍就够——它内部是子进程加载两个变体做对比，
-          # 与外层 OPENCV_SIMD 取什么值无关。
+          # The parity test skips when dist/simd/ is missing; here it must really run.
+          # Once is enough, so it is set on this step only: it loads both variants in
+          # child processes, whatever the outer OPENCV_SIMD says.
           OPENCV_PARITY_REQUIRED: "1"
         run: npm test
 
-      - name: 运行测试（强制 simd）
+      - name: Test (forced simd)
         env:
           OPENCV_SIMD: "1"
         run: npm test
 
-      - name: 性能门禁
-        # 只在一个 Node 版本上跑，避免 CI runner 抖动导致误报。
-        # 钉在 baseline 上：两个门禁比的都是「被测实现 vs 同进程内的参照实现」，
-        # 用哪个变体跑都成立，但钉死一个变体才能让历次运行打印的绝对毫秒数可比。
-        if: matrix.node == '22'
+      - name: Performance gates
+        # On one Node version only, so CI runner jitter cannot cause false alarms.
+        # Pinned to baseline: both gates compare the implementation under test with a
+        # reference in the same process, which holds on either variant, but pinning one
+        # keeps the absolute times printed by successive runs comparable.
+        if: matrix.node == '24'
         env:
           OPENCV_SIMD: "0"
         run: npm run bench

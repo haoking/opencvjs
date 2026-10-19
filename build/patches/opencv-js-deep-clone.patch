@@ -1,0 +1,59 @@
+Patch to upstream OpenCV: keep cv.Mat.prototype.clone a deep copy in artifacts built
+with Emscripten 4.0.0 or later.
+
+Every Embind class inherits clone() from ClassHandle. It only duplicates the JS handle,
+so both handles point at the same C++ object — for a Mat, a shallow copy. Upstream's
+helpers.js replaces it with mat_clone (added for opencv/opencv#27572), but installs the
+replacement from Module['onRuntimeInitialized']. Since Emscripten 4.0.0 the MODULARIZE
+factory is async and --post-js code (helpers.js is one) runs after `await run()`, when
+onRuntimeInitialized has already fired, so the hook is never called:
+cv.Mat.prototype.clone stays Embind's shallow copy, and the "copies" returned by
+roiClone / colClone / diagClone share memory with the source Mat. With 3.1.x post-js
+ran before initialization, which is why this used to work. The upstream 4.x and 5.x
+branches still have this code as of 2026-10.
+
+The fix: apply the replacement right away when the bindings are already registered at
+the time post-js runs, and keep the hook otherwise (the 3.1.x order). Measured on a local
+emsdk 6.0.12 build: without the patch about half of the test suite failed (119 of the
+237 tests at the time: clone() was shallow, and sum() / reshapeRows() recursed forever on
+views); with it, everything passes. test/unit/clone-semantics.test.js and the smoke
+test's deep-copy check guard it.
+
+Applied by build/build.sh after cloning the source; a patch that no longer applies fails
+the build instead of silently producing an unpatched artifact.
+
+--- a/modules/js/src/helpers.js
++++ b/modules/js/src/helpers.js
+@@ -416,13 +416,24 @@ if (
+ // Background: Emscripten 3.1.71+ added ClassHandle.clone() which only does shallow copy.
+ // See: https://github.com/opencv/opencv/pull/26643
+ // See: https://github.com/opencv/opencv/issues/27572
+-var _opencv_onRuntimeInitialized_backup = Module['onRuntimeInitialized'];
+-Module['onRuntimeInitialized'] = function() {
+-    if (_opencv_onRuntimeInitialized_backup) {
+-        _opencv_onRuntimeInitialized_backup();
+-    }
++function _opencv_useDeepClone() {
+     if (typeof cv !== 'undefined' && cv.Mat &&
+         typeof cv.Mat.prototype.mat_clone === 'function') {
+         cv.Mat.prototype.clone = cv.Mat.prototype.mat_clone;
++        return true;
+     }
+-};
+\ No newline at end of file
++    return false;
++}
++// Emscripten 4.0.0+ runs --post-js only after the runtime has initialized, so
++// onRuntimeInitialized has already fired by the time this line runs and a hook
++// installed here would never be called. Apply the override right away when the
++// bindings are already registered; older Emscripten still goes through the hook.
++if (!_opencv_useDeepClone()) {
++    var _opencv_onRuntimeInitialized_backup = Module['onRuntimeInitialized'];
++    Module['onRuntimeInitialized'] = function() {
++        if (_opencv_onRuntimeInitialized_backup) {
++            _opencv_onRuntimeInitialized_backup();
++        }
++        _opencv_useDeepClone();
++    };
++}
+\ No newline at end of file

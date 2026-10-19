@@ -1,21 +1,24 @@
-# src/config/opencv_js.config.py 是从 OpenCV 上游逐字拷贝的白名单，
-# 只有三处有意改动（顶部注释 + 移除 dnn + core 放行 mulSpectrums/SVDecomp）。
-# 格式化它会破坏与上游的可比性：
-# 跟进新版本时 diff 会被风格差异淹没，看不出真正的白名单变化。
+# src/config/opencv_js.config.py is the upstream OpenCV whitelist copied verbatim, with
+# four deliberate changes (the header comment, dnn removed, mulSpectrums / SVDecomp added
+# to core, the mcc entries renamed). Formatting it would destroy the comparison with
+# upstream: when moving to a new version, the diff would drown in style changes and hide
+# the real whitelist changes.
 #
-# 这不是理论风险：2026-07-27 引入该文件时，全局 ruff format 钩子真实把它从
-# 上游那种「一行塞十几个方法名、单引号、手工对齐」的紧凑风格，整体重排成了
-# ruff 默认风格（双引号、每元素一行），diff 铺满整个文件。当时靠回滚才救回来。
+# This is not hypothetical: when the file was added on 2026-07-27, a global ruff format
+# hook rewrote upstream's compact style (a dozen names per line, single quotes, hand
+# alignment) into ruff's default (double quotes, one element per line), and the diff
+# covered the whole file. It was saved by reverting.
 #
-# 自检方法（不依赖本仓库任何未提交的文件）：
+# Self-check (needs nothing uncommitted from this repository):
 #   curl -sL https://raw.githubusercontent.com/opencv/opencv/$(tr -d '[:space:]' \
 #     < build/opencv-version.txt)/platforms/js/opencv_js.config.py \
 #     | diff - src/config/opencv_js.config.py
-# 预期差异恒为三处：本仓库加的顶部注释块、末尾 makeWhiteList([...]) 少了 dnn、
-# 以及 core 的第一行多出 'mulSpectrums', 'SVDecomp'（紧邻 dft）。
-# 出现任何第四处差异，就说明它被格式化了（或上游改了白名单，需人工判断）。
+# The expected differences are exactly these: the header comment block added here, the
+# core line with 'mulSpectrums', 'SVDecomp' next to dft, the three mcc entries in
+# objdetect, and makeWhiteList([...]) at the end without dnn. Any other difference means
+# the file was formatted (or upstream changed the whitelist, which needs a human look).
 #
-# force-exclude 是必需的——没有它，ruff 在被显式传入文件路径时会忽略 exclude，
-# 而格式化钩子正是显式传路径的。
+# force-exclude is required: without it ruff ignores exclude for paths passed explicitly,
+# and formatting hooks pass paths explicitly.
 extend-exclude = ["src/config/opencv_js.config.py"]
 force-exclude = true

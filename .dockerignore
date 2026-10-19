@@ -2,4 +2,3 @@
 node_modules
 build/out
 dist
-opencv.js
