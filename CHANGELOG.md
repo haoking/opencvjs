@@ -161,7 +161,9 @@ measured). The two glue files are still byte-identical.
   `build-wasm.yml` names its artifacts `opencv-wasm-<variant>-<fingerprint>`, and
   `ci.yml` downloads the artifacts matching the commit under test (it used to take the
   latest successful `build-wasm.yml` run of any branch, whatever it was built from) and
-  fails with instructions when there are none.
+  fails with instructions when there are none. It accepts only this repository's own
+  `build-wasm.yml` runs started by `workflow_dispatch` or a tag push, so a pull request's
+  run cannot supply artifacts under the same name.
 - **CI**: Node 22 / 24 / 26; `actions/download-artifact` v8; build jobs time out after 45
   minutes and test jobs after 30; the parity test's child processes have time limits.
 - **Tests: 205 → 251.** Regression tests for every fix above; MCC detection

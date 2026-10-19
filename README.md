@@ -734,9 +734,11 @@ locally; `dist/` then holds baseline only and the parity tests skip. Set
   A `verify` job then assembles baseline + simd, runs the whole suite on both, checks
   variant parity and prints `npm run simd:compare`.
 - **`ci.yml`** (on pushes and pull requests) downloads the artifacts whose fingerprint
-  matches the commit under test, assembles `dist/`, runs the suite once per build on
-  Node 22 / 24 / 26, and runs the benchmark gates on Node 24. If no artifacts match —
-  the build inputs just changed — it fails and asks for a `build-wasm.yml` run.
+  matches the commit under test — only from this repository's own `build-wasm.yml` runs
+  started by `workflow_dispatch` or a tag push, never from a pull request's run —
+  assembles `dist/`, runs the suite once per build on Node 22 / 24 / 26, and runs the
+  benchmark gates on Node 24. If no artifacts match — the build inputs just changed — it
+  fails and asks for a `build-wasm.yml` run.
 
 ### Single-file build
 

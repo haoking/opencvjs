@@ -43,6 +43,12 @@ jobs:
       # variants built and passed their smoke tests. The single-file variant is not needed:
       # it is not part of the npm package.
       #
+      # Only artifacts uploaded by this repository's own build-wasm.yml count, from a run
+      # that only collaborators can start (workflow_dispatch, or a pushed tag). Artifact
+      # names are not a trust boundary: a pull_request run executes the PR's copy of the
+      # workflow files, so a pull request — from a fork in particular — could upload an
+      # artifact under the same name, and CI would then test its wasm.
+      #
       # When no such run exists (the inputs just changed, or the 30-day retention expired)
       # this step fails loudly instead of letting the tests run on nothing. Run
       # build-wasm.yml (workflow_dispatch) on the branch, then re-run this job.
@@ -53,14 +59,18 @@ jobs:
           fp=$(build/fingerprint.sh)
           run_id=""
           for id in $(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=opencv-wasm-baseline-${fp}&per_page=20" \
-                        --jq '.artifacts[] | select(.expired | not) | .workflow_run.id'); do
-            if [ "$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}" --jq .conclusion)" = success ]; then
-              run_id=$id
-              break
-            fi
+                        --jq '.artifacts[] | select((.expired | not) and .workflow_run.head_repository_id == .workflow_run.repository_id) | .workflow_run.id'); do
+            run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${id}" --jq '[.conclusion, .path, .event, .head_repository.full_name] | join(" ")')
+            case "$run" in
+              "success .github/workflows/build-wasm.yml workflow_dispatch ${GITHUB_REPOSITORY}" | \
+              "success .github/workflows/build-wasm.yml push ${GITHUB_REPOSITORY}")
+                run_id=$id
+                break
+                ;;
+            esac
           done
           if [ -z "$run_id" ]; then
-            echo "::error::No successful build-wasm run has artifacts for build inputs ${fp}. Run build-wasm.yml on this branch (workflow_dispatch), then re-run this job."
+            echo "::error::No successful run of this repository's build-wasm.yml (workflow_dispatch or tag push) has artifacts for build inputs ${fp}. Run build-wasm.yml on this branch (workflow_dispatch), then re-run this job."
             exit 1
           fi
           echo "Using the artifacts of build-wasm run #${run_id} (build inputs ${fp})"
