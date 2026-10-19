@@ -3,212 +3,44 @@
 ![OpenCV 5.0.0](https://img.shields.io/badge/OpenCV-5.0.0-green.svg)
 ![WebAssembly](https://img.shields.io/badge/target-WebAssembly-blue.svg)
 
-`opencv.js` plus a layer of extra `cv.Mat` convenience methods.
-Baseline: **OpenCV 5.0.0, WebAssembly** (self-built — see [Build from source](#build-from-source)).
+`@haoking/opencvjs` is OpenCV 5.0.0 compiled to WebAssembly from source, with a layer of
+extra `cv.Mat` methods on top:
 
-OpenCV upstream is actively maintained — 5.0.0 shipped on 2026-06-06, and the 4.x line is still
-receiving releases in parallel (4.14.0 on 2026-07-19). What upstream does _not_
-ship is a standalone, production-oriented `opencv.js`: the official build is a reduced-function
-tutorial build, bundled inside `opencv-{VERSION}-docs.zip` on each release and mirrored at
-`docs.opencv.org/{VERSION}/opencv.js`. An OpenCV maintainer states it plainly in
-[opencv#25425](https://github.com/opencv/opencv/issues/25425): _"Only reduced subset of functions
-is provided here (size vs functionality compromise). Due to this there is no official OpenCV JS
-release. We don't recommend to use that file directly in your projects."_
+- **Two wasm builds, one picked at runtime.** A `-msimd128` build and a non-SIMD fallback
+  ship together; `loadOpenCV()` probes the engine and loads the right one.
+- **19 extra `Mat` methods and `cv.norm2`**: independent region copies, fast in-place
+  writes, scalar arithmetic and type-dispatching accessors.
+- **Arguments are validated before they reach wasm.** Mistakes raise a `TypeError` /
+  `RangeError` naming the function, the argument and the value, instead of an
+  uninformative abort or a silent write past the end of a Mat.
+- **TypeScript declarations generated from the build itself**, tested to match the
+  runtime symbol for symbol.
+- **Reproducible builds**: pinned OpenCV commit, pinned emsdk image digest and five
+  documented patches to upstream. No runtime or test dependencies.
 
-Up to 1.x this project shipped a 13.9 MB asm.js file derived from the official OpenCV 4.0.1
-build, patched in place and never rebased. **2.0 builds the artifact from source** (Docker +
-emsdk, pinned to `build/opencv-version.txt`) with its own export whitelist, and keeps the
-extension layer as separate modules under `src/js/`.
+Why not the official `opencv.js`? Upstream does not publish one for production use: the
+official file is a reduced tutorial build bundled with the documentation. An OpenCV
+maintainer in [opencv#25425](https://github.com/opencv/opencv/issues/25425): _"Only
+reduced subset of functions is provided here (size vs functionality compromise). Due to
+this there is no official OpenCV JS release. We don't recommend to use that file directly
+in your projects."_
 
-## What changed in 3.1
+## Contents
 
-- **A batch of correctness fixes from a full-repository review. No API was removed**, and
-  every fix replaces a result that contradicted the docs or OpenCV's own semantics — code
-  written against the docs keeps working. Before/after table in
-  [`CHANGELOG.md`](CHANGELOG.md).
-- **In-place writes into integer Mats now saturate** like OpenCV's `saturate_cast`
-  (`rectAdd`, `addOnCol`, `replaceMatOnRect`, …): `250 + 20` on `CV_8U` gives `255`, not
-  `14`; halves round to even; `NaN` writes `0`.
-- **`cv.norm2` on integer Mats measures the real difference** (it used to saturate: `[0]`
-  vs `[10]` on `CV_8U` gave `0`), and now honours `NORM_RELATIVE` and `NORM_HAMMING`.
-- **Extension methods on native `roi()` views** (`PTR`, `replaceMatOnRow`, `sum`,
-  `reshapeRows`) no longer read or write past the view.
-- **SIMD builds round like OpenCV.** Upstream's WASM SIMD `v_round` is `trunc(x + 0.5)`;
-  `build/build.sh` now patches it, so both variants agree bit for bit on every
-  float → integer kernel. The 3.0.0 simd artifacts are affected — see
-  [Known Issues](#known-issues).
-- Two relaxations: `replaceMatOnPoint` accepts `NaN`, and `loadOpenCV()` in auto mode reuses
-  the variant already loaded in the process (explicitly asking for the other one now throws
-  before anything is loaded).
-- The seven in-place write methods address the wasm heap directly — two orders of magnitude
-  faster than 3.0.0's per-pixel accessor calls.
-
-## What changed in 3.0
-
-- **Baseline moved from OpenCV 4.14.0 to 5.0.0.** This is a genuinely breaking upgrade.
-- **`cv.CascadeClassifier`, `cv.HOGDescriptor`, `cv.AKAZE`, `cv.BRISK`, `cv.KAZE`,
-  `cv.AgastFeatureDetector` and `cv.groupRectangles` are gone.** Not a whitelist choice —
-  OpenCV 5 deleted them from the **C++ API**, so they cannot be whitelisted back. Code using
-  them throws `TypeError`. See [Known Issues](#known-issues) for what replaces what.
-- `cv.SVDecomp` and `cv.mulSpectrums` are **unaffected** — still native, still whitelisted;
-  their 5.0.0 declarations are byte-identical to 4.14.0's.
-- Everything else in the API — the 19 extra `Mat` methods, `cv.norm2`, the SIMD/baseline
-  runtime probe, the entry point — is unchanged.
-- The package grows to **27.2 MB unpacked** (7.8 MB tarball): each 5.0.0 wasm is ~41–42%
-  larger raw and ~28–30% larger after gzip/brotli than its 4.14.0 counterpart. Full
-  numbers in [`CHANGELOG.md`](CHANGELOG.md).
-
-## What changed in 2.1
-
-- **The package now ships two wasm builds and picks one at runtime.** `loadOpenCV()`
-  probes for WebAssembly SIMD and loads `dist/simd/` or `dist/baseline/` accordingly.
-  **You do not have to do anything** — `await require("@haoking/opencvjs")()` is unchanged.
-- Speed-ups are large but **not universal**: 12.81x/13.13x on `absdiff` (arm64/x86-64),
-  but `dft` is **0.91x on both architectures** — a real regression. See
-  [SIMD 实测加速比](#simd-实测加速比) for the full table and
-  [when to turn SIMD off](#何时该手动关掉-simd).
-- **`dist/` layout changed**: `dist/opencv.js` and `dist/opencv_js.wasm` moved into
-  `dist/baseline/` and `dist/simd/`. Only code that **deep-imports**
-  `@haoking/opencvjs/dist/opencv.js` breaks; `main`, `types` and the entry point are
-  unchanged.
-- Package size: **8.3 MB → 19.4 MB unpacked** (6.0 MB tarball) — the cost of carrying a
-  baseline fallback, since SIMD browser coverage is only 93.57%.
-- Plus the argument-validation and TypeScript-declaration work that had accumulated since
-  2.0.0 shipped. Several calls that used to fail silently now throw — full list in
-  [`CHANGELOG.md`](CHANGELOG.md#已积压的语义变更).
-
-## What changed in 2.0
-
-- Artifact: asm.js / OpenCV 4.0.1 → **WebAssembly / OpenCV 4.14.0**, built by
-  `build/build.sh` and verified in CI.
-- Entry point is **async**: `const cv = await require("@haoking/opencvjs")()`.
-- **Native OpenCV methods are no longer overridden.** `roi` / `col` / `diag` / `reshape` are
-  back to their upstream behaviour; this project's fixed versions moved to `roiClone` /
-  `colClone` / `diagClone` / `reshapeRows`.
-- 8 hand-written methods deleted in favour of native equivalents (three of them were broken:
-  `mds()` always threw, `mulSpectrums()` returned `NaN`).
-- Full list with before/after code: **[`docs/MIGRATION-2.0.md`](docs/MIGRATION-2.0.md)**.
-
-## Features
-
-- [x] 19 extra `cv.Mat` methods plus `cv.norm2` on top of a stock OpenCV build — region copies,
-      in-place writes, scalar arithmetic, and type-dispatching accessors (`DATA()` / `PTR()`)
-- [x] **Two wasm builds, picked at runtime.** The package ships both a `-msimd128` build and a
-      non-SIMD fallback; `loadOpenCV()` probes the engine with `WebAssembly.validate()` and loads
-      the right one — **callers do nothing**. Measured on two architectures: up to **15.88x**
-      (`absdiff`), but `dft` is **0.90x on both** — see
-      [SIMD 实测加速比](#simd-实测加速比) and [何时该手动关掉 SIMD](#何时该手动关掉-simd).
-      Override with `loadOpenCV({ simd })` or `OPENCV_SIMD`; a variant named explicitly but
-      missing **throws** rather than silently falling back
-- [x] Reproducible build from OpenCV source (Docker + emsdk, version pinned in
-      `build/opencv-version.txt`); the export whitelist lives in `src/config/opencv_js.config.py`
-      and additionally exposes `mulSpectrums` and `SVDecomp`, which the upstream tutorial build
-      does not
-- [x] **Arguments are checked before they reach wasm** (`src/js/guards.js`) — on every extension
-      method **and on `PTR()` itself**: out-of-range rects and row/column indices, mismatched
-      sizes/types, `NaN` or non-number constants and already-`delete()`d Mats all raise a standard
-      `TypeError` / `RangeError` naming the function, the argument, the value received and the
-      range expected. Without that layer a bad `Rect` aborts inside C++ and emscripten rethrows it
-      as a **bare number** (a heap pointer — not an `Error`, `e.message` is `undefined`), while a
-      bad row/column index does not fail at all and silently writes past the end of the Mat
-- [x] **TypeScript declarations generated from the artifact itself**, not hand-written:
-      `dist/index.d.ts` dumps `Object.keys(cv)` and Mat's prototype chain, and a test asserts the
-      declared symbol set equals the runtime one **in both directions**. The `.d.ts` files in the
-      ecosystem declare `SIFT` / `PCA` / `FlannBasedMatcher`, which this build does not have, and
-      omit `FaceDetectorYN`, which it does — so code type-checks and then throws at runtime
-- [x] Zero runtime dependencies, zero test dependencies (`node:test` only)
-- [x] `npm test` runs 237 assertions (0 fail, node v22.22.2): 84 region-op correctness cases
-      across 7 depths × 4 channel counts × 3 APIs, 29 `clone()` deep-copy and copy-semantics
-      cases, 21 regression cases for the defects 2.0 fixed, 24 regression cases for defects
-      fixed after 3.0.0 (native views, `±Infinity` in data, `norm2`, `constantDivide`,
-      saturating in-place writes, single-variant loading), 57 argument-validation cases,
-      12 SIMD-detection cases, 6 `.d.ts`-vs-runtime consistency cases, 1 artifact-version
-      check, 2 baseline-vs-SIMD output-parity cases, and 1 wasm-artifact smoke test.
-      The 3 artifact-dependent ones skip unless `OPENCV_ARTIFACT` / `dist/simd/` are present,
-      and turn from skip into hard failure under `OPENCV_SMOKE_REQUIRED=1` /
-      `OPENCV_PARITY_REQUIRED=1` (both set in CI)
-- [x] The same 237 assertions run twice in CI — once forced onto `baseline`, once onto `simd`.
-      Plus an output-parity check that feeds identical deterministic input to both variants
-      and compares 16 operations element-wise (bit-exact for integer kernels and the extension
-      layer, 1e-5 relative for float kernels, whose SIMD paths may reassociate accumulation)
-- [x] `npm run bench` runs two performance gates, each comparing the shipped method against the
-      primitive it is built on (alternating rounds, warm-up round discarded, minimum taken):
-      `region-ops` — `roiClone()` 14.6–14.8 ms vs the native `roi()` + `clone()` it wraps
-      13.7–14.3 ms (20000 iterations, 64×64 `CV_32FC1`, `Rect(1, 1, 32, 32)`); `inplace-ops` —
-      the five per-pixel write methods vs a hand-written loop that reads and writes the wasm heap
-      directly, i.e. what they are supposed to cost. It catches any fallback to per-pixel embind
-      calls, which `region-ops` cannot see (`roiClone` never loops per pixel): going back through
-      the native `*Ptr()` accessors or `PTR()` costs orders of magnitude more, and the gate prints
-      both of those as reference lines
-
-## Known Issues
-
-- **`cv.CascadeClassifier` / `HOGDescriptor` / `AKAZE` / `BRISK` / `KAZE` /
-  `AgastFeatureDetector` / `groupRectangles` 在 3.0 起不存在。** 用到它们的代码会
-  直接 `TypeError`（不是静默降级）。
-  这**不是本项目的白名单取舍**——OpenCV 5 把它们从 **C++ API** 里删了：5.0.0 的
-  `modules/objdetect/include/opencv2/objdetect.hpp` 里已无 `CascadeClassifier` /
-  `HOGDescriptor` / `groupRectangles`，`modules/features/include/opencv2/features.hpp`
-  里也已无 `AKAZE` / `BRISK` / `KAZE` / `AgastFeatureDetector`，整棵源码树里连
-  haarcascade 数据文件都不剩。**加白名单救不回来。**
-  - **人脸检测**的替代是 `cv.FaceDetectorYN`（DNN 路径，模型是 YuNet ONNX）。
-    绑定确实在产物里，但它**不是 `create()` 静态方法**——embind 把 OpenCV 的
-    静态工厂映射成了构造函数，实际写法是
-    `new cv.FaceDetectorYN(modelPath, configPath, size, ...)`（3–9 个参数）。
-    `modelPath` 指向 emscripten 虚拟文件系统里的路径，模型得先自己写进去。
-    ⚠️ **本项目没有验证过这条路径**（仓库里没有模型文件，测试也没覆盖），
-    上面这段只描述绑定形状，不构成「能用」的保证。
-  - **特征点**：`AKAZE`/`BRISK`/`KAZE`/`AgastFeatureDetector` 没有等价替代。
-    产物里仍有 `ORB`、`MSER`、`FastFeatureDetector`、`GFTTDetector`、
-    `SimpleBlobDetector`。
-- **SIMD 变体的「浮点 → 整数取整」与 OpenCV 不一致（3.0.0 及更早发布的产物）。**
-  上游 OpenCV 的 wasm SIMD 后端把 `v_round` 写成 `trunc(x + 0.5)`：有符号整型的负数
-  结果一律偏大 1（`-20.0` 取整成 `-19`），`.5` 也一律向上进位，而 `cvRound` 是四舍
-  六入五成双。所有要把浮点结果取整成整数的内核都受影响——`addWeighted`、带缩放的
-  `convertTo`、`divide`、`multiply`、`CV_16S` 上的 `GaussianBlur` / `blur` / `resize` /
-  `Sobel`，以及建立在它们之上的 `addConstant` / `mulConstant` / `constantSubtract` /
-  `constantDivide`：实测 `CV_8S` / `CV_16S` 上约一半的值偏 1，无符号类型只在 `.5` 上
-  差 1。baseline 变体不受影响。
-  `build/build.sh` 现在构建时会给上游源码打补丁修正（`build/patches/opencv-wasm-v_round.patch`，
-  上游 4.x / 5.x 分支都还没修），双产物一致性测试也补上了这条路径的用例，**用新产物
-  发布的版本不再有此问题**。在那之前，处理有符号整型数据请用 `OPENCV_SIMD=0`（或
-  `loadOpenCV({ simd: false })`）。
-- **`CV_32S` 上的 `addConstant` / `constantSubtract` / `mulConstant` / `constantDivide`
-  溢出时不饱和，而是得到 `INT_MIN`**（`2147483647` 加 10 得 `-2147483648`）。这是
-  上游语义：OpenCV 的 `saturate_cast<int>(double)` 就是 `cvRound`，越界时 wasm 与
-  x86 上都得到 `0x80000000`，两个变体一样。就地写入的方法（`addOnCol` / `rectAdd`
-  等）不走 OpenCV，会正确饱和。
-- **`dftSplit()` 的正确性没有任何证据支撑**（已标 `@deprecated`，代码保留）。它把
-  `cv.dft()` 的 CCS 紧凑输出拆成实部/虚部两个 Mat，但这个展开约定从未被独立验证过；
-  1.x 时代它唯一的消费者是那个返回 `NaN` 的手写 `mulSpectrums()`，所以也不存在
-  「端到端跑通过」这回事。需要复数谱相乘请直接用原生 `cv.mulSpectrums()`——它在 CCS
-  格式上直接做乘法，根本不需要先拆分。
-- **浏览器路径整体未验证。** 本仓库的自动化测试只覆盖 Node（CI 矩阵 18 / 20 / 22），
-  浏览器里一行都没跑过——包括 SIMD 探测在浏览器中的行为（`WebAssembly.validate` 有、
-  `process.env` 没有；`resolveVariant` 对 `process` 做了 `typeof` 保护，逻辑上安全，
-  但没有实测过）。
-  这**不是**「拿不到单文件形态」的意思：`build/build.sh --single-file` 会产出 1.x 那样
-  的单文件产物（wasm base64 内联，5.0.0 上约 16 MB），它只是**不进 npm 包**——见
-  [Single-file build](#single-file-build)。
-  npm 包里是拆分形态：`opencv.js`（约 143 KB 的 glue）+ `opencv_js.wasm`，必须同目录、
-  文件名不能改；扩展层是 CommonJS 模块，`<script>` 直接引 glue 只能拿到原生 OpenCV，
-  要用扩展层得走打包器。
-- **SIMD 在个别算子上更慢。** 实测 `dft CV_32FC1` 在 5.0.0 上 **arm64 与 x86-64 都是
-  0.90x**（比 baseline 慢 10%；4.14.0 时两个架构都是 0.91x——跨版本、跨架构复现，是
-  真实退化）。SIMD 不是无脑赢。4.14.0 时 x86-64 上 `cvtColor` 的 0.84x 在 5.0.0 上
-  没有复现（1.01x）。完整的两架构数据见 [SIMD 实测加速比](#simd-实测加速比)，
-  应对办法见 [何时该手动关掉 SIMD](#何时该手动关掉-simd)。
-
-## Requirements
-
-- Node.js >= 18（CI 覆盖 18 / 20 / 22）
-- 从源码构建产物还需要 Docker（`build/build.sh` 在 emsdk 容器里跑，宿主机不需要工具链）
-
-## Communication
-
-- If you **found a bug**, open an issue.
-- If you **have a feature request**, open an issue.
-- If you **want to contribute**, submit a pull request.
+- [Installation](#installation)
+- [Requirements](#requirements)
+- [Loading and variant selection](#loading-and-variant-selection)
+- [Memory management](#memory-management)
+- [Extension API](#extension-api)
+- [Argument validation](#argument-validation)
+- [Native OpenCV API](#native-opencv-api)
+- [TypeScript](#typescript)
+- [Performance](#performance)
+- [Known issues](#known-issues)
+- [Building from source](#building-from-source)
+- [Testing](#testing)
+- [Upgrading](#upgrading)
+- [License](#license)
 
 ## Installation
 
@@ -223,166 +55,524 @@ const loadCV = require("@haoking/opencvjs");
   const cv = await loadCV();
   const mat = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
   console.log("mat::" + mat.data32F); //mat::1,2,3,4,5,6,7,8,9
-  mat.delete(); //Don't forget to delete cv.Mat when you don't want to use it any more.
+  mat.delete(); // wasm memory is not garbage-collected: delete what you create
 })();
 ```
 
-> ⚠️ **就绪判据只能看 `typeof cv.Mat === "function"`。**
-> `await` 之后 `cv.onRuntimeInitialized` 这个属性**依然存在**（实测 `typeof` 为
-> `function`）。拿它判断「还没就绪」会恒真，于是去等一个永不再触发的回调——
-> 本项目第一次 CI 冒烟测试就是这么挂掉的。
+The entry point returns a Promise, and `cv` is ready when it resolves. If you need to test
+readiness yourself, check `typeof cv.Mat === "function"`, not `cv.onRuntimeInitialized`:
+artifacts built with older Emscripten kept that property after initialization, so waiting
+for it never ended.
 
-包里的 `dist/` 有两份 wasm 产物，各自一个子目录：
+## Requirements
+
+- **Node.js 22 or later.** CI runs 22, 24 and 26.
+- **Browsers**: Chrome 85+, Firefox 79+, Safari 15+ — the floor of code generated by
+  Emscripten 6.0.12. The SIMD build also needs WebAssembly SIMD (Chrome 91+, Firefox 89+,
+  Safari 16.4+); elsewhere the baseline build is loaded automatically. The automated tests
+  run on Node only (see [Known issues](#known-issues)).
+- **Building from source**: Docker. The toolchain runs inside the emsdk container.
+
+## Loading and variant selection
+
+The package ships two builds of the same OpenCV:
 
 ```
 dist/
-  index.js  simd-detect.js  guards.js  typed-access.js  mat-region.js
-  arithmetic.js  dft.js  index.d.ts        ← 与变体无关的扩展层
-  baseline/opencv.js + opencv_js.wasm      ← 无 SIMD，任何环境都能跑
-  simd/opencv.js     + opencv_js.wasm      ← -msimd128 编译
+  index.js  index.d.ts  simd-detect.js  guards.js  typed-access.js
+  mat-region.js  arithmetic.js  dft.js     ← extension layer, shared by both builds
+  baseline/opencv.js + opencv_js.wasm       ← no SIMD, runs everywhere
+  simd/opencv.js     + opencv_js.wasm       ← compiled with -msimd128
 ```
 
-**必须分目录，不是布局偏好。** 两个变体的 `.wasm` 文件名都是编译期烘焙进 glue 的
-常量 `"opencv_js.wasm"`，改名会让运行时去取一个不存在的路径；同名文件放同一个目录
-必然互相覆盖。glue 在 Node 下按 `__dirname` 定位 `.wasm`，所以每个子目录里必须各放
-一份 glue，与同目录的 `.wasm` 原样配对。
-
-> ℹ️ 本文档此前在这里写着「两个变体的 glue 内容也不同，不能共用一份」。**那句话是
-> 错的**：实测这两份 glue **逐字节相同**（4.14.0 产物上 SHA-256 均为 `da1f9d19…`、
-> 各 143,365 B；5.0.0 产物上均为 `33711c08…`、各 143,496 B）。
-> 分目录的理由只有 `.wasm` 同名这一条。每个目录仍要各放一份 glue，但那是因为 glue
-> 按 `__dirname` 找 `.wasm`，不是因为内容不同；反过来也不能依赖「它们永远相同」。
-
-`loadOpenCV()` 会用 `WebAssembly.validate()` 探测运行时是否支持 SIMD，自动选择
-对应变体：
+`loadOpenCV()` checks with `WebAssembly.validate()` whether the engine supports
+WebAssembly SIMD and loads the matching build:
 
 ```javascript
 const loadCV = require("@haoking/opencvjs");
 
-// 下面三行是三种**互斥**的写法，一个进程里只能选一种调一次（见下方「一个进程里
-// 只能加载一个变体」）。照抄整段会因为重复声明 cv 而直接语法错误。
-await loadCV(); // 自动：支持 SIMD 就用 simd，否则 baseline
-await loadCV({ simd: false }); // 强制 baseline
-await loadCV({ simd: true }); // 强制 simd
+const cv = await loadCV(); // automatic: simd if supported, otherwise baseline
+// await loadCV({ simd: false }) forces baseline, await loadCV({ simd: true }) forces simd
 
-loadCV.detectSimd(); // boolean：当前引擎支不支持 SIMD（不需要先加载，也不反映实际加载了谁）
+loadCV.detectSimd(); // whether the engine supports SIMD (not which build was loaded)
 ```
 
-也可以用环境变量 `OPENCV_SIMD=0` / `1`（认 `0/1`、`false/true`、`off/on`、`no/yes`）。
-优先级是 `loadOpenCV({ simd })` > `OPENCV_SIMD` > 自动探测。
+The environment variable `OPENCV_SIMD` forces a build as well: `1` / `true` / `on` /
+`yes` for simd, `0` / `false` / `off` / `no` for baseline. Precedence:
+`loadOpenCV({ simd })` > `OPENCV_SIMD` > detection.
 
-> ⚠️ **被明确点名的变体如果不存在，会抛错，不会悄悄换成另一个。** 只有自动探测那条
-> 路径才回落（回落时打一条 warning）。这条是刻意的：如果 `OPENCV_SIMD=1` 在缺 SIMD
-> 产物时静默回落，那么「强制 SIMD 跑一遍测试」实际测的是 baseline，而结果会宣称测的
-> 是 SIMD。同理，`OPENCV_SIMD` 的值拼错（`ture`）会抛错而不是被忽略。
+- **A build you ask for explicitly that is missing throws**; it never falls back to the
+  other one, which would make "run everything on SIMD" quietly test baseline. Only
+  automatic selection falls back, with a warning. A misspelt `OPENCV_SIMD` value such as
+  `ture` throws too.
+- **One build per process.** OpenCV's UMD wrapper leaks `Module` as an implicit global:
+  loading the second build's glue first rewrites the loaded instance's JS helpers and then
+  fails in Embind (`Cannot register public name 'IntVector' twice`). So once a build is
+  loaded, asking for the other one throws before anything is touched, and automatic
+  selection reuses the loaded build. To compare the builds, use two processes, as
+  `npm run simd:compare` does.
+- **Each build lives in its own directory** because Emscripten bakes the file name
+  `opencv_js.wasm` into the glue at compile time. Keep every `opencv.js` next to its own
+  `opencv_js.wasm`, under that name.
 
-> ⚠️ **一个进程里只能加载一个变体。** OpenCV 的 UMD 外壳把 `Module` 泄漏成了隐式
-> 全局变量（`Module = {}`，没有声明关键字，而外壳不是严格模式）。第二个变体的 glue
-> 一旦被加载，会先改写已加载实例上的 JS 辅助函数（实测 `cv.matFromArray` 的长度
-> 校验就此丢失），再撞上 embind 注册表抛 `Cannot register public name 'IntVector' twice`。
-> 所以本进程加载过一个变体之后，`loadOpenCV()` 会在碰到另一个变体之前就拦下：
-> 点名（`{ simd }` 或 `OPENCV_SIMD`）要另一个变体会直接抛错，已加载的实例不受影响；
-> 不点名的自动模式则沿用已加载的那个。正常用法不受影响；确实要对比两个变体请开两个
-> 进程（`test/simd-compare.js` 就是这么做的）。
+## Memory management
 
-SIMD 的浏览器覆盖率是 **93.57%**（Chrome 91+ / Firefox 89+ / Safari 16.4+），所以
-baseline 是必需的回退，两份都会随包发布——3.0.0 的包解包 **27.2 MB**（tarball
-7.8 MB；只带一份 wasm 的 2.0.0 是 8.3 MB）。SIMD 那份 wasm 本身就比 baseline 大 20.6%
-（14,595,094 B vs 12,104,983 B；brotli 后 2.88 MB vs 2.57 MB，5.0.0）。
+wasm memory is not garbage-collected. Free every `cv.Mat`, `cv.MatVector` and other
+Embind object you create:
 
-### SIMD 实测加速比
-
-真实产物，每个变体独立进程、启动顺序前后各一趟取最小值（`npm run simd:compare`）：
-
-- **arm64** —— 3.0.0 发布的 5.0.0 产物，node v22.22.2 / darwin-arm64（本机）。噪声底
-  用两份**相同**的二进制标定过：**±3%**，所以 0.97–1.03 之间的比值不代表真实差异。
-- **x86-64** —— 5.0.0 产物（打了 `v_round` 补丁的 3.1.0 候选，build-wasm 运行
-  36375538578 里 verify 作业的 CI 样本），node v22.23.2 / linux-x64（GitHub Actions
-  `ubuntu-24.04`）。这是共享 runner，**没有**做同样的噪声标定，个位数百分比的差异
-  不必当真。补丁只改了 `v_round` 一个函数，两列可以并排看。4.14.0 时两个架构的数据见
-  [`CHANGELOG.md`](CHANGELOG.md) 的 2.1.0 一节。
-
-| 操作                            | arm64（5.0.0） | x86-64（5.0.0） | 上游 2020 年数据 |
-| ------------------------------- | -------------- | --------------- | ---------------- |
-| `absdiff` 8UC3 256²             | **13.75x**     | **15.88x**      | —                |
-| `add` 8UC1 256²                 | **12.58x**     | **12.90x**      | —                |
-| `resize` 8UC4 256²→128²         | **4.29x**      | **4.18x**       | 1.77x            |
-| `pyrDown` 32FC4 256²            | **3.35x**      | **3.39x**       | 3.09x            |
-| `GaussianBlur` 8UC1 256² k=5    | **3.33x**      | **2.60x**       | 3.36x            |
-| `warpAffine` 8UC1 256²          | 2.09x          | **2.87x**       | —                |
-| `Sobel` 32FC1 256²              | 2.05x          | 2.04x           | —                |
-| `blur` 32FC1 256² k=5           | 1.60x          | 1.42x           | **0.519x**       |
-| `replaceMatOnRect`（扩展层）    | 1.00x          | 0.97x           | —                |
-| `cvtColor` RGBA2GRAY 8UC4 256²  | 0.99x          | 1.01x           | —                |
-| `roiClone` 64² 取 32²（扩展层） | 0.98x          | 0.94x           | —                |
-| `dft` 32FC1 256²                | **0.90x**      | **0.90x**       | —                |
-
-三件值得注意的事：
-
-- **`dft` 一直是那个退化**：5.0.0 在 arm64 与 x86-64 上实测都是 0.90x，4.14.0 时两个
-  架构都是 0.91x。同一个结果跨版本、跨架构、跨 OS 复现，排除了偶然。这是真实退化，
-  不是噪声。应对办法见下一节。
-- **4.14.0 时 x86-64 上 `cvtColor` 的 0.84x 在 5.0.0 上没有复现**：这次是 1.01x，
-  arm64 上 0.99x，都在噪声范围内。当时认为那 16% 的差距「倾向于真实」；现在看，要么
-  是 5.0.0 改了这个内核，要么那一个 CI 样本本身就偏了——两次都只有单个样本、版本也
-  不同，分不清是哪一种。教训是：共享 runner 上的单个样本不足以给一个算子定性。
-- **上游那个反例没有复现。** 上游 2020 年测得 `blur CV_32FC1` 是 0.519x（慢一倍），
-  这里是 arm64 **1.60x** / x86-64 **1.42x**，都是加速。而同一组数据里
-  `GaussianBlur`（3.33x vs 上游 3.36x）与 `pyrDown`（3.35x vs 3.09x）在 arm64 上几乎
-  吻合——所以不是整体标定问题，是**逐算子的差异**。结论：那组六年前的逐 kernel 数据
-  **不能整体照搬**（六年里 OpenCV 的 SIMD 内核与 emscripten 的代码生成都变了），
-  具体算子只能自己实测。顺带一提，`GaussianBlur` 在 x86-64 上是 2.60x、arm64 上
-  3.33x —— 同一个算子跨架构也能差这么多。
-
-两个扩展层用例（`roiClone` / `replaceMatOnRect`）在 0.94–1.00x 之间，符合预期：
-`roiClone` 是原生 `roi()` + `clone()`（一次内存拷贝），`replaceMatOnRect` 是 JS 侧按
-地址读写 wasm 堆的循环，都不经过 `-msimd128` 会向量化的那些 OpenCV 内核。
-
-### 何时该手动关掉 SIMD
-
-**默认不用管。** 12 个用例里 8 个明显更快（5 个在 3x 以上，两个在 10x 以上），3 个在
-噪声底内，只有 DFT 更慢（arm64，5.0.0）。x86-64 上明确更慢的同样只有 DFT。
-
-**性能上唯一有明确证据的例外是 DFT。** 如果你的负载以 `cv.dft()`（含 `DFT_INVERSE`
-逆变换）为主，SIMD 变体会慢约 10%（5.0.0 在 arm64 与 x86-64 上实测都是 0.90x；
-4.14.0 时两个架构都是 0.91x）。这时显式关掉：
+- `mat.delete()` frees it now.
+- `using m = …` frees it at the end of the block, on engines that support the `using`
+  declaration (for example Node.js 24). Every Embind object has `[Symbol.dispose]`.
+- `mat.deleteLater()` only queues the object; it is freed when `cv.flushPendingDeletes()`
+  runs, or by the scheduler you install with `cv.setDelayFunction(fn)`.
 
 ```javascript
-const cv = await require("@haoking/opencvjs")({ simd: false });
+{
+  using m = cv.matFromArray(2, 2, cv.CV_8UC1, [1, 2, 3, 4]);
+  console.log(m.sum()); //10
+} // m.delete() runs here
 ```
 
-或者进程级：
+Embind vectors are iterable. Each element you get is a new handle that shares its pixels
+with the vector's element, and must be deleted like any other:
 
-```bash
-OPENCV_SIMD=0 node your-app.js
+```javascript
+const vec = new cv.MatVector();
+const a = cv.matFromArray(1, 2, cv.CV_8UC1, [1, 2]);
+vec.push_back(a);
+vec.push_back(a);
+for (const m of vec) {
+  console.log("rows::" + m.rows); //rows::1
+  m.delete();
+}
+(a.delete(), vec.delete());
 ```
 
-**代价是全进程的。** 变体是进程级的，不能按算子切换（一个进程只能加载一个变体，
-见上）。关掉 SIMD 意味着同一进程里 `absdiff` / `add` 那两位数的加速比也一起没了 ——
-它们很容易把 DFT 的 10% 赚回来。所以只有在 DFT 确实占主导时才值得这么做，
-**并且请自己实测**，不要照搬这里的结论。
+**Heap views are invalidated when memory grows.** `mat.data*`, `DATA()`, `PTR()` and
+`cv.HEAP*` are views onto the wasm heap. Anything that allocates wasm memory afterwards —
+a new Mat, `clone()`, most `cv.*` calls — may grow the heap, and views taken before that
+are detached: their length becomes 0 and writes through them are lost. Take views after
+allocating, not before:
 
-此前这里还有第二条：x86-64 上大量跑 `cvtColor` 时可以考虑关掉（4.14.0 时实测
-0.84x）。5.0.0 上重测是 1.01x，没有复现，这一条已不成立。
-
-**正确性上还有一个例外：3.0.0 及更早发布的 simd 产物在「浮点 → 整数取整」上有偏差**
-（有符号整型的负数结果偏 1，见 [Known Issues](#known-issues)）。在用打了补丁的产物
-发版之前，处理有符号整型数据请关掉 SIMD。
-
-拿不准就自己跑一趟：
-
-```bash
-npm run simd:compare   # 需要本地已 assemble 两个变体
+```javascript
+const src = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
+const dst = new cv.Mat(2, 2, cv.CV_32FC1); // allocate first …
+dst.data32F.set(src.data32F); // … then take the views
+console.log("dst::" + dst.data32F); //dst::1,2,3,4
+(src.delete(), dst.delete());
 ```
 
-它只打印数字、不作门禁（**不会因为任何一项更慢而非零退出**，只有执行失败才 exit 1）——
-实测确实有更慢的项，把「必须更快」做成门禁，结果只会是以后有人删门禁或只挑有利的
-算子来测。
+The heap starts at 128 MB and grows on demand up to 2 GB (upstream OpenCV.js stops at
+1 GB).
 
-### TypeScript
+## Extension API
 
-`package.json` 的 `types` 指向 `dist/index.d.ts`，装完即可用，不需要
-`@types/*`：
+| Method                                                      | Returns    | Does                                               |
+| ----------------------------------------------------------- | ---------- | -------------------------------------------------- |
+| `mat.roiClone(rect)`                                        | new Mat    | continuous copy of a rectangle                     |
+| `mat.colClone(col)`                                         | new Mat    | continuous copy of a column                        |
+| `mat.diagClone(d = 0)`                                      | new Mat    | continuous copy of a diagonal                      |
+| `mat.replaceMatOnRect(src, rect)`                           | —          | copies channel 0 of `src` into `rect`, in place    |
+| `mat.rectAdd(src, rect)`                                    | —          | adds channel 0 of `src` to `rect`, in place        |
+| `mat.rectSubtract(src, rect)`                               | —          | subtracts channel 0 of `src` from `rect`, in place |
+| `mat.replaceMatOnRow(arr, row)`                             | —          | overwrites a whole row (every channel), in place   |
+| `mat.replaceMatOnCol(arr, col)`                             | —          | overwrites channel 0 of a column, in place         |
+| `mat.replaceMatOnPoint(value, row, col)` / `(value, point)` | —          | writes channel 0 of one element, in place          |
+| `mat.addOnCol(constant, col)`                               | —          | adds a constant to channel 0 of a column, in place |
+| `mat.addConstant(c)`                                        | new Mat    | `src + c`                                          |
+| `mat.constantSubtract(c)`                                   | new Mat    | `c − src`                                          |
+| `mat.mulConstant(c)`                                        | new Mat    | `src × c`                                          |
+| `mat.constantDivide(c)`                                     | new Mat    | `c / src`                                          |
+| `mat.sum()`                                                 | number     | sum of all elements over all channels              |
+| `mat.reshapeRows(rows)`                                     | new Mat    | copy laid out in `rows` rows                       |
+| `mat.DATA()`                                                | TypedArray | the whole Mat, typed by its depth                  |
+| `mat.PTR(row)` / `mat.PTR(row, col)`                        | TypedArray | one row, or the channels of one element            |
+| `mat.dftSplit()`                                            | `{ r, i }` | **deprecated**, see below                          |
+| `cv.norm2(a, b, normType = cv.NORM_L2)`                     | number     | ‖a − b‖                                            |
+| `cv.matFromArray(rows, cols, type, array)`                  | new Mat    | native, wrapped with validation                    |
+| `loadOpenCV.detectSimd()`                                   | boolean    | whether the engine supports WebAssembly SIMD       |
+
+The examples assume `const cv = await require("@haoking/opencvjs")();`. The outputs in
+the comments come from running them on the 4.0.0 build.
+
+### Region copies
+
+Native `roi()`, `col()` and `diag()` return views into the source Mat. A view is not
+continuous, and `data*` / `DATA()` read it as contiguous memory, which gives the wrong
+elements. `roiClone()`, `colClone()` and `diagClone()` return independent, continuous
+copies that are safe to read. Use the native views when you want to write back into the
+source.
+
+```javascript
+const mat = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+const rect = new cv.Rect(1, 1, 2, 2);
+
+const copy = mat.roiClone(rect);
+console.log("roiClone::" + copy.data32F + " " + copy.rows + "x" + copy.cols);
+//roiClone::5,6,8,9 2x2
+
+console.log("colClone::" + mat.colClone(2).data32F); //colClone::3,6,9
+console.log("col::" + mat.col(2).data32F); //col::3,4,5   ← native view, read as contiguous: wrong
+console.log("diagClone::" + mat.diagClone().data32F); //diagClone::1,5,9
+
+const view = mat.roi(rect); // a view writes back into the source
+view.setTo(new cv.Scalar(0, 0, 0, 0));
+console.log("mat::" + mat.data32F); //mat::1,2,3,4,0,0,7,0,0
+(mat.delete(), copy.delete(), view.delete());
+```
+
+On multi-channel Mats the native view is off by more (3×3 `CV_32FC2`, values 1..18):
+
+```javascript
+// prettier-ignore
+const mat = cv.matFromArray(3, 3, cv.CV_32FC2,
+  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+console.log("colClone::" + mat.colClone(2).data32F); //colClone::5,6,11,12,17,18
+console.log("col::" + mat.col(2).data32F); //col::5,6,7,8,9,10   ← wrong
+mat.delete();
+```
+
+A single row (`mat.row(i)`) is continuous, so reading it directly is fine.
+
+### In-place writes
+
+`replaceMatOnRect`, `rectAdd`, `rectSubtract`, `replaceMatOnRow`, `replaceMatOnCol`,
+`replaceMatOnPoint` and `addOnCol` modify the Mat they are called on:
+
+- Values written into integer Mats **saturate** like OpenCV's `saturate_cast`: rounded half
+  to even, clamped to the type's range, `NaN` becomes 0 (`250 + 20` on `CV_8U` is `255`,
+  not `14`). Floating-point Mats are written as is.
+- Only **channel 0** is written, except by `replaceMatOnRow`, which writes every channel of
+  the row.
+- When `src` shares memory with the Mat being written (the same Mat, or overlapping views
+  of one parent), `src` is read in full before anything is written.
+- They work on native `roi()` / `col()` views and write at the view's own position.
+- Indices are validated once on entry; the loops then address the wasm heap directly,
+  two orders of magnitude faster than calling an accessor per pixel.
+
+```javascript
+const mat = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+const rect = new cv.Rect(1, 1, 2, 2);
+const patch = cv.matFromArray(2, 2, cv.CV_32FC1, [11, 12, 13, 14]);
+
+mat.replaceMatOnRect(patch, rect);
+console.log("replaceMatOnRect::" + mat.data32F); //replaceMatOnRect::1,2,3,4,11,12,7,13,14
+mat.rectAdd(patch, rect);
+console.log("rectAdd::" + mat.data32F); //rectAdd::1,2,3,4,22,24,7,26,28
+mat.rectSubtract(patch, rect);
+console.log("rectSubtract::" + mat.data32F); //rectSubtract::1,2,3,4,11,12,7,13,14
+
+mat.replaceMatOnRow([21, 22, 23], 0);
+console.log("replaceMatOnRow::" + mat.data32F); //replaceMatOnRow::21,22,23,4,11,12,7,13,14
+mat.replaceMatOnCol([31, 32, 33], 2);
+console.log("replaceMatOnCol::" + mat.data32F); //replaceMatOnCol::21,22,31,4,11,32,7,13,33
+mat.addOnCol(100, 0);
+console.log("addOnCol::" + mat.data32F); //addOnCol::121,22,31,104,11,32,107,13,33
+
+mat.replaceMatOnPoint(0, 1, 1); // (value, row, col)
+mat.replaceMatOnPoint(-1, new cv.Point(2, 0)); // cv.Point: x = column, y = row
+console.log("replaceMatOnPoint::" + mat.data32F); //replaceMatOnPoint::121,22,-1,104,0,32,107,13,33
+(mat.delete(), patch.delete());
+
+const bytes = cv.matFromArray(1, 3, cv.CV_8UC1, [250, 10, 3]);
+bytes.replaceMatOnRow([270, -5, 2.5], 0);
+console.log("saturated::" + bytes.data); //saturated::255,0,2
+bytes.delete();
+```
+
+### Scalar arithmetic
+
+`addConstant`, `constantSubtract` and `mulConstant` compute `saturate(x · alpha + beta)`
+per element with `convertTo`; `constantDivide` computes `saturate(c / x)` with
+`cv.divide`, where an integer division by zero gives 0. All four return a new Mat and
+work on every depth with 1–4 channels (`constantDivide` also on N-dimensional Mats such
+as a 3-channel `calcHist` result).
+
+```javascript
+const mat = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+console.log("addConstant::" + mat.addConstant(10).data32F); //addConstant::11,12,13,14,15,16,17,18,19
+console.log("constantSubtract::" + mat.constantSubtract(10).data32F); //constantSubtract::9,8,7,6,5,4,3,2,1
+console.log("mulConstant::" + mat.mulConstant(10).data32F); //mulConstant::10,20,30,40,50,60,70,80,90
+console.log("constantDivide::" + mat.constantDivide(12).data32F); //constantDivide::12,6,4,3,2.4000000953674316,2,1.7142857313156128,1.5,1.3333333730697632
+mat.delete();
+
+const bytes = cv.matFromArray(1, 4, cv.CV_8UC1, [10, 4, 2, 0]);
+console.log("constantDivide 8U::" + bytes.constantDivide(1000).data); //constantDivide 8U::100,250,255,0
+bytes.delete();
+```
+
+The constant must be a number other than `NaN`; `±Infinity` is accepted (see
+[Argument validation](#argument-validation)). (The examples above leak their results for
+brevity; delete them in real code.)
+
+### sum and reshapeRows
+
+`sum()` returns the scalar sum of all elements over all channels — unlike OpenCV's
+`cv.sum()`, which returns a per-channel `Scalar` and is not in this build's whitelist.
+`reshapeRows(rows)` returns a **copy** laid out in `rows` rows — unlike native
+`reshape()`, which returns a header sharing memory (and is not bound in this build). Both
+work on non-continuous views.
+
+```javascript
+const mat = cv.matFromArray(
+  2,
+  2,
+  cv.CV_32FC3,
+  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+);
+console.log("sum::" + mat.sum()); //sum::78
+const flat = mat.reshapeRows(1);
+console.log("reshapeRows::" + flat.data32F + " " + flat.rows + "x" + flat.cols);
+//reshapeRows::1,2,3,4,5,6,7,8,9,10,11,12 1x4
+(mat.delete(), flat.delete());
+```
+
+### cv.norm2
+
+`cv.norm2(src1, src2, normType = cv.NORM_L2)` is ‖src1 − src2‖, with `normType` as in
+C++ `cv::norm(src1, src2, normType)`: `NORM_INF`, `NORM_L1`, `NORM_L2`, `NORM_L2SQR`,
+and `NORM_HAMMING` / `NORM_HAMMING2` (`CV_8UC1` only, counting the differing bits of
+`src1 XOR src2`), each optionally OR-ed with `NORM_RELATIVE` for ‖src1 − src2‖ / ‖src2‖.
+Differences of integer Mats are exact, not saturated to the depth.
+
+```javascript
+const a = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+const b = cv.matFromArray(
+  3,
+  3,
+  cv.CV_32FC1,
+  [9, 10, 11, 12, 13, 14, 15, 16, 17],
+);
+console.log("norm2::" + cv.norm2(a, b)); //norm2::24
+console.log("L1::" + cv.norm2(a, b, cv.NORM_L1)); //L1::72
+(a.delete(), b.delete());
+```
+
+Native `cv.norm(a, b, normType)` does not exist in this build. Embind dispatches on
+argument count only, and the two C++ overload sets collide at 2 and 3 arguments, so the
+generator kept only `norm(src, normType, mask)`. `cv.norm(a, b)` therefore passes the
+second Mat as an integer `normType` and fails at an assertion inside OpenCV.
+
+### DATA and PTR
+
+`DATA()` returns a TypedArray over the whole Mat; `PTR(row)` the elements of one row
+(cols × channels); `PTR(row, col)` the channels of one element. They pick the accessor by
+`depth()` — picking the wrong one by hand reinterprets the bytes silently. `PTR()` checks
+both indices; `DATA()` is meaningful on continuous Mats only.
+
+```javascript
+const mat = cv.matFromArray(3, 3, cv.CV_8UC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+console.log("DATA::" + mat.DATA()); //DATA::1,2,3,4,5,6,7,8,9
+console.log("PTR(1)::" + mat.PTR(1)); //PTR(1)::4,5,6
+console.log("PTR(1,2)::" + mat.PTR(1, 2)); //PTR(1,2)::6
+mat.delete();
+```
+
+| Depth    | `data*`   | `*Ptr`      | `*At`      | TypedArray     |
+| -------- | --------- | ----------- | ---------- | -------------- |
+| `CV_8U`  | `data`    | `ucharPtr`  | `ucharAt`  | `Uint8Array`   |
+| `CV_8S`  | `data8S`  | `charPtr`   | `charAt`   | `Int8Array`    |
+| `CV_16U` | `data16U` | `ushortPtr` | `ushortAt` | `Uint16Array`  |
+| `CV_16S` | `data16S` | `shortPtr`  | `shortAt`  | `Int16Array`   |
+| `CV_32S` | `data32S` | `intPtr`    | `intAt`    | `Int32Array`   |
+| `CV_32F` | `data32F` | `floatPtr`  | `floatAt`  | `Float32Array` |
+| `CV_64F` | `data64F` | `doublePtr` | `doubleAt` | `Float64Array` |
+
+The native `*Ptr` / `*At` accessors check nothing: on a 3×3 `CV_32FC1`, `floatPtr(9, 9)`
+returns a view into memory that belongs to something else.
+
+### dftSplit (deprecated)
+
+`dftSplit()` splits the CCS-packed single-channel output of `cv.dft()` into real and
+imaginary Mats (`{ r, i }`). Nothing supports the correctness of its unpacking
+convention, and its only historical consumer returned `NaN`. It is kept for compatibility
+only. For complex spectrum multiplication use native `cv.mulSpectrums()`, which works on
+CCS data directly.
+
+### cv.matFromArray
+
+The native `cv.matFromArray(rows, cols, type, array)` is wrapped so that bad input fails
+before anything is allocated: `type` must be a known depth with 1–4 channels, `rows` and
+`cols` non-negative integers, and `array.length` exactly `rows × cols × channels`.
+Without the wrapper a short array leaves the rest of the Mat uninitialized, and an
+unknown type (a misspelt constant is `undefined`) leaks the Mat the glue already
+allocated.
+
+## Argument validation
+
+Every extension method validates its arguments **before calling into wasm** and throws a
+standard `TypeError` (wrong type) or `RangeError` (wrong value) whose message names the
+function, the argument, the value received and what was expected:
+
+```javascript
+const mat = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+try {
+  mat.roiClone(new cv.Rect(1, 1, 10, 10));
+} catch (e) {
+  console.log(e instanceof RangeError); //true
+  console.log(e.message);
+  //Mat.roiClone(rect): Rect(x=1, y=1, width=10, height=10) does not fit in the 3×3 (rows×cols) Mat; it needs 0 ≤ x and x+width ≤ cols=3, 0 ≤ y and y+height ≤ rows=3
+}
+mat.delete();
+```
+
+More messages, verbatim:
+
+```text
+Mat.addOnCol(constant, col): col = 7 is out of range; the valid range is 0..2
+
+Mat.PTR(row, col): row = 9 is out of range; the valid range is 0..2
+
+cv.matFromArray(rows, cols, type, array): a 3×3 CV_32FC1(5) Mat needs 9 elements
+(3×3×1 channel), got 3; TypedArray.set() does not complain about a short source, and
+the rest of the Mat would be uninitialized heap memory
+
+cv.norm2(src1, src2, normType): src1 is CV_32FC1(5) and src2 is CV_8UC1(0); the types
+must match
+
+Mat.sum(): the receiver has been deleted; a Mat cannot be used after delete()
+```
+
+What this layer prevents:
+
+1. **Native failures carry no information.** This build compiles C++ exception catching
+   out, so a failing `CV_Assert` inside OpenCV aborts. With Emscripten 6.0.12 every such
+   failure throws the same `RuntimeError: Aborted(undefined). Build with -sASSERTIONS for
+more info.` and prints `Aborted(undefined)` to stderr — no function, argument or value.
+   (The module stays usable afterwards.)
+2. **Out-of-range indices do not fail at all.** Embind's `*Ptr(row, col)` checks nothing,
+   and the in-place writes address the heap directly, so an out-of-range `Rect` or column
+   would silently overwrite somebody else's memory.
+
+Each index is validated once per call, never per pixel: `rows` and `cols` are Embind
+getters, and every read crosses the language boundary.
+
+**Operands versus data.** The constant of `addConstant`, `constantSubtract`,
+`mulConstant`, `constantDivide` and `addOnCol` is an operand applied to the whole Mat:
+non-numbers and `NaN` are rejected (`addConstant(undefined)` used to return a Mat full of
+`NaN` without an error), while `±Infinity` is accepted — it is a valid IEEE-754 value and
+the usual sentinel in cost and distance maps. Values written as **data**
+(`replaceMatOnRow`, `replaceMatOnCol`, `replaceMatOnPoint`) may be `NaN` or `±Infinity`;
+writing `NaN` to mark a pixel invalid is legitimate.
+
+```javascript
+const mat = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
+const inf = mat.addConstant(Infinity);
+console.log("" + inf.DATA()); //Infinity,Infinity,Infinity,Infinity
+(mat.delete(), inf.delete());
+```
+
+## Native OpenCV API
+
+Everything else on `cv` is OpenCV's own JavaScript API, and the
+[OpenCV.js tutorials](https://docs.opencv.org/5.x/d5/d10/tutorial_js_root.html) apply.
+The whitelist (`src/config/opencv_js.config.py`) is upstream's, with these differences:
+
+- `cv.mulSpectrums` and `cv.SVDecomp` are added.
+- The dnn bindings are removed (`cv.readNet*` are `undefined`); the dnn C++ code is still
+  compiled in, because other modules use it.
+- The MCC color checker classes are bound under their real names (upstream's entries do
+  not match the 5.0.0 class names, so its build binds none of them).
+
+OpenCV 5 removed `CascadeClassifier`, `HOGDescriptor`, `AKAZE`, `BRISK`, `KAZE`,
+`AgastFeatureDetector` and `groupRectangles` from its C++ API; see
+[Known issues](#known-issues).
+
+### Pitfalls in the native API
+
+All verified on this build:
+
+- `cv.norm(a, b, normType)` does not exist (see [cv.norm2](#cvnorm2)); use `cv.norm2`.
+- `cv.Scalar.all(v)` throws `TypeError: this.push is not a function` (the glue calls the
+  constructor without `new`); use `new cv.Scalar(v, v, v, v)`.
+- `new cv.MinMaxLoc()` and `new cv.Circle()` leave `minLoc` / `maxLoc` / `center`
+  undefined, for the same reason; pass all arguments.
+- There is no `new cv.Mat(size, type, scalar)`: Embind dispatches on argument count, so
+  three arguments mean `(rows, cols, type)` and silently give a malformed Mat. Use
+  `new cv.Mat(rows, cols, type, scalar)`.
+- `cv.sum()` and the `cv.SVD` class are not bound; `mat.sum()` and `cv.SVDecomp()` are.
+- Type values follow OpenCV 5, whose channel shift is 5 rather than 3: `cv.CV_8UC3` is
+  `64`, not `16`. Use the constants, never literal numbers.
+- A failed assertion inside OpenCV throws `RuntimeError: Aborted(undefined)` with no
+  detail (see [Argument validation](#argument-validation)).
+
+### Color checker detection (MCC)
+
+`cv.mcc_CCheckerDetector` finds Macbeth ColorChecker charts (`MCC24`), DigitalSG charts
+(`SG140`) and DKK charts (`VINYL18`) in a BGR image:
+
+```javascript
+const detector = new cv.mcc_CCheckerDetector(); // CCheckerDetector::create()
+detector.setColorChartType(cv.mcc_ColorChart.MCC24);
+if (detector.process(bgr, 1)) {
+  // bgr: CV_8UC3 in BGR order; 1 = number of charts to look for
+  const checker = detector.getBestColorChecker();
+  const box = checker.getBox(); // Point2fVector with the 4 corners
+  const means = checker.getChartsRGB(false); // 24×1 CV_64FC3: mean RGB per patch
+  // … use them, then:
+  (box.delete(), means.delete(), checker.delete());
+}
+detector.delete();
+```
+
+- `checker.getChartsRGB()` (with statistics) returns a CV_64F Mat with one row per patch
+  and channel and five columns: pixel count, mean, standard deviation, minimum, maximum.
+  `getChartsYCbCr()` has the same layout in YCbCr; `getCenter()` and `getCost()` are
+  available too.
+- `detector.processWithROI(bgr, rects, nc)` searches only the given `cv.RectVector`.
+- Detection parameters: `const p = new cv.mcc_DetectorParametersMCC()`, set its fields
+  (`minImageSize`, `confidenceThreshold`, …), then `detector.setDetectionParams(p)`.
+- Not available: `getListColorChecker()` and `draw()` take or return a vector of checkers,
+  which Embind has no binding for; `getDetectionParams()` cannot be bound. The
+  `create(net)` constructor throws (`Cannot construct mcc_CCheckerDetector due to unbound
+types`) because dnn has no bindings, so detection always uses the classical detector.
+
+A new detector looks for `MCC24` charts until told otherwise. (Upstream 5.0.0 leaves the
+chart type uninitialized, so detection depended on leftover heap memory;
+`build/patches/opencv-mcc-chart-type-init.patch` fixes that.) `test/unit/mcc.test.js`
+detects a synthetic MCC24 chart and checks its position and every patch color.
+
+### FaceDetectorYN
+
+`cv.FaceDetectorYN` (YuNet) replaces Haar-cascade face detection. Embind maps OpenCV's
+static `create()` to the constructor: `new cv.FaceDetectorYN(modelPath, configPath, size,
+...)` (3–9 arguments), where `modelPath` is a path in the Emscripten virtual file system
+that you must write the ONNX model to first. **This project has not verified this path**
+(there is no model in the repository and no test covers it).
+
+### Quick reference
+
+```javascript
+// Constructors
+let mat = new cv.Mat(); // empty
+mat = new cv.Mat(rows, cols, type);
+mat = new cv.Mat(rows, cols, type, new cv.Scalar(b, g, r, a));
+mat = new cv.Mat(new cv.Size(width, height), type);
+mat = cv.matFromArray(rows, cols, type, array);
+mat = cv.matFromImageData(ctx.getImageData(0, 0, w, h)); // browser, CV_8UC4
+mat = cv.Mat.zeros(rows, cols, type); // also ones(), eye()
+
+// Copy and convert
+const copy = src.clone(); // deep copy
+src.copyTo(dst, mask);
+src.convertTo(dst, rtype, alpha, beta);
+
+// Value types (plain JS classes in the glue)
+new cv.Point(x, y);
+new cv.Size(width, height);
+new cv.Rect(x, y, width, height);
+new cv.Scalar(v0, v1, v2, v3);
+
+// Vectors
+const vec = new cv.MatVector();
+vec.push_back(mat);
+const first = vec.get(0); // a new handle: delete it too
+(first.delete(), vec.delete());
+```
+
+## TypeScript
+
+`package.json` points `types` at `dist/index.d.ts`; no `@types/*` package is needed:
 
 ```typescript
 import loadOpenCV = require("@haoking/opencvjs");
@@ -394,1640 +584,211 @@ const data: Float32Array = roi.data32F;
 (mat.delete(), roi.delete());
 ```
 
-这份声明**由构建产物自动 dump**（`build/gen-types.js`，组装时执行），不是手写的：
-顶层符号来自运行时的 `Object.keys(cv)`，Mat 成员来自其整条原型链，
-`test/types/dts-consistency.test.js` 双向断言两个集合严格相等。
+The declarations are **generated from the build** (`build/gen-types.js`, run by
+`npm run assemble`): top-level symbols come from the runtime's `Object.keys(cv)` and Mat
+members from the whole prototype chain, and `test/types/dts-consistency.test.js` asserts
+that the declared and runtime symbol sets are equal in both directions. Hand-written
+OpenCV.js declarations in the ecosystem declare `SIFT`, `PCA` and `FlannBasedMatcher`,
+which this build lacks, and miss `FaceDetectorYN`, which it has — so code type-checks and
+then throws.
 
-> ℹ️ **为什么要这么做**：生态里现有的 OpenCV.js 声明（`@opencvjs/types`、TechStark 的
-> `src/`）与运行时不符——声明了运行时没有的 `SIFT` / `PCA` / `FlannBasedMatcher`，
-> 又漏掉了确实存在的 `FaceDetectorYN`。血统能追到 2019 年的 mirada，此后靠人手维护。
-> 后果是最难受的那种：**代码通过类型检查，然后运行时抛异常。**
+- Guaranteed: every declared symbol exists and every existing symbol is declared (1634
+  top-level symbols and 75 Mat members in 4.0.0).
+- Not guaranteed: precise parameter types of native functions, which would need OpenCV's
+  C++ signatures and Embind's overload rules. Native bindings without a hand-written
+  signature are `(...args: any[]): any`; the extension layer has precise signatures.
+- `Mat` declares `[Symbol.dispose](): void`, so `using` type-checks. The file also
+  declares `SymbolConstructor.dispose`, so projects on plain ES2022 libraries (without
+  `esnext.disposable` or `@types/node`) compile as well.
 
-范围与限制：
+## Performance
 
-- **保证**符号存在性与运行时严格一致（数量由产物决定，不是写死的；4.14.0 实测
-  1450 个顶层符号、75 个 Mat 成员，5.0.0 实测 1653 个顶层符号、75 个 Mat 成员）。
-- **不保证**每个原生函数的参数类型精确——那需要解析 OpenCV 的 C++ 签名并复现 embind
-  的重载分发规则，超出本项目范围。未逐条标注的原生绑定一律是 `(...args: any[]): any`。
-  本项目自己写的扩展层（`roiClone` / `DATA` / `PTR` / `replaceMatOn*` 等）有准确签名。
-- **没有 `Symbol.dispose`**，所以用不了 TS 5.2 的 `using`（实测本产物的 Mat 原型链上
-  没有任何 symbol 属性）。Mat 一律由调用方显式 `delete()`。
+### SIMD speedups
 
-### Build from source
+Measured with `npm run simd:compare`: each build in its own process, the first round
+discarded, the minimum of two passes with alternating start order.
 
-产物不入 git。本地要跑测试或自己出包：
+- **arm64**: node v22.22.2 / darwin-arm64, the 4.0.0 build (Emscripten 6.0.12). The noise
+  floor, calibrated with two identical binaries, is ±3%.
+- **x86-64**: node v22.23.2 / linux-x64 on a shared GitHub Actions runner (not
+  noise-calibrated), the 3.1.0 candidate build (Emscripten 3.1.64).
 
-```bash
-./build/build.sh                # → build/out/baseline/   opencv.js + opencv_js.wasm
-./build/build.sh --simd         # → build/out/simd/       opencv.js + opencv_js.wasm
-./build/build.sh --single-file  # → build/out/singlefile/ 只有 opencv.js（wasm 已内联）
-npm run assemble                # 两个变体 + src/js/ → dist/（含 index.d.ts）
-npm test                        # 237 项
-npm run bench                   # 两个性能门禁（test/bench/*.bench.js 全跑）
-npm run simd:compare            # baseline vs simd 的实测加速比（只报数字，不是门禁）
+| Operation                       | arm64     | x86-64    | Upstream 2020 |
+| ------------------------------- | --------- | --------- | ------------- |
+| `absdiff` 8UC3 256²             | **14.0x** | **15.9x** | —             |
+| `add` 8UC1 256²                 | **12.3x** | **12.9x** | —             |
+| `resize` 8UC4 256²→128²         | **4.4x**  | **4.2x**  | 1.77x         |
+| `GaussianBlur` 8UC1 256² k=5    | **3.3x**  | **2.6x**  | 3.36x         |
+| `pyrDown` 32FC4 256²            | **3.0x**  | **3.4x**  | 3.09x         |
+| `Sobel` 32FC1 256²              | 2.1x      | 2.0x      | —             |
+| `blur` 32FC1 256² k=5           | 1.6x      | 1.4x      | **0.519x**    |
+| `warpAffine` 8UC1 256²          | 1.2x      | **2.9x**  | —             |
+| `cvtColor` RGBA2GRAY 8UC4 256²  | 0.99x     | 1.01x     | —             |
+| `roiClone` 32² of 64²           | 1.00x     | 0.94x     | —             |
+| `replaceMatOnRect` 32² into 64² | 1.04x     | 0.97x     | —             |
+| `dft` 32FC1 256²                | **0.95x** | **0.90x** | —             |
+
+- **`dft` is consistently slower with SIMD**: 0.95x here, 0.90x on x86-64 and on the 3.x
+  builds, 0.91x on OpenCV 4.14.0.
+- **`warpAffine` gains less on arm64 than it used to** (2.1x with Emscripten 3.1.64)
+  because Emscripten 6.0.12 made the _baseline_ build 1.7x faster, not because SIMD got
+  slower.
+- **Upstream's 2020 per-kernel data does not carry over**: its counterexample, `blur`
+  CV_32FC1 at 0.519x, is a speedup here, while `GaussianBlur` and `pyrDown` match it.
+  Measure the operations you care about.
+- The two extension-layer cases are within noise, as expected: they are a memory copy and
+  a JS loop over the heap, neither of which `-msimd128` vectorizes.
+
+### When to turn SIMD off
+
+Rarely. If your workload is dominated by `cv.dft()` (including `DFT_INVERSE`), the
+baseline build is 5–10% faster:
+
+```javascript
+const cv = await require("@haoking/opencvjs")({ simd: false });
 ```
 
-`npm run assemble` 接受两个目录参数（例如 CI 下载下来的产物目录）：
-`npm run assemble -- /path/to/baseline /path/to/simd`。simd 那个可以缺——本地没有
-Docker 时只构得出 baseline，那时 `dist/` 只含 baseline，一致性测试整组跳过。
-在 CI 那种「本来就该有两个变体」的场合，设 `OPENCV_REQUIRE_SIMD=1` 让缺失从告警
-升级为失败。**不会拿 baseline 冒充 simd**——那会让强制 SIMD 测到的其实是 baseline。
+or `OPENCV_SIMD=0 node app.js`. The choice applies to the whole process — one build per
+process — so you also give up the large gains on `absdiff`, `add` and the filters.
+Measure with your own data before deciding.
 
-第三个变体 `--single-file` 不参与 npm 打包，见下一节。
+### Benchmarks
 
-CI 里 `build-wasm.yml` 用三变体矩阵并行构建、逐个跑冒烟测试，再用一个 `verify`
-作业下载 baseline + simd 当场验双产物一致性；`ci.yml` 取它最近一次成功运行的
-两个产物再组装，并把同一套测试在两个变体上各跑一遍。
+- `npm run bench` runs two regression gates. `region-ops` compares `roiClone()` with the
+  native `roi()` + `clone()` it wraps (64×64 `CV_32FC1`, 20000 calls). `inplace-ops`
+  compares the five per-pixel write methods with a hand-written loop over the wasm heap,
+  and prints per-pixel accessor loops (native `*Ptr()` and `PTR()`) as regression
+  references, two orders of magnitude slower.
+- `npm run simd:compare` prints the table above for your machine. It never fails because
+  an operation is slower with SIMD — some are.
+
+## Known issues
+
+- **Removed in OpenCV 5.** `cv.CascadeClassifier`, `HOGDescriptor`, `AKAZE`, `BRISK`,
+  `KAZE`, `AgastFeatureDetector` and `groupRectangles` do not exist since 3.0.0; code using
+  them throws `TypeError`. This is not a whitelist choice: OpenCV 5 deleted them from its
+  C++ API, together with the Haar cascade data files. For face detection see
+  [FaceDetectorYN](#facedetectoryn); for feature points `ORB`, `MSER`,
+  `FastFeatureDetector`, `GFTTDetector` and `SimpleBlobDetector` remain.
+- **`CV_32S` overflow in `addConstant` / `constantSubtract` / `mulConstant` /
+  `constantDivide`** gives `INT_MIN` instead of saturating (`2147483647 + 10` is
+  `-2147483648`). That is OpenCV's semantics: `saturate_cast<int>(double)` is `cvRound`,
+  which yields `0x80000000` out of range on wasm and x86 alike. The in-place writes do not
+  go through OpenCV and saturate correctly.
+- **`dftSplit()` is unverified** and deprecated; see [dftSplit](#dftsplit-deprecated).
+- **The browser path is not tested.** CI runs Node 22 / 24 / 26 only. The npm package is
+  the split build (`opencv.js` glue + `opencv_js.wasm`) plus a CommonJS extension layer:
+  in a browser, use a bundler for the extension layer; a plain `<script>` gets native
+  OpenCV only. See also [Single-file build](#single-file-build).
+- **SIMD is slower for `dft`** (see [Performance](#performance)).
+- **Releases up to 3.0.0: the simd build rounded floats to integers incorrectly**
+  (upstream's WebAssembly SIMD `v_round` is `trunc(x + 0.5)`: negative results were 1 too
+  high and halves rounded up). Affected kernels include `addWeighted`, scaling
+  `convertTo`, `divide`, `multiply`, 16S filters and the scalar extension methods. Fixed in
+  4.0.0 by `build/patches/opencv-wasm-v_round.patch`; on 3.0.0, use `{ simd: false }` for
+  signed integer data.
+
+## Building from source
+
+The wasm artifacts are not in git. To build them and assemble `dist/` (Docker required):
+
+```bash
+./build/build.sh                # → build/out/baseline/    opencv.js + opencv_js.wasm
+./build/build.sh --simd         # → build/out/simd/        opencv.js + opencv_js.wasm
+./build/build.sh --single-file  # → build/out/singlefile/  opencv.js with the wasm embedded
+npm run assemble                # build/out/{baseline,simd} + src/js/ → dist/ (with index.d.ts)
+npm test
+npm run bench
+npm run simd:compare
+```
+
+`npm run assemble -- <baseline dir> <simd dir>` takes the artifact directories as
+arguments (for example ones downloaded from CI). The simd directory may be missing
+locally; `dist/` then holds baseline only and the parity tests skip. Set
+`OPENCV_REQUIRE_SIMD=1` to make a missing simd build an error, as CI does.
+
+### Build inputs
+
+- **OpenCV**: the tag in `build/opencv-version.txt` (5.0.0), which must resolve to the
+  commit in `build/opencv-commit.txt`; the build fails otherwise.
+- **Toolchain**: `build/Dockerfile` pins `emscripten/emsdk:6.0.12` by image digest.
+- **Whitelist**: `src/config/opencv_js.config.py`, upstream's file with four documented
+  changes (see its header; `ruff.toml` explains how to diff it against upstream).
+- **Patches** applied to the OpenCV sources (`build/patches/`; each file explains itself):
+  - `opencv-js-deep-clone.patch` keeps `clone()` a deep copy — with Emscripten ≥ 4.0.0,
+    upstream's override never runs and `clone()` is shallow.
+  - `opencv-js-link-flags.patch` exports the runtime symbols the extension layer and
+    users rely on (`HEAP*`, Embind error classes, `flushPendingDeletes` /
+    `setDelayFunction`, instance counters, `FS_createPreloadedFile`) and raises the memory
+    limit to 2 GB.
+  - `opencv-js-mcc-bindings.patch` lets the MCC bindings compile.
+  - `opencv-mcc-chart-type-init.patch` initializes the MCC detector's chart type.
+  - `opencv-wasm-v_round.patch` makes the SIMD build round like `cvRound`.
+
+`build/fingerprint.sh` hashes all of these inputs into a 16-character fingerprint.
+
+### CI
+
+- **`build-wasm.yml`** (on `v*` tags, or dispatched by hand) builds the three variants in
+  parallel, smoke-tests each, and uploads them as `opencv-wasm-<variant>-<fingerprint>`.
+  A `verify` job then assembles baseline + simd, runs the whole suite on both, checks
+  variant parity and prints `npm run simd:compare`.
+- **`ci.yml`** (on pushes and pull requests) downloads the artifacts whose fingerprint
+  matches the commit under test, assembles `dist/`, runs the suite once per build on
+  Node 22 / 24 / 26, and runs the benchmark gates on Node 24. If no artifacts match —
+  the build inputs just changed — it fails and asks for a `build-wasm.yml` run.
 
 ### Single-file build
 
-给浏览器 `<script>` 直接引用的单文件形态：`build/build.sh --single-file` 把 wasm 以
-base64 内联进 `opencv.js`（体积 +33%；5.0.0 上实测 16,283,334 B，约 16.3 MB 单个
-文件）。
-
-**它不在 npm 包里。** `assemble.sh` 会拒绝大于 2 MB 的 glue，正是为了挡住它被误打
-进包——27 MB 的包已经够大，再塞一份约 16 MB 的重复产物没有道理。
-
-拿它的两个途径：
-
-1. **GitHub Release** —— 每个版本的 Release 页面附有该版本的单文件产物。
-2. **自己构建** —— `./build/build.sh --single-file`，产物在 `build/out/singlefile/`
-   （需要 Docker）。也可以从 `Build WASM` 工作流那次运行的 CI artifact
-   `opencv-wasm-singlefile` 直接下载。
-
-> ⚠️ **仓库里没有自动上传 Release 的步骤**，单文件产物由维护者在发版时手工附上。
-> 如果某个版本的 Release 页面上没有它，那就是漏了——请开 issue，或按上面第 2 条
-> 自己构建。（不做自动上传是因为 `gh release upload` 在 Release 尚不存在时会失败，
-> 等于给每次打 tag 埋一个必红的步骤。）
-
-单文件变体**刻意走 baseline 而非 SIMD**：它的使用场景是 `<script>` 直接引用，
-那条路径上没有任何回退机制，而 SIMD 浏览器覆盖率是 93.57%——发一个无回退的 SIMD
-单文件版等于让 6.4% 的浏览器直接白屏。也就是说单文件形态**拿不到 SIMD 加速**。
-
-> ⚠️ 单文件形态给到的是**原生 OpenCV**，没有本项目的扩展层（`roiClone` / `DATA` /
-> `PTR` / `replaceMatOn*` 等）——扩展层是 CommonJS 模块，得走打包器。而且如
-> [Known Issues](#known-issues) 所述，**浏览器路径整体没有验证过**。
-
----
-
-## Usage
-
-下面所有示例都假定 `cv` 已经拿到：
-
-```javascript
-const cv = await require("@haoking/opencvjs")();
-```
-
-示例里注释掉的输出值都是在 2.0 的产物上实际跑出来的（node v22.22.2）。
-
-### Argument validation
-
-本项目的每个扩展方法都会在**调用 wasm 之前**校验参数，失败时抛标准
-`TypeError` / `RangeError`，消息里带上函数名、参数名、实际收到的值和期望的范围：
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-try {
-  mat1.roiClone(new cv.Rect(1, 1, 10, 10));
-} catch (e) {
-  console.log(e instanceof RangeError); //true
-  console.log(e.message);
-  //Mat.roiClone(rect): Rect(x=1, y=1, width=10, height=10) 超出 3×3（行×列）的 Mat —— 要求 0 ≤ x 且 x+width ≤ cols=3，0 ≤ y 且 y+height ≤ rows=3
-}
-mat1.delete();
-```
-
-其余几条的实际消息（同样逐字实测）：
-
-```text
-Mat.addOnCol(constant, col): col = 7 越界，有效范围 0..2
-
-cv.matFromArray(rows, cols, type, array): CV_32FC1(5) 的 3×3 Mat 需要 9 个元素
-（3×3×1 通道），实际收到 3 个 —— 元素不足时 TypedArray.set() 不报错，Mat 剩余
-部分是未初始化的堆内存
-
-cv.norm2(src1, src2, normType): src1 是 CV_32FC1(5)，src2 是 CV_8UC1(0)
-—— 两者类型必须一致
-
-Mat.sum(): 接收者 Mat 已被 delete() —— 释放后的 Mat 不能再使用
-```
-
-这层校验解决的是两类都很难查的故障：
-
-1. **abort 抛出的不是 `Error` 实例。** 本产物在异常被编译掉的配置下构建，C++ 侧的
-   `CV_Assert` 失败会走 abort，emscripten 把它转成 `throw <裸数字>`——实测
-   `mat.roi(new cv.Rect(1, 1, 10, 10))` 抛出的是一个纯数字（`typeof e === "number"`），
-   `e instanceof Error` 是 `false`、`e.message` 是 `undefined`，调用方想「记条日志再
-   降级」都会让自己再崩一次，而那个数字对定位问题毫无帮助。（模块本身在 abort 之后
-   仍可继续使用。）
-
-   > ℹ️ 这里**不写具体数值**，因为它是个堆指针而不是错误码，会随变体和分配历史变化。
-   > 本文档此前写的是 `1914504`：那个值在 **baseline** 上确实能复现，但同一段代码在
-   > **simd** 变体上是 `1955632`——而 2.1 起支持 SIMD 的引擎默认加载的正是 simd。
-   > 同一进程内后续每次 abort 还会继续递增。**可靠的判据只有 `typeof e === "number"`，
-   > 不要依赖具体数值。**
-
-2. **越界的行列号根本不会 abort。** embind 生成的 `*Ptr(row, col)` 不做边界检查：
-   3×3 `CV_32FC1`（共 36 字节）上 `mat.floatPtr(9, 9)` 返回 base+144 字节处的
-   `Float32Array`，读写都落在别人的堆上，不报任何错。`replaceMatOnRect` /
-   `rectAdd` / `rectSubtract` / `replaceMatOnCol` / `addOnCol` / `replaceMatOnPoint` /
-   `replaceMatOnRow` 同样不查边界——它们按地址直接读写 wasm 堆——所以一个越界的
-   `Rect` 或列号就是一次静默的堆破坏。这类比第 1 类危险得多。
-
-`PTR()` 自己也查边界（它是公开 API，用户会绕开上面那些方法直接调）：
-
-```javascript
-let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-try {
-  mat2.PTR(9, 9);
-} catch (e) {
-  console.log(e.message);
-  //Mat.PTR(row, col): row = 9 越界，有效范围 0..2
-}
-mat2.delete();
-```
-
-> ⚠️ **每个下标只校验一次。** `rows` / `cols` 是 embind getter，每读一次都是一次跨
-> 语言调用——给 `PTR()` 加边界检查实测让它慢 49%（+23.7 ns/次）。所以扩展层内部
-> 那些逐像素的循环**不走 `PTR()`**：它们在入口用一次校验证明整个循环的下标范围
-> 合法，循环里按地址直接读写 wasm 堆，连原生访问器都不调。改回逐像素调 `PTR()` 或
-> 原生 `*Ptr()` 要慢上百倍（倍数以 `npm run bench` 的 inplace-ops 门禁每次打印的
-> 「退化参照」为准）。
->
-> `DATA()` 不收参数，没有可越界的入参。
-
-**标量运算数的取值范围**：`addConstant` / `constantSubtract` / `mulConstant` /
-`constantDivide` / `addOnCol` 拒绝非数与 `NaN`，但**放行 `±Infinity`** —— 它是合法的
-IEEE-754 值，在代价图 / 距离图上是标准哨兵：
-
-```javascript
-let mat3 = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
-console.log("" + mat3.addConstant(Infinity).DATA()); //Infinity,Infinity,Infinity,Infinity
-mat3.delete();
-```
-
-写进**数据**里的 `NaN` / `Infinity` 完全不受限制（`replaceMatOnRow` / `replaceMatOnCol`
-只查数组长度、不查元素值，`replaceMatOnPoint` 只查是不是 number）——往某些像素写
-`NaN` 表示「此处无效」是正当写法。
-被拒的只有作为**运算数**的 `NaN`：`x + NaN` 会把整个 Mat 一次性毁掉，而那通常是
-上游已经出错的信号。
-
-**就地写入的数值语义**：`replaceMatOnRect` / `rectAdd` / `rectSubtract` /
-`replaceMatOnCol` / `addOnCol` / `replaceMatOnRow` / `replaceMatOnPoint` 写进整型 Mat
-时与 OpenCV 的 `saturate_cast` 一致——四舍六入五成双，钳到该类型的取值范围，`NaN`
-得 0（`CV_8U` 上 250 加 20 得 255，不会回绕成 14；`CV_32S` 同样钳住，不会溢出）。
-浮点 Mat 原样写入。src 与 this 共享内存（同一个 Mat，或同一块父 Mat 上的视图）时
-按拷贝语义：先整体读出 src，再写。
-
-### Commonly
-
-**add()**
-
-void cv.add(src1, src2, dst)
-
-( dst = src1 + src2 )
-
-src1 First input mat
-
-src2 Second input mat
-
-dst Output mat that has the same size and number of channels as the input mat
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = new cv.Mat();
-cv.add(mat1, mat2, dst);
-(mat1.delete(), mat2.delete());
-//Don't forget to delete cv.Mat when you don't want to use it any more.
-console.log("dst::" + dst.data32F); //dst::2,4,6,8,10,12,14,16,18
-```
-
-**addConstant()**
-
-cv.Mat dst = src1.addConstant(constant)
-
-( dst = src1 + constant )
-
-src1 First input mat
-
-constant Constant added to each element.
-
-dst Output mat that has the same size and number of channels as the input mat
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.addConstant(10);
-mat1.delete();
-console.log("dst::" + dst.data32F); //dst::11,12,13,14,15,16,17,18,19
-```
-
-**subtract()**
-
-void cv.subtract(src1, src2, dst)
-
-( dst = src1 - src2 )
-
-src1 First input mat
-
-src2 Second input mat
-
-dst Output mat that has the same size and number of channels as the input mat
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = new cv.Mat();
-cv.subtract(mat1, mat2, dst);
-(mat1.delete(), mat2.delete());
-console.log("dst::" + dst.data32F); //dst::0,0,0,0,0,0,0,0,0
-```
-
-**constantSubtract()**
-
-cv.Mat dst = src1.constantSubtract(constant)
-
-( dst = constant - src1 )
-
-constant Constant subtract each element.
-
-src1 First input mat
-
-dst Output mat that has the same size and number of channels as the input mat
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.constantSubtract(10);
-mat1.delete();
-console.log("dst::" + dst.data32F); //dst::9,8,7,6,5,4,3,2,1
-```
-
-**~~mmul()~~ → cv.gemm()**
-
-> 🔀 **2.0 起 `mat.mmul(b)` 已删除**，改用原生 `cv.gemm(src1, src2, alpha, src3, beta, dst, flags)`。
-> `beta = 0` 时 `src3` 不参与计算，传一个空 Mat 即可。
-
-```javascript
-let mat1 = cv.matFromArray(2, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6]);
-let mat2 = cv.matFromArray(3, 2, cv.CV_32FC1, [7, 8, 9, 10, 11, 12]);
-let noop = new cv.Mat();
-let dst = new cv.Mat();
-cv.gemm(mat1, mat2, 1, noop, 0, dst, 0);
-(mat1.delete(), mat2.delete(), noop.delete());
-console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//dst::58,64,139,154:::2:::2
-```
-
-**mul()**
-
-cv.Mat dst = src1.mul(src2, scale)
-
-( dst = src1 • src2\*scale ) —— 逐元素乘，OpenCV 原生方法。
-
-src1 First input mat
-
-src2 Second input mat
-
-scale Optional scale factor.
-
-dst Output mat that has the same size and number of channels as the input mat
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.mul(mat2, 2);
-(mat1.delete(), mat2.delete());
-console.log("dst::" + dst.data32F); //dst::2,8,18,32,50,72,98,128,162
-```
-
-**mulConstant()**
-
-cv.Mat dst = src1.mulConstant(constant)
-
-( dst = src1 \* constant )
-
-src1 First input mat
-
-constant Constant multiplied with each element.
-
-dst Output mat that has the same size and number of channels as the input mat
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.mulConstant(10);
-mat1.delete();
-console.log("dst::" + dst.data32F); //dst::10,20,30,40,50,60,70,80,90
-```
-
-**divide()**
-
-void cv.divide(src1, src2, dst)
-
-( dst = src1 / src2 )
-
-src1 First input mat
-
-src2 Second input mat
-
-dst Output mat that has the same size and number of channels as the input mat
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = new cv.Mat();
-cv.divide(mat1, mat2, dst);
-(mat1.delete(), mat2.delete());
-console.log("dst::" + dst.data32F); //dst::1,1,1,1,1,1,1,1,1
-```
-
-**constantDivide()**
-
-cv.Mat dst = src1.constantDivide(constant)
-
-( dst = constant / src1 )
-
-constant Constant divided by each element.
-
-src1 First input mat
-
-dst Output mat that has the same size and number of channels as the input mat
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.constantDivide(10);
-mat1.delete();
-console.log("dst::" + dst.data32F);
-//dst::10,5,3.3333332538604736,2.5,2,1.6666666269302368,1.4285714626312256,1.25,1.1111111640930176
-```
-
-> ✅ **2.0 修复**：1.x 在多通道 Mat 上把通道 1+ 除以 0（被除数用 `new cv.Scalar(c)`
-> 填充，而 Scalar 缺省分量是 0——实测填 `CV_32FC3` 得 `16,0,0,16,0,0`）。
-
-```javascript
-let mat3 = new cv.Mat(1, 2, cv.CV_32FC3, new cv.Scalar(2, 2, 2, 2));
-console.log("dst::" + mat3.constantDivide(16).data32F); //dst::8,8,8,8,8,8
-```
-
-**reshapeRows()** （1.x 名为 `reshape()`）
-
-cv.Mat dst = src1.reshapeRows(rows)
-
-src1 First input mat
-
-rows Reshape to rows
-
-dst **A new copy** whose data equals src1's, laid out with the requested row count
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.reshapeRows(1);
-console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//dst::1,2,3,4,5,6,7,8,9:::1:::9
-mat1.reshapeRows(4);
-//RangeError: Mat.reshapeRows(rows): 3×3 的 9 个像素无法整除为 4 行
-mat1.delete();
-dst.delete();
-```
-
-> 🔀 **改名理由与其它几个不同**：这个产物的 embind 绑定里**根本没有** `Mat::reshape`
-> （实测 `typeof cv.Mat.prototype.reshape === "undefined"`），1.x 并没有覆盖任何东西。
-> 改名是为腾出这个名字，同时把语义差异摆明——OpenCV 原生的 `reshape()` 返回共享内存的
-> 新 header，这里返回的是**副本**。整除校验是 2.0 新加的（1.x 静默产出错误形状）。
-
-**sum()**
-
-Number dst = src1.sum()
-
-src1 First input mat
-
-dst 所有元素（含各通道）的标量和
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-console.log("sum::" + mat1.sum()); //sum::45
-mat1.delete();
-
-let mat2 = cv.matFromArray(
-  2,
-  2,
-  cv.CV_32FC3,
-  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
-);
-console.log("sum::" + mat2.sum()); //sum::78
-mat2.delete();
-```
-
-> ℹ️ 与 OpenCV 的 `cv.sum()` 语义不同——后者返回逐通道的 Scalar，且**不在本产物的
-> 白名单里**（实测 `typeof cv.sum === "undefined"`）。
-
-**norm()**
-
-Number dst = cv.norm(src1)
-
-src1 First input mat
-
-dst Norm of src1
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = cv.norm(mat1);
-mat1.delete();
-console.log("dst::" + dst); //dst::16.881943016134134
-```
-
-**norm2()**
-
-Number dst = cv.norm2(src1, src2, normType = cv.NORM_L2)
-
-src1 First input mat
-
-src2 Second input mat
-
-normType 与 OpenCV C++ 的 `cv::norm(src1, src2, normType)` 同义：
-`NORM_INF` / `NORM_L1` / `NORM_L2` / `NORM_L2SQR`；`NORM_HAMMING` / `NORM_HAMMING2`
-（只接受 `CV_8UC1`，数的是 `src1 XOR src2` 里不同的位）；以上都可再按位或上
-`NORM_RELATIVE`，得到 ‖src1 − src2‖ / ‖src2‖。其余值抛 `RangeError`。
-整型 Mat 的差值按真实的差计算，不按 depth 饱和（8U 上 `[0]` 与 `[10]` 的距离是 10，
-与参数顺序无关）。
-
-dst ‖src1 − src2‖
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-// prettier-ignore
-let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [9, 10, 11, 12, 13, 14, 15, 16, 17]);
-let dst2 = cv.norm2(mat1, mat2);
-(mat1.delete(), mat2.delete());
-console.log("dst2::" + dst2); //dst2::24
-```
-
-> ℹ️ **不要改用原生 `cv.norm(a, b, normType)`——这个产物里没有那个重载。**
-> embind 只按参数个数分发，而 C++ 的两组 `norm` 重载（`norm(src, normType, mask)` 与
-> `norm(src1, src2, normType, mask)`）在 2 参和 3 参上撞车，绑定生成器只保留了前一组。
-> 实测 `cv.norm(a, b, cv.NORM_L2)` 抛 `BindingError: Cannot pass "4" as a Mat`；更糟的是
-> `cv.norm(a, b)` **不报类型错**，而是把 Mat 的 wire 指针当整数 `normType` 传进 C++，
-> 到 OpenCV 内部的断言处才炸。
-
-**diagClone()** （1.x 名为 `Diag()`）
-
-cv.Mat dst = src1.diagClone(d = 0)
-
-src1 First input mat
-
-d Index of the diagonal
-
-dst **A continuous copy** of the diagonal
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.diagClone();
-mat1.delete();
-console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//dst::1,5,9:::3:::1
-```
-
-> 🔀 OpenCV 原生的 `mat.diag(d)` 仍然可用，返回的是**视图**（非连续，读它的 `.data*`
-> 会得到错误数据；但写它会写回源 Mat）。2.0 不再覆盖它。
-
-**~~vconcat()~~ / ~~hconcat()~~ → cv.vconcat() / cv.hconcat()**
-
-> 🔀 **2.0 起 `mat.vconcat(b)` / `mat.hconcat(b)` 已删除**，改用原生同名函数，
-> 参数由 Mat 变成 MatVector。
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let vec = new cv.MatVector();
-vec.push_back(mat1);
-vec.push_back(mat1);
-
-let dstV = new cv.Mat();
-cv.vconcat(vec, dstV);
-console.log("dstV::" + dstV.data32F + ":::" + dstV.rows + ":::" + dstV.cols);
-//dstV::1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9:::6:::3
-
-let dstH = new cv.Mat();
-cv.hconcat(vec, dstH);
-console.log("dstH::" + dstH.data32F + ":::" + dstH.rows + ":::" + dstH.cols);
-//dstH::1,2,3,1,2,3,4,5,6,4,5,6,7,8,9,7,8,9:::3:::6
-
-(mat1.delete(), vec.delete());
-```
-
-**row()**
-
-cv.Mat dst = src1.row(row) —— OpenCV 原生方法，返回**视图**。
-
-src1 First input mat
-
-row Index of the rows
-
-dst Output mat that has one row
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.row(2);
-console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//dst::7,8,9:::1:::3
-(mat1.delete(), dst.delete());
-```
-
-> ℹ️ 单独一行本来就是连续的（实测 `isContinuous() === true`），所以直读 `.data*` 没问题。
-> 列和矩形区域不是，见下面的 `colClone()` / `roiClone()`。
-
-**colClone()** （1.x 名为 `col()`）
-
-cv.Mat dst = src1.colClone(col)
-
-src1 First input mat
-
-col Index of the cols
-
-dst **A continuous copy** of that column
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-console.log("colClone::" + mat1.colClone(2).data32F); //colClone::3,6,9
-console.log("col::" + mat1.col(2).data32F); //col::3,4,5   ← 原生视图，非连续，直读是错的
-mat1.delete();
-```
-
-多通道上差得更远（3×3 `CV_32FC2`，值 1..18）：
-
-```javascript
-// prettier-ignore
-let mat2 = cv.matFromArray(3, 3, cv.CV_32FC2,
-  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
-console.log("colClone::" + mat2.colClone(2).data32F); //colClone::5,6,11,12,17,18
-console.log("col::" + mat2.col(2).data32F); //col::5,6,7,8,9,10   ← 错的
-mat2.delete();
-```
-
-> 🔀 **2.0 不再覆盖原生 `col()`。** 要读数据用 `colClone()`，要写回源 Mat 用原生
-> `col()`（视图）。
-
-**roiClone()** （1.x 名为 `roi()`）
-
-cv.Mat dst = src1.roiClone(rect)
-
-src1 First input mat
-
-rect a rect
-
-dst **A continuous copy** of that sub-rectangle
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let rect1 = new cv.Rect(1, 1, 2, 2);
-let dst = mat1.roiClone(rect1);
-console.log("dst::" + dst.data32F + ":::" + dst.rows + ":::" + dst.cols);
-//dst::5,6,8,9:::2:::2
-
-// 原生 roi() 仍是视图：写它会写回源 Mat
-let view = mat1.roi(rect1);
-view.setTo(new cv.Scalar(0, 0, 0, 0));
-console.log("mat1::" + mat1.data32F); //mat1::1,2,3,4,0,0,7,0,0
-
-(mat1.delete(), dst.delete(), view.delete());
-```
-
-> ℹ️ **副本是有代价的**：256×256 `CV_32FC2` 上取 `Rect(0, 0, 128, 128)`、5000 次，
-> 原生视图 1.2–1.9 ms vs `roiClone()` 20.8–23.3 ms（node v22.22.2 / darwin-arm64，
-> 3 次独立测量各取第 2–4 轮）。只需要写回源 Mat 时别用 `*Clone`。
-
-**replaceMatOnRect()**
-
-void src1.replaceMatOnRect(src2, rect)
-
-src1 First input mat will be changed as output
-
-src2 Second input mat as rect mat
-
-rect rect input to replace
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let rect1 = new cv.Rect(1, 1, 2, 2);
-let rectmat = cv.matFromArray(2, 2, cv.CV_32FC1, [11, 12, 13, 14]);
-mat1.replaceMatOnRect(rectmat, rect1);
-console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-//mat1::1,2,3,4,11,12,7,13,14:::3:::3
-```
-
-**replaceMatOnRow()**
-
-void src1.replaceMatOnRow(arr, row)
-
-src1 First input mat will be changed as output
-
-arr Second input Array as row array
-
-row row input to replace
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-mat1.replaceMatOnRow([11, 12, 13], 1);
-console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-//mat1::1,2,3,11,12,13,7,8,9:::3:::3
-```
-
-> ✅ **2.0 修复**：1.x 硬编码 `this.floatPtr(d)`，在非 `CV_32F` 的 Mat 上**静默写坏内存
-> 并越界**（embind 的 `floatPtr` 不做类型校验：`CV_8UC1` 的 2×3 Mat 只有 6 字节，
-> `floatPtr(0)` 却返回长度 3 的 `Float32Array`，即 12 字节）。实测 1.x 在该 Mat 上把
-> 数据改成 `0,0,32,65,0,0`。2.0 改走 `PTR()`，七种深度实测全部得到 `10,20,30,4,5,6`。
-
-**replaceMatOnCol()**
-
-void src1.replaceMatOnCol(arr, col)
-
-src1 First input mat will be changed as output
-
-arr Second input Array as col array
-
-col col input to replace
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-mat1.replaceMatOnCol([11, 12, 13], 1);
-console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-//mat1::1,11,3,4,12,6,7,13,9:::3:::3
-```
-
-**replaceMatOnPoint()**
-
-void src1.replaceMatOnPoint(value, row, col)
-
-void src1.replaceMatOnPoint(value, point) —— `cv.Point` 约定 x = 列、y = 行
-
-src1 First input mat will be changed as output
-
-value The value to write
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-mat1.replaceMatOnPoint(30, 1, 1);
-console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-//mat1::1,2,3,4,30,6,7,8,9:::3:::3
-
-let mat2 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-mat2.replaceMatOnPoint(30, new cv.Point(2, 0)); // x=2 列、y=0 行
-console.log("mat2::" + mat2.data32F); //mat2::1,2,30,4,5,6,7,8,9
-
-mat2.replaceMatOnPoint(1, 0);
-//TypeError: replaceMatOnPoint(value, row, col) 或 replaceMatOnPoint(value, point)：缺少 col
-```
-
-> ✅ **2.0 修复**：1.x 的形参名是 `(constant, x, y)` 而实现是 `PTR(x, y)`——`x` 其实是
-> 行号；文档里记的 `(value, point)` 重载则根本不存在（传对象抛
-> `TypeError: Cannot convert "[object Object]" to int`）。
-> **位置参数的行为与 1.x 逐字相同**（第 2 个参数一直是行、第 3 个一直是列），
-> 已经在跑的三参调用不用改。
-
-**addOnCol()**
-
-void src1.addOnCol(constant, col)
-
-src1 First input mat will be changed as output
-
-constant Constant added to each element of that column
-
-col Col location
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-mat1.addOnCol(30, 1);
-console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-//mat1::1,32,3,4,35,6,7,38,9:::3:::3
-```
-
-**rectAdd()**
-
-void src1.rectAdd(src2, rect)
-
-src1 First input mat will be changed as output
-
-src2 Second input mat as rect mat
-
-rect rect input to add location
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let rect1 = new cv.Rect(1, 1, 2, 2);
-let rectmat = cv.matFromArray(2, 2, cv.CV_32FC1, [11, 12, 13, 14]);
-mat1.rectAdd(rectmat, rect1);
-console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-//mat1::1,2,3,4,16,18,7,21,23:::3:::3
-```
-
-**rectSubtract()**
-
-void src1.rectSubtract(src2, rect)
-
-src1 First input mat will be changed as output
-
-src2 Second input mat as rect mat
-
-rect rect input to subtract location
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let rect1 = new cv.Rect(1, 1, 2, 2);
-let rectmat = cv.matFromArray(2, 2, cv.CV_32FC1, [11, 12, 13, 14]);
-mat1.rectSubtract(rectmat, rect1);
-console.log("mat1::" + mat1.data32F + ":::" + mat1.rows + ":::" + mat1.cols);
-//mat1::1,2,3,4,-6,-6,7,-5,-5:::3:::3
-```
-
-**DATA() / PTR()**
-
-TypedArray dst = src1.DATA() —— 覆盖整个 Mat，按元素类型定型
-
-TypedArray dst = src1.PTR(row) —— 第 row 行的全部元素（cols × channels 个）
-
-TypedArray dst = src1.PTR(row, col) —— 该像素的各通道（channels 个）
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_8UC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-console.log("DATA::" + mat1.DATA()); //DATA::1,2,3,4,5,6,7,8,9
-console.log("PTR(1)::" + mat1.PTR(1)); //PTR(1)::4,5,6
-console.log("PTR(1,2)::" + mat1.PTR(1, 2)); //PTR(1,2)::6
-mat1.delete();
-```
-
-按 `depth()` 分发到对应的 `data*` / `*Ptr`，省掉调用方自己挑访问器（挑错不报错、
-结果全错）。⚠️ `DATA()` 只对连续 Mat 有意义——原生 `roi()`/`col()`/`diag()` 返回的
-视图上它会按连续内存直读，得到错误数据。
-
-**~~mds()~~ → cv.meanStdDev()**
-
-> 🔀 **2.0 起 `mat.mds()` 已删除。** 1.x 版本 100% 抛
-> `TypeError: src1Array.reduce is not a function`（实现里写的是 `this.DATA` 而非
-> `this.DATA()`，取到的是函数对象），不存在「以前能用」这回事。
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let mean = new cv.Mat();
-let stddev = new cv.Mat();
-cv.meanStdDev(mat1, mean, stddev);
-console.log("mean::" + mean.data64F[0] + " stddev::" + stddev.data64F[0]);
-//mean::5 stddev::2.5819888974716108
-(mat1.delete(), mean.delete(), stddev.delete());
-```
-
-**~~svd()~~ → cv.SVDecomp()**
-
-> 🔀 **2.0 起 `mat.svd()` 已删除。** 1.x 走的是当年内联进产物的 numeric.js 库；
-> 那份库随 2.0 一起删掉，改用原生 `cv.SVDecomp(src, w, u, vt, flags)`。
-> （注意：只有函数式的 `SVDecomp`，`cv.SVD` 这个类不在白名单里。）
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let w = new cv.Mat();
-let u = new cv.Mat();
-let vt = new cv.Mat();
-cv.SVDecomp(mat1, w, u, vt, 0);
-console.log("w::" + w.data32F);
-//w::16.848102569580078,1.0683696269989014,1.1560786106201704e-8
-(mat1.delete(), w.delete(), u.delete(), vt.delete());
-```
-
-奇异值与 1.x 的 `numeric.svd` 一致；第三个是 0——`[[1,2,3],[4,5,6],[7,8,9]]` 秩为 2。
-
-**~~RodriguesFromArray()~~ / ~~RodriguesFromMat()~~ → cv.Rodrigues()**
-
-> 🔀 **2.0 起两者都已删除**，改用原生 `cv.Rodrigues(src, dst)`——双向都走同一个函数，
-> 按输入形状自动判断方向。
-
-```javascript
-let rvec = cv.matFromArray(3, 1, cv.CV_32FC1, [0.1, 0.2, 0.3]);
-let R = new cv.Mat();
-cv.Rodrigues(rvec, R); // 3×3 旋转矩阵
-
-let back = new cv.Mat();
-cv.Rodrigues(R, back);
-console.log("back::" + back.data32F);
-//back::0.10000000149011612,0.20000000298023224,0.30000004172325134
-(rvec.delete(), R.delete(), back.delete());
-```
-
-**dftSplit()**
-
-> ⚠️ **`@deprecated`——正确性没有任何证据支撑，请勿在新代码里使用。**
-> 它的 CCS 展开约定从未被独立验证过；1.x 时代唯一的消费者是那个返回 `NaN` 的手写
-> `mulSpectrums()`，所以也不存在端到端参照。需要复数谱相乘请直接用原生
-> `cv.mulSpectrums()`。保留只是因为它属于 1.x 的公开 API。
-
-{r: cv.Mat, i: cv.Mat} dst = src1.dftSplit()
-
-```javascript
-let mat1 = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-let dst = mat1.dftSplit();
-console.log("dst::" + dst.r.data32F + ":::" + dst.i.data32F);
-//dst::1,3,0,4,6,0,0,8,0:::0,3,0,7,9,0,0,9,0
-(mat1.delete(), dst.r.delete(), dst.i.delete());
-```
-
-**mulSpectrums()** （原生；取代 1.x 的 `cv.mulSpectrums` 与 `cv.mulSpectrums2Channel`）
-
-> 🔀 **签名变了**：`cv.mulSpectrums(src1, src2, dst, flags, conjB)`。
-> 1.x 的两个手写版都返回无效结果——部分元素恒为 `NaN`，另一部分每次运行都不同
-> （读到了未初始化的堆内存）。2.0 在构建白名单里放行了原生 `mulSpectrums`。
-
-```javascript
-// CCS 紧凑格式：cv.dft() 不带 DFT_COMPLEX_OUTPUT 时的单通道输出
-let mat1 = cv.matFromArray(1, 4, cv.CV_32FC1, [1, 2, 3, 4]);
-let mat2 = cv.matFromArray(1, 4, cv.CV_32FC1, [5, 6, 7, 8]);
-let dst = new cv.Mat();
-cv.mulSpectrums(mat1, mat2, dst, 0, false);
-console.log("dst::" + dst.data32F); //dst::5,-9,32,32
-
-// 双通道复数格式（取代 mulSpectrums2Channel）
-let c1 = cv.matFromArray(1, 2, cv.CV_32FC2, [1, 2, 3, 4]); // 1+2i, 3+4i
-let c2 = cv.matFromArray(1, 2, cv.CV_32FC2, [5, 6, 7, 8]); // 5+6i, 7+8i
-let dst2 = new cv.Mat();
-cv.mulSpectrums(c1, c2, dst2, 0, false);
-console.log("dst2::" + dst2.data32F + ":::channels=" + dst2.channels());
-//dst2::-7,16,-11,52:::channels=2      ← (1+2i)(5+6i) = -7+16i, (3+4i)(7+8i) = -11+52i
-
-cv.mulSpectrums(c1, c2, dst2, 0, true);
-console.log("dst2::" + dst2.data32F); //dst2::17,4,53,4      ← conjB
-```
-
-原生版返回的 `channels()` 与输入一致（1.x 手写版对 `CV_32FC2` 输入返回 `channels() === 1`）。
-
-##
-
-### Others
-
-**default constructor**
-
-```javascript
-let mat = new cv.Mat();
-let mat = new cv.Mat(size, type);
-let mat = new cv.Mat(rows, cols, type);
-let mat = new cv.Mat(rows, cols, type, new cv.Scalar());
-let mat = cv.matFromArray(rows, cols, type, array);
-
-let ctx = canvas.getContext("2d");
-let imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-let mat = cv.matFromImageData(imgData);
-
-let mat = cv.Mat.zeros(rows, cols, type);
-let mat = cv.Mat.ones(rows, cols, type);
-let mat = cv.Mat.eye(rows, cols, type);
-```
-
-**copy Mat**
-
-```javascript
-let dst = src.clone();
-src.copyTo(dst, mask);
-```
-
-**convert type**
-
-```javascript
-src.convertTo(m, rtype, (alpha = 1), (beta = 0));
-```
-
-**MatVector**
-
-```javascript
-let mat = new cv.Mat();
-let matVec = new cv.MatVector();
-matVec.push_back(mat);
-let cnt = matVec.get(0);
-mat.delete();
-matVec.delete();
-cnt.delete();
-```
-
-**data**
-
-```javascript
-[Data Properties]	[C++ Type]	[JavaScript Typed Array]	[Mat Type]
-data				uchar		Uint8Array					CV_8U
-data8S				char		Int8Array					CV_8S
-data16U				ushort		Uint16Array					CV_16U
-data16S				short		Int16Array					CV_16S
-data32S				int			Int32Array					CV_32S
-data32F				float		Float32Array				CV_32F
-data64F				double		Float64Array				CV_64F
-
-// row = 3, col = 4, channels = 4
-let R = src.data[row * src.cols * src.channels() + col * src.channels()];
-let G = src.data[row * src.cols * src.channels() + col * src.channels() + 1];
-let B = src.data[row * src.cols * src.channels() + col * src.channels() + 2];
-let A = src.data[row * src.cols * src.channels() + col * src.channels() + 3];
-```
-
-**at**
-
-```javascript
-[Mat Type]		[At Manipulation]
-CV_8U			ucharAt
-CV_8S			charAt
-CV_16U			ushortAt
-CV_16S			shortAt
-CV_32S			intAt
-CV_32F			floatAt
-CV_64F			doubleAt
-
-//row = 3, col = 4, channels = 4
-let R = src.ucharAt(row, col * src.channels());
-let G = src.ucharAt(row, col * src.channels() + 1);
-let B = src.ucharAt(row, col * src.channels() + 2);
-let A = src.ucharAt(row, col * src.channels() + 3);
-```
-
-**ptr**
-
-```javascript
-[Mat Type]		[Ptr Manipulation]		[JavaScript Typed Array]
-CV_8U			ucharPtr				Uint8Array
-CV_8S			charPtr					Int8Array
-CV_16U			ushortPtr				Uint16Array
-CV_16S			shortPtr				Int16Array
-CV_32S			intPtr					Int32Array
-CV_32F			floatPtr				Float32Array
-CV_64F			doublePtr				Float64Array
-
-//row = 3, col = 4, channels = 4
-let pixel = src.ucharPtr(row, col);
-let R = pixel[0];
-let G = pixel[1];
-let B = pixel[2];
-let A = pixel[3];
-```
-
-**Bitwise Operations**
-
-```javascript
-cv.bitwise_not();
-cv.bitwise_and();
-cv.bitwise_or();
-cv.bitwise_xor();
-```
-
-**Point**
-
-```javascript
-let point = new cv.Point(x, y);
-let point = { x: x, y: y };
-```
-
-**Scalar**
-
-```javascript
-let scalar = new cv.Scalar(R, G, B, Alpha);
-let scalar = [R, G, B, Alpha];
-```
-
-**Size**
-
-```javascript
-let size = new cv.Size(width, height);
-let size = { width: width, height: height };
-```
-
-**Circle**
-
-```javascript
-let circle = new cv.Circle(center, radius);
-let circle = { center: center, radius: radius };
-```
-
-**Rect**
-
-```javascript
-let rect = new cv.Rect(x, y, width, height);
-let rect = { x: x, y: y, width: width, height: height };
-```
-
-**RotatedRect**
-
-```javascript
-let rotatedRect = new cv.RotatedRect(center, size, angle);
-let rotatedRect = { center: center, size: size, angle: angle };
-
-let vertices = cv.RotatedRect.points(rotatedRect);
-let point1 = vertices[0];
-let point2 = vertices[1];
-let point3 = vertices[2];
-let point4 = vertices[3];
-
-let boundingRect = cv.RotatedRect.boundingRect(rotatedRect);
-```
-
-**cvtColor**
-
-```javascript
-cv.cvtColor(src, dst, cv.COLOR_RGBA2GRAY, 0);
-```
-
-**inRange**
-
-```javascript
-cv.inRange(src, low, high, dst);
-```
-
-**Scaling**
-
-```javascript
-cv.resize(
-  src,
-  dst,
-  dsize,
-  (fx = 0),
-  (fy = 0),
-  (interpolation = cv.INTER_LINEAR),
-);
-```
-
-**Translation**
-
-```javascript
-cv.warpAffine(
-  src,
-  dst,
-  M,
-  dsize,
-  (flags = cv.INTER_LINEAR),
-  (borderMode = cv.BORDER_CONSTANT),
-  (borderValue = new cv.Scalar()),
-);
-```
-
-**Rotation**
-
-```javascript
-cv.getRotationMatrix2D(center, angle, scale);
-```
-
-**Affine Transformation**
-
-```javascript
-cv.getAffineTransform(src, dst);
-```
-
-**Perspective Transformation**
-
-```javascript
-let M = cv.getPerspectiveTransform(srcTri, dstTri);
-cv.warpPerspective(
-  src,
-  dst,
-  M,
-  dsize,
-  cv.INTER_LINEAR,
-  cv.BORDER_CONSTANT,
-  new cv.Scalar(),
-);
-```
-
-**Simple Thresholding**
-
-```javascript
-cv.threshold(src, dst, 177, 200, cv.THRESH_BINARY);
-```
-
-**Adaptive Thresholding**
-
-```javascript
-//cv.adaptiveThreshold (src, dst, maxValue, adaptiveMethod, thresholdType, blockSize, C)
-cv.adaptiveThreshold(
-  src,
-  dst,
-  200,
-  cv.ADAPTIVE_THRESH_GAUSSIAN_C,
-  cv.THRESH_BINARY,
-  3,
-  2,
-);
-```
-
-**2D Convolution ( Image Filtering )**
-
-```javascript
-//cv.filter2D (src, dst, ddepth, kernel, anchor = new cv.Point(-1, -1), delta = 0, borderType = cv.BORDER_DEFAULT)
-cv.filter2D(src, dst, cv.CV_8U, M, anchor, 0, cv.BORDER_DEFAULT);
-```
-
-**Image Blurring (Image Smoothing)**
-
-```javascript
-//cv.blur (src, dst, ksize, anchor = new cv.Point(-1, -1), borderType = cv.BORDER_DEFAULT)
-cv.blur(src, dst, ksize, anchor, cv.BORDER_DEFAULT);
-
-//cv.boxFilter (src, dst, ddepth, ksize, anchor = new cv.Point(-1, -1), normalize = true, borderType = cv.BORDER_DEFAULT)
-cv.boxFilter(src, dst, -1, ksize, anchor, true, cv.BORDER_DEFAULT);
-
-//cv.GaussianBlur (src, dst, ksize, sigmaX, sigmaY = 0, borderType = cv.BORDER_DEFAULT)
-cv.GaussianBlur(src, dst, ksize, 0, 0, cv.BORDER_DEFAULT);
-
-//cv.medianBlur (src, dst, ksize)
-cv.medianBlur(src, dst, 5);
-
-//cv.bilateralFilter (src, dst, d, sigmaColor, sigmaSpace, borderType = cv.BORDER_DEFAULT)
-cv.bilateralFilter(src, dst, 9, 75, 75, cv.BORDER_DEFAULT);
-```
-
-**Erosion**
-
-```javascript
-//cv.erode (src, dst, kernel, anchor = new cv.Point(-1, -1), iterations = 1, borderType = cv.BORDER_CONSTANT, borderValue = cv.morphologyDefaultBorderValue())
-cv.erode(
-  src,
-  dst,
-  M,
-  anchor,
-  1,
-  cv.BORDER_CONSTANT,
-  cv.morphologyDefaultBorderValue(),
-);
-```
-
-**Dilation**
-
-```javascript
-//cv.dilate (src, dst, kernel, anchor = new cv.Point(-1, -1), iterations = 1, borderType = cv.BORDER_CONSTANT, borderValue = cv.morphologyDefaultBorderValue())
-cv.dilate(
-  src,
-  dst,
-  M,
-  anchor,
-  1,
-  cv.BORDER_CONSTANT,
-  cv.morphologyDefaultBorderValue(),
-);
-```
-
-**Opening**
-
-```javascript
-//cv.morphologyEx (src, dst, op, kernel, anchor = new cv.Point(-1, -1), iterations = 1, borderType = cv.BORDER_CONSTANT, borderValue = cv.morphologyDefaultBorderValue())
-cv.morphologyEx(
-  src,
-  dst,
-  cv.MORPH_OPEN,
-  M,
-  anchor,
-  1,
-  cv.BORDER_CONSTANT,
-  cv.morphologyDefaultBorderValue(),
-);
-```
-
-**Closing**
-
-```javascript
-cv.morphologyEx(src, dst, cv.MORPH_CLOSE, M);
-```
-
-**Morphological Gradient**
-
-```javascript
-cv.morphologyEx(src, dst, cv.MORPH_GRADIENT, M);
-```
-
-**Top Hat**
-
-```javascript
-cv.morphologyEx(src, dst, cv.MORPH_TOPHAT, M);
-```
-
-**Black Hat**
-
-```javascript
-cv.morphologyEx(src, dst, cv.MORPH_BLACKHAT, M);
-```
-
-**Structuring Element**
-
-```javascript
-//cv.getStructuringElement (shape, ksize, anchor = new cv.Point(-1, -1))
-M = cv.getStructuringElement(cv.MORPH_CROSS, ksize);
-cv.morphologyEx(src, dst, cv.MORPH_GRADIENT, M);
-```
-
-**Sobel and Scharr Derivatives**
-
-```javascript
-//cv.Sobel (src, dst, ddepth, dx, dy, ksize = 3, scale = 1, delta = 0, borderType = cv.BORDER_DEFAULT)
-cv.Sobel(src, dstx, cv.CV_8U, 1, 0, 3, 1, 0, cv.BORDER_DEFAULT);
-
-//cv.Scharr (src, dst, ddepth, dx, dy, scale = 1, delta = 0, borderType = cv.BORDER_DEFAULT)
-cv.Scharr(src, dstx, cv.CV_8U, 1, 0, 1, 0, cv.BORDER_DEFAULT);
-```
-
-**Laplacian Derivatives**
-
-```javascript
-//cv.Laplacian (src, dst, ddepth, ksize = 1, scale = 1, delta = 0, borderType = cv.BORDER_DEFAULT)
-cv.Laplacian(src, dst, cv.CV_8U, 1, 1, 0, cv.BORDER_DEFAULT);
-```
-
-**Image AbsSobel**
-
-```javascript
-cv.Sobel(src, dstx, cv.CV_8U, 1, 0, 3, 1, 0, cv.BORDER_DEFAULT);
-cv.Sobel(src, absDstx, cv.CV_64F, 1, 0, 3, 1, 0, cv.BORDER_DEFAULT);
-cv.convertScaleAbs(absDstx, absDstx, 1, 0);
-```
-
-**draw the contours**
-
-```javascript
-//cv.findContours (image, contours, hierarchy, mode, method, offset = new cv.Point(0, 0))
-cv.findContours(
-  src,
-  contours,
-  hierarchy,
-  cv.RETR_CCOMP,
-  cv.CHAIN_APPROX_SIMPLE,
-);
-
-//cv.drawContours (image, contours, contourIdx, color, thickness = 1, lineType = cv.LINE_8, hierarchy = new cv.Mat(), maxLevel = INT_MAX, offset = new cv.Point(0, 0))
-cv.drawContours(dst, contours, i, color, 1, cv.LINE_8, hierarchy, 100);
-```
-
-**Moments**
-
-```javascript
-//cv.moments (array, binaryImage = false)
-let Moments = cv.moments(cnt, false);
-```
-
-**Contour Area**
-
-```javascript
-//cv.contourArea (contour, oriented = false)
-let area = cv.contourArea(cnt, false);
-```
-
-**Contour Perimeter**
-
-```javascript
-//cv.arcLength (curve, closed)
-let perimeter = cv.arcLength(cnt, true);
-```
-
-**Contour Approximation**
-
-```javascript
-//cv.approxPolyDP (curve, approxCurve, epsilon, closed)
-cv.approxPolyDP(cnt, tmp, 3, true);
-```
-
-**Convex Hull**
-
-```javascript
-//cv.convexHull (points, hull, clockwise = false, returnPoints = true)
-cv.convexHull(cnt, tmp, false, true);
-```
-
-**Checking Convexity**
-
-```javascript
-cv.isContourConvex(cnt);
-```
-
-**Straight Bounding Rectangle**
-
-```javascript
-//cv.boundingRect (points)
-let rect = cv.boundingRect(cnt);
-```
-
-**Rotated Rectangle**
-
-```javascript
-//cv.minAreaRect (points)
-let rotatedRect = cv.minAreaRect(cnt);
-```
-
-**Minimum Enclosing Circle**
-
-```javascript
-//cv.minEnclosingCircle (points)
-let circle = cv.minEnclosingCircle(cnt);
-
-//cv.circle (img, center, radius, color, thickness = 1, lineType = cv.LINE_8, shift = 0)
-cv.circle(dst, circle.center, circle.radius, circleColor);
-```
-
-**Fitting an Ellipse**
-
-```javascript
-//cv.fitEllipse (points)
-let rotatedRect = cv.fitEllipse(cnt);
-
-//cv.ellipse1 (img, box, color, thickness = 1, lineType = cv.LINE_8)
-cv.ellipse1(dst, rotatedRect, ellipseColor, 1, cv.LINE_8);
-```
-
-**Fitting a Line**
-
-```javascript
-//cv.fitLine (points, line, distType, param, reps, aeps)
-cv.fitLine(cnt, line, cv.DIST_L2, 0, 0.01, 0.01);
-
-//cv.line (img, pt1, pt2, color, thickness = 1, lineType = cv.LINE_8, shift = 0)
-cv.line(dst, point1, point2, lineColor, 2, cv.LINE_AA, 0);
-```
-
-**Aspect Ratio**
-
-```javascript
-let rect = cv.boundingRect(cnt);
-let aspectRatio = rect.width / rect.height;
-```
-
-**Extent**
-
-```javascript
-let area = cv.contourArea(cnt, false);
-let rect = cv.boundingRect(cnt);
-let rectArea = rect.width * rect.height;
-let extent = area / rectArea;
-```
-
-**Solidity**
-
-```javascript
-let area = cv.contourArea(cnt, false);
-cv.convexHull(cnt, hull, false, true);
-let hullArea = cv.contourArea(hull, false);
-let solidity = area / hullArea;
-```
-
-**Equivalent Diameter**
-
-```javascript
-let area = cv.contourArea(cnt, false);
-let equiDiameter = Math.sqrt((4 * area) / Math.PI);
-```
-
-**Orientation**
-
-```javascript
-let rotatedRect = cv.fitEllipse(cnt);
-let angle = rotatedRect.angle;
-```
-
-**Mask and Pixel Points**
-
-```javascript
-//cv.transpose (src, dst)
-cv.transpose(src, dst);
-```
-
-**Maximum Value, Minimum Value and their locations**
-
-```javascript
-//cv.minMaxLoc(src, mask)
-let result = cv.minMaxLoc(src, mask);
-let minVal = result.minVal;
-let maxVal = result.maxVal;
-let minLoc = result.minLoc;
-let maxLoc = result.maxLoc;
-```
-
-**Mean Color or Mean Intensity**
-
-```javascript
-cv.mean(src, mask);
-```
-
-**Convexity Defects**
-
-```javascript
-//cv.convexityDefects (contour, convexhull, convexityDefect)
-cv.convexityDefects(cnt, hull, defect);
-```
-
-**Point Polygon Test**
-
-```javascript
-//cv.pointPolygonTest (contour, pt, measureDist)
-let dist = cv.pointPolygonTest(cnt, new cv.Point(50, 50), true);
-```
-
-**Match Shapes**
-
-```javascript
-//cv.matchShapes (contour1, contour2, method, parameter)
-let result = cv.matchShapes(
-  contours.get(contourID0),
-  contours.get(contourID1),
-  1,
-  0,
-);
-```
-
-**Find Histogram**
-
-```javascript
-//cv.calcHist (image, channels, mask, hist, histSize, ranges, accumulate = false)
-cv.calcHist(srcVec, channels, mask, hist, histSize, ranges, accumulate);
-```
-
-**Histograms Equalization**
-
-```javascript
-cv.equalizeHist(src, dst);
-```
-
-**CLAHE (Contrast Limited Adaptive Histogram Equalization)**
-
-```javascript
-//cv.CLAHE (clipLimit = 40, tileGridSize = new cv.Size(8, 8))
-let clahe = new cv.CLAHE(40, tileGridSize);
-```
-
-**Backprojection**
-
-```javascript
-//cv.calcBackProject (images, channels, hist, dst, ranges, scale)
-cv.calcBackProject(dstVec, channels, hist, backproj, ranges, 1);
-
-//cv.normalize (src, dst, alpha = 1, beta = 0, norm_type = cv.NORM_L2, dtype = -1, mask = new cv.Mat())
-cv.normalize(hist, hist, 0, 255, cv.NORM_MINMAX, -1, none);
-```
-
-**Fourier Transform**
-
-```javascript
-//cv.dft (src, dst, flags = 0, nonzeroRows = 0)
-cv.dft(complexI, complexI);
-
-//cv.getOptimalDFTSize (vecsize)
-let optimalRows = cv.getOptimalDFTSize(src.rows);
-
-//cv.copyMakeBorder (src, dst, top, bottom, left, right, borderType, value = new cv.Scalar())
-cv.copyMakeBorder(
-  src,
-  padded,
-  0,
-  optimalRows - src.rows,
-  0,
-  optimalCols - src.cols,
-  cv.BORDER_CONSTANT,
-  s0,
-);
-
-//cv.magnitude (x, y, magnitude)
-cv.magnitude(planes.get(0), planes.get(1), planes.get(0));
-
-//cv.split (m, mv)
-cv.split(complexI, planes);
-
-//cv.merge (mv, dst)
-cv.merge(planes, complexI);
-```
-
-**Template Matching**
-
-```javascript
-//cv.matchTemplate (image, templ, result, method, mask = new cv.Mat())
-cv.matchTemplate(src, templ, dst, cv.TM_CCOEFF, mask);
-```
-
-**Hough Transform**
-
-```javascript
-//cv.HoughLines (image, lines, rho, theta, threshold, srn = 0, stn = 0, min_theta = 0, max_theta = Math.PI)
-cv.HoughLines(src, lines, 1, Math.PI / 180, 30, 0, 0, 0, Math.PI);
-```
-
-**Probabilistic Hough Transform**
-
-```javascript
-//cv.HoughLinesP (image, lines, rho, theta, threshold, minLineLength = 0, maxLineGap = 0)
-cv.HoughLinesP(src, lines, 1, Math.PI / 180, 2, 0, 0);
-```
-
-**Hough Circle Transform**
-
-```javascript
-//cv.HoughCircles (image, circles, method, dp, minDist, param1 = 100, param2 = 100, minRadius = 0, maxRadius = 0)
-cv.HoughCircles(src, circles, cv.HOUGH_GRADIENT, 1, 45, 75, 40, 0, 0);
-```
-
-**Threshold**
-
-```javascript
-cv.threshold(gray, gray, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
-```
-
-**Distance Transform**
-
-```javascript
-//cv.distanceTransform (src, dst, distanceType, maskSize, labelType = cv.CV_32F)
-cv.distanceTransform(opening, distTrans, cv.DIST_L2, 5);
-```
-
-**Image Watershed**
-
-```javascript
-//cv.connectedComponents (image, labels, connectivity = 8, ltype = cv.CV_32S)
-cv.connectedComponents(coinsFg, markers);
-
-//cv.watershed (image, markers)
-cv.watershed(src, markers);
-```
-
-**Foreground Extraction**
-
-```javascript
-//cv.grabCut (image, mask, rect, bgdModel, fgdModel, iterCount, mode = cv.GC_EVAL)
-cv.grabCut(src, mask, rect, bgdModel, fgdModel, 1, cv.GC_INIT_WITH_RECT);
-```
-
-**Meanshift**
-
-```javascript
-//cv.meanShift (probImage, window, criteria)
-[, trackWindow] = cv.meanShift(dst, trackWindow, termCrit);
-```
-
-**Camshift**
-
-```javascript
-//cv.CamShift (probImage, window, criteria)
-[trackBox, trackWindow] = cv.CamShift(dst, trackWindow, termCrit);
-```
-
-**Lucas-Kanade Optical Flow**
-
-```javascript
-//cv.calcOpticalFlowPyrLK (prevImg, nextImg, prevPts, nextPts, status, err, winSize = new cv.Size(21, 21), maxLevel = 3, criteria = new cv.TermCriteria(cv.TermCriteria_COUNT+ cv.TermCriteria_EPS, 30, 0.01), flags = 0, minEigThreshold = 1e-4)
-let criteria = new cv.TermCriteria(
-  cv.TermCriteria_EPS | cv.TermCriteria_COUNT,
-  10,
-  0.03,
-);
-cv.calcOpticalFlowPyrLK(
-  oldGray,
-  frameGray,
-  p0,
-  p1,
-  st,
-  err,
-  winSize,
-  maxLevel,
-  criteria,
-);
-```
-
-**Dense Optical Flow**
-
-```javascript
-//cv.calcOpticalFlowFarneback (prev, next, flow, pyrScale, levels, winsize, iterations, polyN, polySigma, flags)
-cv.calcOpticalFlowFarneback(prvs, next, flow, 0.5, 3, 15, 3, 5, 1.2, 0);
-```
-
-**BackgroundSubtractorMOG2**
-
-```javascript
-//cv.BackgroundSubtractorMOG2 (history = 500, varThreshold = 16, detectShadows = true)
-let fgbg = new cv.BackgroundSubtractorMOG2(500, 16, true);
-
-//cv.apply (image, fgmask, learningRate = -1)
-fgbg.apply(frame, fgmask);
-```
-
-**Face Detection**
-
-Haar-cascade 检测（`cv.CascadeClassifier`）**在 3.0 起不再存在**——OpenCV 5 把它
-连同 `HOGDescriptor` / `AKAZE` / `BRISK` / `KAZE` 一起从 C++ API 里删除了。
-本产物保留的是基于 DNN 的 `cv.FaceDetectorYN`，但它需要一个 ONNX 模型文件，
-用法与 Haar 不是一一对应的替换，且本项目**没有验证过**它——详见
-[Known Issues](#known-issues)。
-
-**image && video**
-
-```javascript
-cv.imread();
-cv.imshow();
-cv.VideoCapture();
-```
-
-**other**
-
-```javascript
-cv.rectangle();
-cv.Canny();
-cv.goodFeaturesToTrack();
-cv.cartToPolar();
-cv.randu();
-new cv.ORB();
-```
-
-## To Do List
-
-- **Performance**, up speed performance.
-- **Methods** complete all the opencv functions.
+`./build/build.sh --single-file` embeds the wasm in `opencv.js`, producing one file
+(about 13 MB) that a browser `<script>` can load without hosting a separate `.wasm`.
+
+- The wasm is embedded as a UTF-8–encoded binary string (Emscripten's default since
+  4.0.18, about 17% smaller than base64), so **the script must be decoded as UTF-8**:
+  serve it as `text/javascript; charset=utf-8`, or load it from a page with
+  `<meta charset="utf-8">` or with `<script charset="utf-8">`.
+- It is the baseline build without SIMD, because a `<script>` include has no fallback
+  for engines without SIMD.
+- It contains native OpenCV only, without the extension layer.
+- It is not in the npm package. Get it from the CI artifact
+  `opencv-wasm-singlefile-<fingerprint>` of a `build-wasm.yml` run, from a GitHub Release
+  if the maintainer attached it (this is a manual step), or build it yourself.
+
+## Testing
+
+`npm test` runs `node:test` on the assembled `dist/` — the code users install — and fails
+right away if `dist/` is out of sync with `src/js/`. 251 tests in 4.0.0:
+
+- region copies across 7 depths × 4 channel counts × 3 methods, and `clone()` deep-copy
+  semantics;
+- regression tests for every fixed defect (native views, saturation, `norm2`,
+  `constantDivide`, heap growth, getter-based rects, …);
+- argument validation: the shape of every error and the absence of partial writes;
+- SIMD detection, single-build loading, `.d.ts`-versus-runtime consistency, the
+  artifact's OpenCV version;
+- MCC color checker detection on a synthetic chart;
+- baseline-versus-simd output parity on 16 operations (bit-exact for integer kernels and
+  the extension layer; for float kernels `max|a − b| ≤ 1e-5 × max(‖baseline‖∞, 1)`,
+  OpenCV's own criterion);
+- a smoke test of a freshly built artifact (exports, deep `clone()`, `Symbol.dispose`,
+  vector iteration, a 1.25 GB allocation).
+
+| Variable                     | Effect                                                                 |
+| ---------------------------- | ---------------------------------------------------------------------- |
+| `OPENCV_DIST=<dir>`          | test another assembled `dist/`                                         |
+| `OPENCV_SIMD=0` / `1`        | force a build (`npm run test:baseline` / `npm run test:simd`)          |
+| `OPENCV_PARITY_REQUIRED=1`   | fail instead of skipping the parity tests when `dist/simd/` is missing |
+| `OPENCV_ARTIFACT=<dir>`      | run the smoke test on a raw artifact directory                         |
+| `OPENCV_SMOKE_REQUIRED=1`    | fail instead of skipping the smoke test when no artifact is given      |
+| `OPENCV_SMOKE_SINGLE_FILE=1` | the artifact is the single-file variant                                |
+
+## Upgrading
+
+- **From 3.x**: see the 4.0.0 entry in [CHANGELOG.md](CHANGELOG.md) — Node.js 22+,
+  newer browsers, a different abort shape and a few runtime symbols removed from `cv`.
+- **From 1.x**: see [docs/MIGRATION-2.0.md](docs/MIGRATION-2.0.md), then the CHANGELOG.
 
 ## License
 
-OpenCVJS is released under the MIT license. See LICENSE for details.
+MIT. See [LICENSE](LICENSE). Bug reports and pull requests are welcome on
+[GitHub](https://github.com/haoking/opencvjs).

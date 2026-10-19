@@ -1,29 +1,34 @@
-# 从 1.x 迁移到 2.0
+# Migrating from 1.x to 2.0
 
-2.0 换掉了产物（2018 年的 asm.js / OpenCV 4.0.1 → 自建 WebAssembly / OpenCV 4.14.0），
-并把手写扩展层从「补丁进单文件产物」重写成随包发布的独立模块。
+2.0 replaced the artifact (the 2018 asm.js build of OpenCV 4.0.1 → a self-built
+WebAssembly build of OpenCV 4.14.0) and rewrote the hand-written extension layer from a
+patch inside that single file into separate modules shipped with the package.
 
-破坏性变更集中在三处：
+The breaking changes fall into three groups:
 
-1. **加载方式**：包入口返回 Promise，必须 `await`。
-2. **不再覆盖 OpenCV 原生方法**：`roi` / `col` / `diag` / `reshape` 归还原生，
-   本项目的修复版改名为 `roiClone` / `colClone` / `diagClone` / `reshapeRows`。
-3. **8 个手写方法删除**，改用产物里的原生等价函数（1.x 的手写版有几个本来就是坏的）。
+1. **Loading**: the package entry returns a Promise and must be awaited.
+2. **Native OpenCV methods are no longer overridden**: `roi` / `col` / `diag` /
+   `reshape` behave as upstream again, and this project's fixed versions are called
+   `roiClone` / `colClone` / `diagClone` / `reshapeRows`.
+3. **8 hand-written methods were removed** in favour of native equivalents (several of the
+   1.x versions were broken anyway).
 
-下面每一条都给出改法。本文里所有输出值都是在 2.0 的产物上实际跑出来的。
+Each change below comes with the replacement code. Later releases changed more (see
+[CHANGELOG.md](../CHANGELOG.md)); the outputs shown here are still what the current build
+prints, and the error messages are quoted in their current wording.
 
 ---
 
-## 1. 加载方式
+## 1. Loading
 
-**1.x**（同步，`require` 直接拿到 `cv`）：
+**1.x** (synchronous: `require` returned `cv`):
 
 ```javascript
 const cv = require("@haoking/opencvjs");
 const mat = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 ```
 
-**2.0**（入口是个 async 函数，返回 Promise）：
+**2.0 and later** (the entry is an async function returning a Promise):
 
 ```javascript
 const loadCV = require("@haoking/opencvjs");
@@ -36,86 +41,92 @@ const loadCV = require("@haoking/opencvjs");
 })();
 ```
 
-> ⚠️ **判断就绪只能看 `typeof cv.Mat === "function"`。**
-> `await` 之后 `cv.onRuntimeInitialized` 这个属性**依然存在**（实测 `typeof` 为
-> `function`）。拿它当「还没就绪」的判据会恒真，于是去 `await` 一个永不再触发的
-> 回调——本项目第一次 CI 冒烟测试就是这么挂掉的。
+To test readiness, check `typeof cv.Mat === "function"`. Do not use
+`cv.onRuntimeInitialized`: artifacts built with older Emscripten kept that property after
+initialization, so waiting for it never ended — this project's first CI smoke test hung
+exactly that way.
 
-浏览器：2.0 的产物是 `opencv.js`（约 143 KB 的 glue）+ `opencv_js.wasm`（约 8.5 MB），
-不再是「一个 .js 文件」。扩展层是 CommonJS 模块，浏览器里要用得走打包器。详见
-README 的 Installation 一节。
-
-> ℹ️ **2.0.0 之后 `dist/` 的布局又变了一次**（见 CHANGELOG 的 2.1.0 一节）：
-> glue 与 `.wasm` 移进了 `dist/baseline/` 与 `dist/simd/` 两个子目录，入口按运行时
-> 是否支持 WebAssembly SIMD 自动选择。`main` / `types` 的路径不变、`loadOpenCV()`
-> 的调用方式向后兼容，只有直接深引用 `@haoking/opencvjs/dist/opencv.js` 的代码会断。
+The artifact is no longer a single `.js` file: it is `opencv.js` (glue) plus
+`opencv_js.wasm`, which must stay side by side under those names. The extension layer is
+CommonJS; in a browser, use a bundler. Since 2.1 the package holds two such pairs,
+`dist/baseline/` and `dist/simd/`, and the entry picks one at runtime; only code that
+deep-imported `@haoking/opencvjs/dist/opencv.js` needs changing for that.
 
 ---
 
-## 2. 改名：不再覆盖原生方法
+## 2. Renamed: native methods are no longer overridden
 
-1.x 把修复直接盖在 OpenCV 原生的 `roi()` / `col()` / `diag()` 上，代价是原生的
-**视图语义**被静默改掉：`mat.roi(rect).setTo(...)` 不再写回源 Mat，且不报任何错。
-2.0 不动原生方法，修复版换独立名字。
+1.x put its fixes directly on OpenCV's native `roi()` / `col()` / `diag()`, which silently
+changed their **view semantics**: `mat.roi(rect).setTo(...)` no longer wrote back to the
+source Mat, and reported nothing. 2.0 leaves the native methods alone and gives the fixed
+versions their own names.
 
-| 1.x                 | 2.0                     | 说明                                 |
-| ------------------- | ----------------------- | ------------------------------------ |
-| `mat.roi(rect)`     | `mat.roiClone(rect)`    | 返回独立副本，连续，`.data*` 可直读  |
-| `mat.col(d)`        | `mat.colClone(d)`       | 同上                                 |
-| `mat.Diag(d)`       | `mat.diagClone(d)`      | 同上（注意 1.x 是大写 `D`）          |
-| `mat._roi(rect)`    | `mat.roi(rect)`         | 1.x 的转义名取消——原生方法已不被覆盖 |
-| `mat._col(d)`       | `mat.col(d)`            | 同上                                 |
-| `mat.reshape(rows)` | `mat.reshapeRows(rows)` | 见下方说明                           |
+| 1.x                 | 2.0                     | Notes                                                       |
+| ------------------- | ----------------------- | ----------------------------------------------------------- |
+| `mat.roi(rect)`     | `mat.roiClone(rect)`    | returns an independent, continuous copy; `.data*` reads it  |
+| `mat.col(d)`        | `mat.colClone(d)`       | same                                                        |
+| `mat.Diag(d)`       | `mat.diagClone(d)`      | same (note the capital `D` in 1.x)                          |
+| `mat._roi(rect)`    | `mat.roi(rect)`         | the 1.x escape name is gone: the native method is untouched |
+| `mat._col(d)`       | `mat.col(d)`            | same                                                        |
+| `mat.reshape(rows)` | `mat.reshapeRows(rows)` | see below                                                   |
 
-选哪个：**要读数据用 `*Clone`，要写回源 Mat 用原生方法。**
+Which one to use: **`*Clone` to read the data, the native method to write back into the
+source.**
 
 ```javascript
-// 读：必须用副本。原生视图非连续，.data* 会按连续内存直读，得到错的数据
+// Reading needs a copy: a native view is not continuous, and .data* reads it as
+// contiguous memory, which gives the wrong data
 const m = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
-console.log("col::" + m.col(2).data32F); //col::3,4,5        ← 错的（视图非连续）
-console.log("colClone::" + m.colClone(2).data32F); //colClone::3,6,9   ← 对的
+console.log("col::" + m.col(2).data32F); //col::3,4,5        ← wrong (the view is not continuous)
+console.log("colClone::" + m.colClone(2).data32F); //colClone::3,6,9   ← right
 
-// 写：必须用原生视图，副本写了不会回到源 Mat
+// Writing back needs the native view; writing to a copy does not reach the source
 const view = m.roi(new cv.Rect(1, 1, 2, 2));
 view.setTo(new cv.Scalar(0, 0, 0, 0));
 console.log("m::" + m.data32F); //m::1,2,3,4,0,0,7,0,0
 ```
 
-多通道上差别更大（3×3 `CV_32FC2`，值 1..18）：
+The difference is larger on multi-channel Mats (3×3 `CV_32FC2`, values 1..18):
 
 ```javascript
 // prettier-ignore
 const m2 = cv.matFromArray(3, 3, cv.CV_32FC2,
   [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
-console.log("col::" + m2.col(2).data32F); //col::5,6,7,8,9,10        ← 错的
-console.log("colClone::" + m2.colClone(2).data32F); //colClone::5,6,11,12,17,18   ← 对的
+console.log("col::" + m2.col(2).data32F); //col::5,6,7,8,9,10        ← wrong
+console.log("colClone::" + m2.colClone(2).data32F); //colClone::5,6,11,12,17,18   ← right
 ```
 
-**`reshape` 的改名理由与上面几个不同**：这个产物的 embind 绑定里**根本没有**
-`Mat::reshape`（`typeof cv.Mat.prototype.reshape === "undefined"`），1.x 并没有覆盖
-任何东西。改名是为了腾出这个名字（白名单一旦放开就会撞名），顺带把语义差异摆明：
-原生 `reshape()` 返回共享内存的新 header，`reshapeRows()` 返回的是**副本**。
-2.0 还加了整除校验：
+**`reshape` was renamed for a different reason**: this build's Embind bindings have no
+`Mat::reshape` at all (`typeof cv.Mat.prototype.reshape === "undefined"`), so 1.x did not
+override anything. The rename frees the name (widening the whitelist would collide) and
+makes the semantic difference explicit: native `reshape()` returns a header sharing
+memory, `reshapeRows()` returns a **copy**. 2.0 also checks that the row count divides the
+pixel count:
 
 ```javascript
 const m = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 const flat = m.reshapeRows(1); // 1×9
-m.reshapeRows(4); // RangeError: Mat.reshapeRows(rows): 3×3 的 9 个像素无法整除为 4 行
+try {
+  m.reshapeRows(4);
+} catch (e) {
+  console.log(e.message);
+  //Mat.reshapeRows(rows): the 9 pixels of a 3×3 Mat cannot be split evenly into 4 rows
+}
 ```
 
 ---
 
-## 3. 删除：改用原生等价函数
+## 3. Removed: use the native equivalents
 
-这些方法 2.0 起不存在（`typeof` 为 `undefined`）。产物的白名单里已放行等价的原生
-函数，行为经过实测比对。
+These methods do not exist since 2.0 (`typeof` is `undefined`). The whitelist exposes the
+native functions instead, compared against the old behaviour by measurement.
 
 ### `mat.mmul(b)` → `cv.gemm`
 
 ```javascript
 const a = cv.matFromArray(2, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6]);
 const b = cv.matFromArray(3, 2, cv.CV_32FC1, [7, 8, 9, 10, 11, 12]);
-const noop = new cv.Mat(); // gemm 的 src3；beta=0 时不参与计算
+const noop = new cv.Mat(); // gemm's src3; unused when beta = 0
 const dst = new cv.Mat();
 cv.gemm(a, b, 1, noop, 0, dst, 0);
 console.log("dst::" + dst.data32F); //dst::58,64,139,154
@@ -123,7 +134,7 @@ console.log("dst::" + dst.data32F); //dst::58,64,139,154
 
 ### `mat.vconcat(b)` / `mat.hconcat(b)` → `cv.vconcat` / `cv.hconcat`
 
-参数由 Mat 变成 MatVector：
+The argument changes from a Mat to a MatVector:
 
 ```javascript
 const m = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -132,29 +143,35 @@ vec.push_back(m);
 vec.push_back(m);
 
 const v = new cv.Mat();
-cv.vconcat(vec, v); // 6×3: 1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9
+cv.vconcat(vec, v);
+console.log("v::" + v.data32F + " " + v.rows + "x" + v.cols);
+//v::1,2,3,4,5,6,7,8,9,1,2,3,4,5,6,7,8,9 6x3
 
 const h = new cv.Mat();
-cv.hconcat(vec, h); // 3×6: 1,2,3,1,2,3,4,5,6,4,5,6,7,8,9,7,8,9
+cv.hconcat(vec, h);
+console.log("h::" + h.data32F + " " + h.rows + "x" + h.cols);
+//h::1,2,3,1,2,3,4,5,6,4,5,6,7,8,9,7,8,9 3x6
 ```
 
 ### `mat.mds()` → `cv.meanStdDev`
 
-1.x 的 `mds()` **100% 抛异常**（`TypeError: src1Array.reduce is not a function`：
-实现里写的是 `this.DATA` 而不是 `this.DATA()`，取到的是函数对象）。没有「以前能用」
-这回事，所以这条迁移不会破坏任何真在运行的代码。
+1.x's `mds()` **always threw** (`TypeError: src1Array.reduce is not a function`: the code
+used `this.DATA` instead of `this.DATA()` and got the function object). It never worked,
+so this change cannot break running code.
 
 ```javascript
 const m = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 const mean = new cv.Mat();
 const stddev = new cv.Mat();
 cv.meanStdDev(m, mean, stddev);
-console.log(mean.data64F[0], stddev.data64F[0]); // 5 2.5819888974716108
+console.log(mean.data64F[0] + " " + stddev.data64F[0]); //5 2.5819888974716108
 ```
 
 ### `mat.svd()` → `cv.SVDecomp`
 
-1.x 走的是当年内联进产物的 numeric.js 库；2.0 删掉那份库，改用原生。
+1.x used the numeric.js library inlined into the artifact; 2.0 removed the library in
+favour of native `cv.SVDecomp(src, w, u, vt, flags)`. (Only the function is bound; there
+is no `cv.SVD` class.)
 
 ```javascript
 const m = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -166,16 +183,18 @@ console.log("w::" + w.data32F);
 //w::16.848102569580078,1.0683696269989014,1.1560786106201704e-8
 ```
 
-（奇异值与 1.x 的 numeric.svd 一致；第三个是 0——`[[1,2,3],[4,5,6],[7,8,9]]` 秩为 2。）
+The singular values match 1.x's `numeric.svd`; the third is 0 because
+`[[1,2,3],[4,5,6],[7,8,9]]` has rank 2.
 
 ### `cv.RodriguesFromArray(arr)` / `mat.RodriguesFromMat()` → `cv.Rodrigues`
 
-原生 `cv.Rodrigues(src, dst)` 双向都走同一个函数，按输入形状自动判断方向：
+Native `cv.Rodrigues(src, dst)` works in both directions and picks one from the input's
+shape:
 
 ```javascript
 const rvec = cv.matFromArray(3, 1, cv.CV_32FC1, [0.1, 0.2, 0.3]);
 const R = new cv.Mat();
-cv.Rodrigues(rvec, R); // 3×3 旋转矩阵
+cv.Rodrigues(rvec, R); // 3×3 rotation matrix
 
 const back = new cv.Mat();
 cv.Rodrigues(R, back);
@@ -183,23 +202,24 @@ console.log("back::" + back.data32F);
 //back::0.10000000149011612,0.20000000298023224,0.30000004172325134
 ```
 
-### `cv.mulSpectrums(a, b, conjB)` / `cv.mulSpectrums2Channel(...)` → 原生 `cv.mulSpectrums`
+### `cv.mulSpectrums(a, b, conjB)` / `cv.mulSpectrums2Channel(...)` → native `cv.mulSpectrums`
 
-1.x 的两个手写版**都返回无效结果**：部分元素恒为 `NaN`，另一部分每次运行都不同
-（读到了未初始化的堆内存）。2.0 把 `mulSpectrums` 加进了构建白名单，直接用原生的。
+Both 1.x versions **returned invalid results**: some elements were always `NaN`, others
+changed from run to run (uninitialized heap memory). 2.0 whitelists the native
+`mulSpectrums`.
 
-签名变为 `cv.mulSpectrums(a, b, dst, flags, conjB)`——多一个输出参数 `dst` 和一个
-`flags`：
+The signature becomes `cv.mulSpectrums(a, b, dst, flags, conjB)`, with an output `dst` and
+a `flags` argument:
 
 ```javascript
-// CCS 紧凑格式（cv.dft 不带 DFT_COMPLEX_OUTPUT 时的单通道输出）
+// Compact CCS format (the single-channel output of cv.dft without DFT_COMPLEX_OUTPUT)
 const a = cv.matFromArray(1, 4, cv.CV_32FC1, [1, 2, 3, 4]);
 const b = cv.matFromArray(1, 4, cv.CV_32FC1, [5, 6, 7, 8]);
 const dst = new cv.Mat();
 cv.mulSpectrums(a, b, dst, 0, false);
 console.log("dst::" + dst.data32F); //dst::5,-9,32,32
 
-// 双通道复数格式（取代 mulSpectrums2Channel）
+// Two-channel complex format (replaces mulSpectrums2Channel)
 const c1 = cv.matFromArray(1, 2, cv.CV_32FC2, [1, 2, 3, 4]); // 1+2i, 3+4i
 const c2 = cv.matFromArray(1, 2, cv.CV_32FC2, [5, 6, 7, 8]); // 5+6i, 7+8i
 const d2 = new cv.Mat();
@@ -209,20 +229,21 @@ cv.mulSpectrums(c1, c2, d2, 0, true);
 console.log("d2::" + d2.data32F); //d2::17,4,53,4      ← conjB
 ```
 
-原生版返回的 `channels()` 与输入一致（1.x 的手写版对 `CV_32FC2` 输入返回
-`channels() === 1`）。
+The native version returns as many channels as its input (1.x returned
+`channels() === 1` for `CV_32FC2` input).
 
 ---
 
-## 4. 签名修正（名字没变，调用方可能要改）
+## 4. Corrected signatures (same name, callers may need changes)
 
 ### `mat.replaceMatOnPoint`
 
-1.x 的形参名写作 `(constant, x, y)`，而实现是 `PTR(x, y)`——`x` 其实是**行号**、
-`y` 是**列号**，与参数名给人的印象相反；README 里记的 `(value, point)` 重载则根本
-不存在（传对象抛 `TypeError: Cannot convert "[object Object]" to int`）。
+1.x declared the parameters as `(constant, x, y)` but called `PTR(x, y)`, so `x` was
+actually the **row** and `y` the **column**, the opposite of what the names suggested.
+The `(value, point)` overload the old README described did not exist (passing an object
+threw `TypeError: Cannot convert "[object Object]" to int`).
 
-2.0 把两者对齐：
+2.0 makes both work:
 
 ```javascript
 const mat = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -230,32 +251,36 @@ const mat = cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 mat.replaceMatOnPoint(30, 1, 1); // (value, row, col)
 console.log("mat::" + mat.data32F); //mat::1,2,3,4,30,6,7,8,9
 
-mat.replaceMatOnPoint(99, new cv.Point(2, 0)); // (value, point)，cv.Point 约定 x=列、y=行
+mat.replaceMatOnPoint(99, new cv.Point(2, 0)); // (value, point): cv.Point has x = column, y = row
 console.log("mat::" + mat.data32F); //mat::1,2,99,4,30,6,7,8,9
 
-mat.replaceMatOnPoint(1, 0);
-//TypeError: replaceMatOnPoint(value, row, col) 或 replaceMatOnPoint(value, point)：缺少 col
+try {
+  mat.replaceMatOnPoint(1, 0);
+} catch (e) {
+  console.log(e.message);
+  //replaceMatOnPoint(value, row, col) or replaceMatOnPoint(value, point): col is missing
+}
 ```
 
-**位置参数的行为没变**：1.x 的实现是 `this.PTR(x, y)[0] = constant`（见旧产物
-`opencv.js:250-252`），第 2 个参数一直是行、第 3 个一直是列，与 2.0 的
-`PTR(row, col)` 逐字相同。变的只有形参名（不再误导）和新增的 `(value, point)` 重载。
-所以**已经在跑的三参调用不用改**；要改的是当初照着文档写 `(value, point)` 而一直
-在吃 `TypeError` 的那些调用点——它们现在能跑了。
+**Positional behaviour did not change**: 1.x did `this.PTR(x, y)[0] = constant`, so the
+second argument was always the row and the third the column, exactly as 2.0's
+`PTR(row, col)`. Only the misleading parameter names changed, and the `(value, point)`
+overload was added. **Existing three-argument calls keep working**; what changes is that
+calls written against the documented `(value, point)` form, which used to throw, now work.
 
 ### `mat.replaceMatOnRow`
 
-1.x 硬编码 `this.floatPtr(d)`。README 旧版把这条记成「仅支持 CV_32F 类型」，实测
-**并不是抛异常，而是静默写坏内存**：embind 的 `floatPtr` 不做类型校验，`CV_8UC1` 的
-2×3 Mat（6 字节）上 `floatPtr(0)` 返回长度 3 的 `Float32Array`（12 字节），写入即
-越界 6 字节且不报任何错。
+1.x hard-coded `this.floatPtr(d)`. The old README described this as "CV_32F only", but it
+did **not** throw — it **silently corrupted memory**: Embind's `floatPtr` does no type
+check, so on a 2×3 `CV_8UC1` Mat (6 bytes) `floatPtr(0)` returned a `Float32Array` of
+length 3 (12 bytes), and writing it overran by 6 bytes without any error.
 
-2.0 改走类型分发的 `PTR()`，七种深度全部正确：
+2.0 dispatches on the Mat's depth, and all seven depths are correct:
 
 ```javascript
-// 2×3、值 1..6，把第 0 行换成 [10, 20, 30]
-// 1.x: CV_8UC1 → 0,0,32,65,0,0 且越界写 6 字节；CV_32SC1 → 1092616192,1101004800,...
-// 2.0: 七种深度一律 10,20,30,4,5,6
+// 2×3 with values 1..6; replace row 0 with [10, 20, 30]
+// 1.x: CV_8UC1 → 0,0,32,65,0,0 plus a 6-byte overrun; CV_32SC1 → 1092616192,1101004800,...
+// 2.0: 10,20,30,4,5,6 on every depth
 const mat = cv.matFromArray(2, 3, cv.CV_8UC1, [1, 2, 3, 4, 5, 6]);
 mat.replaceMatOnRow([10, 20, 30], 0);
 console.log("mat::" + mat.DATA()); //mat::10,20,30,4,5,6
@@ -263,9 +288,10 @@ console.log("mat::" + mat.DATA()); //mat::10,20,30,4,5,6
 
 ### `mat.constantDivide`
 
-名字与签名都没变，**行为修正**：1.x 填被除数用 `new cv.Scalar(constant)`，而 Scalar
-的缺省分量是 0，多通道时通道 1+ 被 0 除（实测填 `CV_32FC3` 得 `16,0,0,16,0,0`）。
-2.0 起 1–4 通道全部正确：
+Same name and signature, **corrected behaviour**: 1.x filled the dividend with
+`new cv.Scalar(constant)`, whose other components default to 0, so on multi-channel Mats
+channels 1+ were divided by zero (filling a `CV_32FC3` gave `16,0,0,16,0,0`). Since 2.0
+every channel count from 1 to 4 is correct:
 
 ```javascript
 const m = new cv.Mat(1, 2, cv.CV_32FC3, new cv.Scalar(2, 2, 2, 2));
@@ -274,35 +300,36 @@ console.log("dst::" + m.constantDivide(16).data32F); //dst::8,8,8,8,8,8
 
 ---
 
-## 5. 没变的
+## 5. Unchanged
 
-- `DATA()` / `PTR()`：实现从 28 路 switch 改成按 `depth()` 查表，行为等价，且对
-  OpenCV 允许的 >4 通道 Mat 也成立（旧实现在那里返回 `undefined`）。
-  `PTR` 的形参名由 `(x, y)` 更正为 `(row, col)`——语义一直是行、列。
+- `DATA()` / `PTR()`: reimplemented as a lookup by `depth()` instead of a 28-way switch;
+  equivalent, and also correct for the >4-channel Mats OpenCV allows (the old code
+  returned `undefined` there). `PTR`'s parameters are now named `(row, col)` instead of
+  `(x, y)`; the meaning was always row, column.
 - `addConstant` / `constantSubtract` / `mulConstant` / `sum`
 - `replaceMatOnRect` / `replaceMatOnCol` / `addOnCol` / `rectAdd` / `rectSubtract`
-- `cv.norm2(a, b)`：**保留，不要改用原生 `cv.norm(a, b, normType)`**。embind 只按
-  参数个数分发，而 C++ 的两组 `norm` 重载（`norm(src, normType, mask)` 与
-  `norm(src1, src2, normType, mask)`）在 2 参和 3 参上撞车，绑定生成器只保留了前一组。
-  实测 `cv.norm(a, b, cv.NORM_L2)` 抛 `Cannot pass "4" as a Mat`；更糟的是
-  `cv.norm(a, b)` **不报类型错**，而是把 Mat 的 wire 指针当整数 `normType` 传进 C++，
-  在 OpenCV 内部的断言处才炸。
-- `mat.dftSplit()`：保留但已标 `@deprecated`。它的 CCS 展开约定从未被独立验证过，
-  且 1.x 时代唯一的消费者（那个返回 NaN 的 `mulSpectrums`）本身就是坏的——不存在
-  「它以前工作正常」这回事。需要复数谱相乘请直接用原生 `cv.mulSpectrums`，它在 CCS
-  格式上直接做乘法，根本不需要先拆分。
+- `cv.norm2(a, b)`: **keep it; do not switch to native `cv.norm(a, b, normType)`**, which
+  this build does not have. Embind dispatches on argument count only, and the two C++
+  `norm` overload sets (`norm(src, normType, mask)` and `norm(src1, src2, normType, mask)`)
+  collide at 2 and 3 arguments, so the generator kept only the first. `cv.norm(a, b)`
+  passes the second Mat as an integer `normType` and fails at an assertion inside OpenCV.
+- `mat.dftSplit()`: kept but deprecated. Its CCS unpacking convention was never verified
+  independently, and its only 1.x consumer (the `mulSpectrums` that returned `NaN`) was
+  broken. For complex spectrum multiplication use native `cv.mulSpectrums`, which works on
+  CCS data directly.
 
 ---
 
-## 6. 一并注意
+## 6. Also note
 
-- **`cv.sum` 不存在**（不在白名单里）。`mat.sum()` 是本项目的扩展方法，返回**所有
-  元素（含各通道）的标量和**，与 OpenCV 的 `cv.sum()`（返回逐通道 Scalar）语义不同。
-- **dnn 的 JS 绑定已裁掉**：`cv.readNetFromTensorflow` 等为 `undefined`。
-  （dnn 的 C++ 代码仍在产物里——白名单只控制 embind 绑定生成。）
-- **`cv.Scalar.all(v)` 不可用**：产物的 glue 里写的是
-  `cv.Scalar.all = function (v) { return Scalar(v, v, v, v); }`——漏了 `new`，
-  调用即抛 `TypeError: this.push is not a function`。这是 glue 自带 JS 辅助函数的
-  缺陷（`Scalar` 不是 embind 绑定），任何 opencv.js 产物上都一样。用
-  `new cv.Scalar(v, v, v, v)`。
-- **`cv.SVD` 这个类不存在**，只有函数式的 `cv.SVDecomp`。
+- **`cv.sum` does not exist** (it is not whitelisted). `mat.sum()` is this project's
+  method and returns **the scalar sum of all elements over all channels**, unlike OpenCV's
+  `cv.sum()` (a per-channel Scalar).
+- **The dnn bindings are removed**: `cv.readNetFromTensorflow` and friends are
+  `undefined`. (The dnn C++ code is still in the artifact; the whitelist only controls
+  which Embind bindings are generated.)
+- **`cv.Scalar.all(v)` does not work**: the glue defines it as
+  `cv.Scalar.all = function (v) { return Scalar(v, v, v, v); }` without `new`, so it throws
+  `TypeError: this.push is not a function`. That is a bug in the glue's JS helpers
+  (`Scalar` is not an Embind binding) and affects every opencv.js build. Use
+  `new cv.Scalar(v, v, v, v)`.

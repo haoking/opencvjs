@@ -1,6 +1,6 @@
 {
   "name": "@haoking/opencvjs",
-  "version": "3.1.0",
+  "version": "4.0.0",
   "description": "OpenCV 5.0.0 WebAssembly build with an extended Mat operation layer",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -11,7 +11,7 @@
     "test:baseline": "OPENCV_SIMD=0 npm test",
     "bench": "ls test/bench/*.bench.js >/dev/null && for f in test/bench/*.bench.js; do node \"$f\" || exit 1; done",
     "simd:compare": "node test/simd-compare.js",
-    "prepack": "test -f dist/index.js && test -f dist/index.d.ts && test -f dist/baseline/opencv_js.wasm && test -f dist/simd/opencv_js.wasm || { echo '❌ dist/ 未组装或缺变体：npm 包必须同时含 dist/baseline/ 与 dist/simd/（SIMD 覆盖率只有 93.57%，baseline 是必需的回退）。先跑 npm run assemble <baseline 目录> <simd 目录>'; exit 1; } && for f in src/js/*.js; do cmp -s \"$f\" \"dist/${f##*/}\" || { echo \"❌ dist/ 与 src/js/ 不同步（$f）：先 npm run assemble，否则发出去的是旧的扩展层\"; exit 1; }; done"
+    "prepack": "test -f dist/index.js && test -f dist/index.d.ts && test -f dist/baseline/opencv_js.wasm && test -f dist/simd/opencv_js.wasm || { echo '❌ dist/ is not assembled or lacks a variant: the npm package must contain both dist/baseline/ (the fallback for engines without WebAssembly SIMD) and dist/simd/. Run npm run assemble <baseline dir> <simd dir> first.'; exit 1; } && for f in src/js/*.js; do cmp -s \"$f\" \"dist/${f##*/}\" || { echo \"❌ dist/ is out of sync with src/js/ ($f): run npm run assemble first, or the package ships the old extension layer\"; exit 1; }; done"
   },
   "files": [
     "dist/",
@@ -34,6 +34,6 @@
     "url": "git+https://github.com/haoking/opencvjs.git"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   }
 }
