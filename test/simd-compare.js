@@ -1,51 +1,55 @@
 "use strict";
 
-// baseline vs simd 的**实测**性能对比。用法: npm run simd:compare
+// **Measured** baseline vs simd performance. Usage: npm run simd:compare
 //
-// ⚠️ 这不是门禁，永远不会因为某个操作变慢而退出非零。理由：SIMD 不是无脑赢。
-// 上游 2020 年那组逐 kernel 数据里就有明确的反例——blur CV_32FC1 只有 0.519x，
-// 也就是 SIMD 版本比标量慢了近一倍。把「SIMD 必须更快」写成门禁，等于逼着以后
-// 的人要么删门禁、要么只挑有利的算子来测。本脚本只负责把真实数字打出来，包括
-// 难看的那些。
+// This is not a gate and never exits non-zero because an operation got slower: SIMD does
+// not win everywhere. Upstream's 2020 per-kernel data has a clear counterexample — blur
+// CV_32FC1 at 0.519x, nearly twice as slow as scalar. A "SIMD must be faster" gate would
+// force future maintainers to delete the gate or measure only the favourable operations.
+// This script only prints the real numbers, ugly ones included.
 //
-// 这也不是 test/bench/*.bench.js：那两个是回归门禁（有阈值、会 exit 1），
-// 而且 npm run bench 会把这个目录下的每个文件都当门禁跑。本文件放在 test/ 顶层，
-// 既不被 `npm test`（glob 是 test/*/*.test.js）也不被 `npm run bench` 捡到。
+// Nor is it a test/bench/*.bench.js: those are regression gates (thresholds, exit 1), and
+// npm run bench runs every file in that directory as a gate. This file sits at the top of
+// test/, so neither `npm test` (glob test/*/*.test.js) nor `npm run bench` picks it up.
 //
-// 需要 dist/ 下同时有 baseline 与 simd 两个变体；缺 simd 时直接说明并退出 0。
+// Needs both variants in dist/; without simd it says so and exits 0.
 //
-// ── 为什么每个变体一个子进程 ──────────────────────────────────────────────
-// 两个变体不能在同一个进程里同时加载 —— OpenCV 的 UMD 外壳把 Module 泄漏成了
-// 隐式全局变量，第二个变体会撞上第一个的 embind 注册表（机理与实测结论写在
-// test/variant-cases.js 顶部）。
+// Why one child process per variant
+// ---------------------------------
+// The two variants cannot be loaded in one process: OpenCV's UMD wrapper leaks Module as
+// an implicit global, and the second variant collides with the first one's Embind
+// registry (mechanism and measurements at the top of test/variant-cases.js).
 //
-// 这对**测速**其实是好事，不只是绕开限制：test/bench/region-ops.bench.js 那段
-// 关于预热的说明里记着一条实测结论——「各自放进独立进程测，两者几乎完全相等」，
-// 也就是独立进程本身就是无偏的对照方式。所以这里的做法是：每个变体在自己的
-// 进程里跑 ROUNDS 轮、丢弃第 1 轮（JIT 分层编译与 embind 调用桥的一次性预热）、
-// 取最小值；父进程再把两个变体的启动顺序前后各跑一遍（[base, simd] 与
-// [simd, base]），取各自两趟的最小值——这样连「谁先启动」带来的机器状态差异
-// （页缓存、CPU 频率爬坡）也被抵掉。
+// For **timing** that is a good thing, not just a workaround: the warm-up note in
+// test/bench/region-ops.bench.js records that "in separate processes the two were almost
+// identical", i.e. separate processes are an unbiased comparison. So each variant runs
+// ROUNDS rounds in its own process, discards round 1 (the one-time JIT tiering and Embind
+// call bridge warm-up) and takes the minimum; the parent runs the two in both start orders
+// ([base, simd] and [simd, base]) and takes each variant's minimum over both passes, which
+// also cancels machine-state differences from who starts first (page cache, CPU frequency
+// ramp-up).
 const fs = require("fs");
 const os = require("os");
 const { execFileSync } = require("child_process");
 const path = require("path");
 
 const DIST = process.env.OPENCV_DIST || path.join(__dirname, "..", "dist");
-const ROUNDS = 4; // 第 1 轮预热，丢弃
+const ROUNDS = 4; // round 1 is warm-up and discarded
 
-// 确定性输入。两个变体必须拿到同样的数据，否则比的是不同的工作量。
-// 与双产物一致性用例共用同一份生成器（variant-cases.js 的子进程执行器有
-// require.main 守卫，require 它只取导出、不会执行）。
+// Deterministic input. Both variants must get the same data, or they do different work.
+// The generators are shared with the variant parity cases (variant-cases.js's
+// child-process runner has a require.main guard, so requiring it only takes the exports).
 const { bytes, floats } = require("./variant-cases");
 
 // ---------------------------------------------------------------------------
-// 用例。setup(cv) 建一次输入，op(cv, ctx) 跑一次操作，teardown 收尸。
+// Cases. setup(cv) builds the input once, op(cv, ctx) runs the operation once, and the
+// context is released afterwards.
 //
-// 选点：① 上游 2020 年逐 kernel 数据里差异最大的四项（resize 8UC4 1.77x /
-// pyrDown 32FC4 3.09x / gaussianBlur 3.36x / blur 32FC1 0.519x —— 最后一项是
-// 反例，必须留着）；② 本项目扩展层实际会落到的原生原语（roi+clone、
-// 逐像素写入）；③ 几个常用的逐元素与颜色转换算子。
+// Chosen as: (1) the four biggest differences in upstream's 2020 per-kernel data (resize
+// 8UC4 1.77x / pyrDown 32FC4 3.09x / GaussianBlur 3.36x / blur 32FC1 0.519x — the last is
+// the counterexample and must stay); (2) what this project's extension layer actually
+// runs (roi + clone, per-pixel writes); (3) a few common element-wise and color
+// conversion operations.
 // ---------------------------------------------------------------------------
 const CASES = [
   {
@@ -78,7 +82,7 @@ const CASES = [
     op: (cv, c) => cv.cvtColor(c.a, c.d, cv.COLOR_RGBA2GRAY),
   },
   {
-    name: "resize 8UC4 256x256 -> 128x128（上游 1.77x）",
+    name: "resize 8UC4 256x256 -> 128x128 (1.77x upstream)",
     iters: 200,
     setup: (cv) => ({
       a: cv.matFromArray(256, 256, cv.CV_8UC4, bytes(262144, 6)),
@@ -88,7 +92,7 @@ const CASES = [
     op: (cv, c) => cv.resize(c.a, c.d, c.size, 0, 0, cv.INTER_LINEAR),
   },
   {
-    name: "GaussianBlur 8UC1 256x256 k=5（上游 3.36x）",
+    name: "GaussianBlur 8UC1 256x256 k=5 (3.36x upstream)",
     iters: 150,
     setup: (cv) => ({
       a: cv.matFromArray(256, 256, cv.CV_8UC1, bytes(65536, 7)),
@@ -98,7 +102,7 @@ const CASES = [
     op: (cv, c) => cv.GaussianBlur(c.a, c.d, c.k, 1.4, 1.4, cv.BORDER_DEFAULT),
   },
   {
-    name: "blur 32FC1 256x256 k=5（上游 0.519x —— 反例）",
+    name: "blur 32FC1 256x256 k=5 (0.519x upstream)",
     iters: 150,
     setup: (cv) => ({
       a: cv.matFromArray(256, 256, cv.CV_32FC1, floats(65536, 8)),
@@ -109,7 +113,7 @@ const CASES = [
     op: (cv, c) => cv.blur(c.a, c.d, c.k, c.anchor, cv.BORDER_DEFAULT),
   },
   {
-    name: "pyrDown 32FC4 256x256（上游 3.09x）",
+    name: "pyrDown 32FC4 256x256 (3.09x upstream)",
     iters: 100,
     setup: (cv) => ({
       a: cv.matFromArray(256, 256, cv.CV_32FC4, floats(262144, 9)),
@@ -154,7 +158,7 @@ const CASES = [
     op: (cv, c) => cv.warpAffine(c.a, c.d, c.m, c.size),
   },
   {
-    name: "扩展层 roiClone 64x64 取 32x32",
+    name: "roiClone 32x32 of 64x64",
     iters: 20000,
     setup: (cv) => ({
       a: cv.matFromArray(64, 64, cv.CV_32FC1, floats(4096, 13)),
@@ -166,15 +170,16 @@ const CASES = [
     },
   },
   {
-    name: "扩展层 replaceMatOnRect 64x64 写 32x32",
-    // 按地址直接写堆之后单次只要约 2 µs，次数取大，一轮才有几十毫秒可测。
+    name: "replaceMatOnRect 32x32 into 64x64",
+    // With direct heap addressing one call takes about 2 µs; a large count gives each
+    // round tens of milliseconds to measure.
     iters: 50000,
     setup: (cv) => ({
       a: cv.matFromArray(64, 64, cv.CV_32FC1, floats(4096, 14)),
       p: cv.matFromArray(32, 32, cv.CV_32FC1, floats(1024, 15)),
       r: new cv.Rect(1, 1, 32, 32),
     }),
-    // 签名是 replaceMatOnRect(src, rect)：源在前、矩形在后。
+    // The signature is replaceMatOnRect(src, rect): source first, rect second.
     op: (cv, c) => c.a.replaceMatOnRect(c.p, c.r),
   },
 ];
@@ -191,7 +196,7 @@ function release(ctx) {
   }
 }
 
-// --- 子进程：只测一个变体，把每个用例的最小耗时写成 JSON --------------------
+// --- Child: measures one variant and writes each case's minimum time as JSON ---
 async function child(variant, outFile) {
   const cv = await require(path.join(DIST, "index.js"))({
     simd: variant === "simd",
@@ -202,20 +207,24 @@ async function child(variant, outFile) {
     const rounds = [];
     for (let r = 0; r < ROUNDS; r += 1) rounds.push(measure(cv, c, ctx));
     release(ctx);
-    // 丢弃第 1 轮（预热），取其余最小值。ROUNDS 是常量 4，slice(1) 不会为空；
-    // 若将来有人把它改成 1，Math.min() 会返回 Infinity —— 这里直接拦住。
+    // Discard round 1 (warm-up) and take the minimum of the rest. ROUNDS is the constant 4,
+    // so slice(1) is never empty; if it is ever set to 1, Math.min() would return Infinity,
+    // which is stopped here.
     const kept = rounds.slice(1);
     if (kept.length === 0) {
-      throw new Error(`ROUNDS 必须 >= 2（当前 ${ROUNDS}）：第 1 轮是预热轮`);
+      throw new Error(
+        `ROUNDS must be >= 2 (it is ${ROUNDS}): round 1 is warm-up`,
+      );
     }
     result[c.name] = Math.min(...kept);
   }
   fs.writeFileSync(outFile, JSON.stringify(result));
 }
 
-// --- 父进程：交替启动顺序各跑一趟，取每个变体两趟的最小值 --------------------
-// 子进程时限。execFileSync 是同步的，挂起的子进程会把父进程一起拖住；时限设在
-// 调用上，由它直接杀掉子进程。一个变体正常跑完约十秒，10 分钟只防挂死。
+// --- Parent: one pass in each start order, each variant's minimum of both passes ---
+// Child time limit. execFileSync is synchronous, so a hung child would hang the parent;
+// the limit sits on the call, which kills the child itself. A variant normally finishes
+// in about ten seconds; 10 minutes only guards against hangs.
 const CHILD_TIMEOUT_MS = 10 * 60 * 1000;
 
 function runChild(variant, tmp, tag) {
@@ -232,16 +241,18 @@ function runChild(variant, tmp, tag) {
 function parent() {
   const simdGlue = path.join(DIST, "simd", "opencv.js");
   if (!fs.existsSync(simdGlue)) {
-    console.log(`⚠️  ${simdGlue} 不存在 —— 没有 SIMD 变体可比。`);
     console.log(
-      "    先 build/build.sh --simd（需要 Docker），再 npm run assemble <baseline> <simd>。",
+      `⚠️  ${simdGlue} does not exist; there is no SIMD variant to compare.`,
+    );
+    console.log(
+      "    Run build/build.sh --simd (needs Docker), then npm run assemble <baseline> <simd>.",
     );
     return;
   }
 
   console.log(`node ${process.version} / ${process.platform}-${process.arch}`);
   console.log(
-    `每个变体一个子进程，ROUNDS=${ROUNDS}（丢首轮取最小），启动顺序前后各一趟\n`,
+    `one child process per variant, ROUNDS=${ROUNDS} (first round discarded, minimum taken), one pass in each start order\n`,
   );
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "opencvjs-simdcmp-"));
@@ -256,10 +267,10 @@ function parent() {
   }
 
   console.log(
-    "操作".padEnd(46) +
+    "operation".padEnd(46) +
       "baseline".padStart(11) +
       "simd".padStart(11) +
-      "加速比".padStart(10),
+      "speedup".padStart(10),
   );
   console.log("-".repeat(78));
 
@@ -267,7 +278,7 @@ function parent() {
   for (const c of CASES) {
     const b = Math.min(a1[c.name], a2[c.name]);
     const s = Math.min(s1[c.name], s2[c.name]);
-    const ratio = b / s; // > 1 表示 SIMD 更快
+    const ratio = b / s; // > 1 means SIMD is faster
     rows.push({ name: c.name, b, s, ratio });
     console.log(
       c.name.padEnd(46) +
@@ -280,34 +291,36 @@ function parent() {
   const slower = rows.filter((r) => r.ratio < 1);
   console.log("-".repeat(78));
   console.log(
-    `共 ${rows.length} 项，SIMD 更快 ${rows.length - slower.length} 项，更慢 ${slower.length} 项。`,
+    `${rows.length} operations: SIMD faster on ${rows.length - slower.length}, slower on ${slower.length}.`,
   );
   if (slower.length) {
-    console.log("更慢的项（这不是 bug，是必须记录的事实）:");
+    console.log(
+      "Slower with SIMD (not a bug; a fact that has to be recorded):",
+    );
     for (const r of slower) {
       console.log(`  ${r.name}  ${r.ratio.toFixed(2)}x`);
     }
   }
-  // 刻意不 exit(1)：见文件头。
+  // Deliberately no exit(1): see the top of the file.
 }
 
 async function main() {
   const variant = process.argv[2];
   if (variant === "baseline" || variant === "simd") {
     const outFile = process.argv[3];
-    if (!outFile) throw new Error("子进程模式缺少输出 JSON 路径");
+    if (!outFile) throw new Error("child mode needs an output JSON path");
     await child(variant, outFile);
     return;
   }
   if (variant !== undefined) {
     throw new Error(
-      `未知参数 ${variant}（本脚本无需参数；子进程模式由自己调用）`,
+      `unknown argument ${variant} (this script takes no arguments; child mode is invoked by the script itself)`,
     );
   }
   parent();
 }
 
 main().catch((e) => {
-  console.error(`❌ 对比未能执行: ${(e && e.message) || e}`);
+  console.error(`❌ the comparison could not run: ${(e && e.message) || e}`);
   process.exit(1);
 });

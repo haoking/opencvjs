@@ -1,32 +1,36 @@
 "use strict";
 
 /**
- * 区域操作与就地写入。
+ * Region operations and in-place writes.
  *
- * 分两组：
- *  1. roiClone / colClone / diagClone —— 取子区域的**独立副本**
- *  2. replaceMatOn* / rectAdd / rectSubtract / addOnCol —— 就地改写调用者自身
+ * Two groups:
+ *  1. roiClone / colClone / diagClone — an **independent copy** of a sub-region
+ *  2. replaceMatOn* / rectAdd / rectSubtract / addOnCol — rewrite the receiver in place
  *
- * 第 2 组全部是逐像素写入，而且按地址直接读写 wasm 堆（typed-access 的 pixels()），
- * 途中没有任何边界检查——越界即静默改写别人的堆内存。所以每个函数在**入口**先过一遍
- * guards 校验，把整个循环的下标范围一次性证明掉；循环内不再有任何校验。
+ * Group 2 writes pixel by pixel, addressing the wasm heap directly (typed-access's
+ * pixels()) with no bounds checks on the way: an out-of-range index silently rewrites
+ * somebody else's heap memory. So every method runs the guards **on entry**, proving the
+ * whole index range of its loop valid once; the loop itself checks nothing.
  *
- * 为什么不在循环里调 PTR()（它自己也查边界）或原生的 *Ptr()：每个像素都要跨一次
- * 语言边界、再新建一个 TypedArray。按地址直接写快上百倍，倍数以 `npm run bench`
- * 的 inplace-ops 门禁每次打印的「退化参照」为准，别在注释里另抄一份。
+ * Why the loops do not call PTR() (which checks bounds itself) or the native *Ptr():
+ * every pixel would cross the language boundary and create a new TypedArray. Direct
+ * addressing is two orders of magnitude faster; the exact factors are printed as the
+ * "regression reference" lines of the inplace-ops gate on every `npm run bench`, so do
+ * not copy them into comments.
  *
- * 写进整型 Mat 的值一律按 OpenCV 的 saturate_cast 饱和（四舍六入五成双、钳到取值
- * 范围、NaN 得 0），与 addConstant 等走 OpenCV 的方法一致；浮点 Mat 原样写入。
+ * Values written into integer Mats saturate like OpenCV's saturate_cast (round half to
+ * even, clamp to the range, NaN becomes 0), matching addConstant and the other methods
+ * that go through OpenCV; floating-point Mats are written as is.
  */
 
 /**
- * 原生 roi()/col()/diag() 返回非连续视图，此时 .data* / DATA() 会按连续内存
- * 直读，得到错误数据（3×3 CV_32FC2 上 col(2) 读出 5,6,7,8,9,10，正确值是
- * 5,6,11,12,17,18 —— 已在新 wasm 产物上复现确认）。
+ * Native roi() / col() / diag() return non-continuous views, and .data* / DATA() read
+ * them as contiguous memory, returning the wrong elements (col(2) of a 3×3 CV_32FC2
+ * reads 5,6,7,8,9,10 instead of 5,6,11,12,17,18).
  *
- * 1.x 曾把这层修复直接盖在原生 roi()/col()/diag() 上，代价是原生的视图语义
- * （`mat.roi(r).setTo(...)` 写回源 Mat）被静默改掉。2.0 不再覆盖原生方法：
- * 修复版以独立名字提供，原生三个方法保持原样。
+ * 1.x patched native roi() / col() / diag() themselves, which silently changed their
+ * view semantics (`mat.roi(r).setTo(...)` writes back to the source Mat). Since 2.0 the
+ * fixed versions have their own names and the native methods are left alone.
  */
 function cloneAndRelease(view) {
   try {
@@ -37,13 +41,29 @@ function cloneAndRelease(view) {
 }
 
 /**
- * src 被读的字节区间与 dst 被写的字节区间是否相交。
+ * Reads each of rect's four fields once into a plain object; validation and addressing
+ * use only this snapshot.
  *
- * 两者可能是同一个 Mat，或者同一块父 Mat 上的两个视图。按行主序边读边写时，一旦
- * 重叠，后面的像素就会读到前面刚写进去的值（3×3 上把自己的 Rect(0,0,2,2) 写进
- * Rect(1,1,2,2)，右下角得 1 而不是 5）。按首尾字节做保守判断：交错而实际不相交的
- * 两个视图也会被当成重叠，代价只是多拷一次。d / s 是 typed-access 的 pixels() 给出
- * 的地址（用其中的字节版字段），不再另读 embind getter。
+ * rect can be any object with getters. If guards.rect, guards.covers and the
+ * destructuring before the write each read it, the three reads can disagree: validation
+ * sees a valid width and the write uses an out-of-range one — measured to rewrite the
+ * heap past dst's data. Non-objects are passed through for guards.rect to reject.
+ */
+function snapshotRect(rect) {
+  if (rect === null || typeof rect !== "object") return rect;
+  return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+}
+
+/**
+ * Whether the bytes read from src overlap the bytes written in dst.
+ *
+ * The two can be the same Mat, or two views of the same parent. Reading and writing row
+ * by row, an overlap makes later pixels read values just written (writing a 3×3 Mat's
+ * own Rect(0,0,2,2) into Rect(1,1,2,2) gives 1 instead of 5 in the bottom-right corner).
+ * The test compares first and last bytes, so it is conservative: two interleaved views
+ * that do not actually share an element also count as overlapping, which only costs an
+ * extra copy. d / s are the addresses from typed-access's pixels() (their byte fields),
+ * so no Embind getter is read again.
  */
 function overlaps(d, x, y, s, w, h) {
   const dStart = d.byteOffset + y * d.rowBytes + x * d.pixelBytes;
@@ -53,12 +73,15 @@ function overlaps(d, x, y, s, w, h) {
 }
 
 /**
- * 两个逐行内核：dh[di..] 是目标行的通道 0，sh[si..] 是源行的通道 0，各按自己的像素
- * 跨度前进 n 个像素。sat 为 null 时（浮点目标）原样写，否则写之前饱和。
+ * Two row kernels: dh[di..] is channel 0 of the destination row and sh[si..] channel 0 of
+ * the source row; each advances n pixels by its own pixel stride. With sat === null
+ * (floating-point destination) values are written as is, otherwise saturated first.
  *
- * 拆成两个固定形状的小函数、而不是传一个 (dst, src) => 值 的回调进去：那个回调在三个
- * 方法之间共用一个调用点，V8 见到三种闭包就不再内联，实测 rectAdd 因此比
- * replaceMatOnRect 慢 2.5 倍。加与减共用一个内核，用 sign 区分（乘 ±1 是精确的）。
+ * They are two small fixed-shape functions rather than one taking a (dst, src) => value
+ * callback: such a callback shares one call site between three methods, V8 stops
+ * inlining once it has seen three closures, and rectAdd measured 2.5× slower than
+ * replaceMatOnRect. Add and subtract share a kernel and differ by `sign` (multiplying by
+ * ±1 is exact).
  */
 function copyRow(dh, di, dStep, sh, si, sStep, n, sat) {
   if (sat === null) {
@@ -83,13 +106,14 @@ function addRow(dh, di, dStep, sh, si, sStep, n, sat, sign) {
 }
 
 /**
- * 把 s 描述的区域逐行写进 d 描述的区域（都只动通道 0）：sign 为 0 时拷贝，为 ±1 时
- * 累加 / 相减。d、s 是 typed-access 的 pixels() 的返回值，(x, y) 是 d 里的起点，
- * w × h 是区域大小。
+ * Writes the region described by s into the region described by d, row by row, channel 0
+ * only: a copy when sign is 0, an add / subtract when it is ±1. d and s come from
+ * typed-access's pixels(), (x, y) is the origin in d, and w × h is the region size.
  *
- * 单独成函数，而且常见路径上不包在 try/finally 里：实测同一段循环放进 try 块里要慢
- * 1.7 倍（V8 对 try 块里的调用不做同样的优化）。只有「src 与 dst 重叠、先拷了一份」
- * 那条罕见路径才需要 finally 来释放那份拷贝。
+ * A separate function, and not wrapped in try/finally on the common path: the same loop
+ * inside a try block measured 1.7× slower (V8 does not optimize calls inside try blocks
+ * the same way). Only the rare "src overlaps dst, copy it first" path needs a finally to
+ * release the copy.
  */
 function writeRect(d, s, x, y, w, h, sign) {
   const dh = d.heap;
@@ -106,52 +130,56 @@ function writeRect(d, s, x, y, w, h, sign) {
 }
 
 module.exports = function applyMatRegion(cv, guards, access) {
-  /** 子矩形的独立副本（原生 roi() 的可安全直读版本）。 */
+  /** An independent copy of a sub-rectangle (a native roi() that is safe to read directly). */
   cv.Mat.prototype.roiClone = function roiClone(rect) {
     const where = "Mat.roiClone(rect)";
-    guards.mat(this, "接收者 Mat", where);
-    guards.rect(this, rect, where);
-    return cloneAndRelease(this.roi(rect));
+    guards.mat(this, "the receiver", where);
+    const r = snapshotRect(rect);
+    guards.rect(this, r, where);
+    return cloneAndRelease(this.roi(r));
   };
 
-  /** 第 d 列的独立副本（原生 col() 的可安全直读版本）。 */
+  /** An independent copy of column d (a native col() that is safe to read directly). */
   cv.Mat.prototype.colClone = function colClone(d) {
     const where = "Mat.colClone(col)";
-    guards.mat(this, "接收者 Mat", where);
+    guards.mat(this, "the receiver", where);
     guards.index(d, this.cols, "col", where);
     return cloneAndRelease(this.col(d));
   };
 
-  /** 第 d 条对角线的独立副本（原生 diag() 的可安全直读版本）。 */
+  /** An independent copy of diagonal d (a native diag() that is safe to read directly). */
   cv.Mat.prototype.diagClone = function diagClone(d = 0) {
     const where = "Mat.diagClone(d)";
-    guards.mat(this, "接收者 Mat", where);
+    guards.mat(this, "the receiver", where);
     guards.diagIndex(this, d, where);
     return cloneAndRelease(this.diag(d));
   };
 
   /**
-   * 三个矩形就地写入的公共部分：入口校验 → 重叠时先拷一份 src → 逐行写通道 0。
-   * sign 为 0 时把 src 拷进来，为 ±1 时把 ±src 累加上去。
+   * The shared part of the three in-place rectangle writes: validate on entry → copy src
+   * first if it overlaps → write channel 0 row by row. sign 0 copies src in; ±1 adds
+   * ±src.
    */
   function rectInPlace(dst, src, rect, where, sign) {
-    guards.mat(dst, "接收者 Mat", where);
+    guards.mat(dst, "the receiver", where);
     guards.mat(src, "src", where);
-    guards.rect(dst, rect, where);
-    guards.covers(src, rect, "src", where);
-    // 只读这一次：循环里不再碰 rect（它可能是任意带 getter 的对象）。
-    const { x, y, width: w, height: h } = rect;
+    // Validation and the addressing below use the same snapshot; see snapshotRect().
+    const r = snapshotRect(rect);
+    guards.rect(dst, r, where);
+    guards.covers(src, r, "src", where);
+    const { x, y, width: w, height: h } = r;
     if (w === 0 || h === 0) return;
 
-    // 深度不支持时在这里就报错，不白拷一份。
+    // An unsupported depth fails here, before a copy is made for nothing.
     const d = access.pixels(dst, where);
     const s = access.pixels(src, where);
     if (!overlaps(d, x, y, s, w, h)) {
       writeRect(d, s, x, y, w, h, sign);
       return;
     }
-    // src 与写入区重叠：先拷一份。clone 可能让 wasm 内存增长、刚才取到的堆视图随之
-    // 失效，所以两边的地址都在拷完之后重取（见 pixels() 的说明）。
+    // src overlaps the written region: copy it first. The clone may grow wasm memory and
+    // detach the heap views taken above, so both addresses are taken again after the
+    // copy (see pixels()).
     const copy = src.roiClone(new cv.Rect(0, 0, w, h));
     try {
       writeRect(
@@ -168,59 +196,53 @@ module.exports = function applyMatRegion(cv, guards, access) {
     }
   }
 
-  /** 把 src1 的通道 0 拷进 this 由 rect 指定的矩形区域（就地）。 */
+  /** Copies channel 0 of src1 into the rectangle `rect` of this Mat (in place). */
   cv.Mat.prototype.replaceMatOnRect = function replaceMatOnRect(src1, rect) {
     rectInPlace(this, src1, rect, "Mat.replaceMatOnRect(src, rect)", 0);
   };
 
-  /**
-   * 用 arr 覆盖第 d 行的全部元素（cols × channels 个，就地）。
-   *
-   * 1.x 硬编码 this.floatPtr(d)，非 CV_32F 的 Mat 直接抛异常；2.0 起 7 种深度
-   * 全部可用。
-   */
+  /** Overwrites every element of row d (cols × channels values) with arr, in place. */
   cv.Mat.prototype.replaceMatOnRow = function replaceMatOnRow(arr, d) {
     const where = "Mat.replaceMatOnRow(arr, row)";
-    guards.mat(this, "接收者 Mat", where);
+    guards.mat(this, "the receiver", where);
     guards.index(d, this.rows, "row", where);
     const n = this.cols * this.channels();
-    guards.arrayLike(arr, n, "arr", where);
+    // Converted in full first: an element that cannot be converted fails the call before
+    // anything is written.
+    const values = guards.numbers(arr, n, "arr", where);
     const { heap, base, rowStep, saturate } = access.pixels(this, where);
-    // 一行之内的元素是连续的，视图也一样（只有行与行之间隔着父 Mat 的跨度）。
+    // The elements of one row are contiguous, in views too (only the rows are separated
+    // by the parent's stride).
     const start = base + d * rowStep;
     for (let i = 0; i < n; i += 1) {
-      const v = +arr[i];
+      const v = values[i];
       heap[start + i] = saturate === null ? v : saturate(v);
     }
   };
 
-  /** 用 arr 覆盖第 d 列的通道 0（就地）。 */
+  /** Overwrites channel 0 of column d with arr, in place. */
   cv.Mat.prototype.replaceMatOnCol = function replaceMatOnCol(arr, d) {
     const where = "Mat.replaceMatOnCol(arr, col)";
-    guards.mat(this, "接收者 Mat", where);
+    guards.mat(this, "the receiver", where);
     guards.index(d, this.cols, "col", where);
     const rows = this.rows;
-    guards.arrayLike(arr, rows, "arr", where);
+    const values = guards.numbers(arr, rows, "arr", where);
     const { heap, base, rowStep, pixelStep, saturate } = access.pixels(
       this,
       where,
     );
     let k = base + d * pixelStep;
     for (let i = 0; i < rows; i += 1, k += rowStep) {
-      const v = +arr[i];
+      const v = values[i];
       heap[k] = saturate === null ? v : saturate(v);
     }
   };
 
   /**
-   * 写单个位置的通道 0（就地）。
+   * Writes channel 0 of a single element, in place.
    *
    *   replaceMatOnPoint(value, row, col)
-   *   replaceMatOnPoint(value, point)      // cv.Point 约定：x = 列、y = 行
-   *
-   * 1.x 的形参名是 (constant, x, y) 而内部是 PTR(x, y) —— x 实为行号、y 为
-   * 列号，与参数名给人的印象相反；README 里记的 (value, point) 重载则根本
-   * 不存在（传对象抛 TypeError）。这里把两者一并对齐。
+   *   replaceMatOnPoint(value, point)      // cv.Point convention: x = column, y = row
    */
   cv.Mat.prototype.replaceMatOnPoint = function replaceMatOnPoint(
     value,
@@ -228,8 +250,9 @@ module.exports = function applyMatRegion(cv, guards, access) {
     col,
   ) {
     const where = "Mat.replaceMatOnPoint(value, row, col)";
-    guards.mat(this, "接收者 Mat", where);
-    // value 是写进这一格的数据，不是作用到整个 Mat 上的运算数：NaN 放行。
+    guards.mat(this, "the receiver", where);
+    // value is data written into this element, not an operand applied to the whole Mat,
+    // so NaN is accepted.
     guards.value(value, "value", where);
 
     let row = rowOrPoint;
@@ -238,9 +261,8 @@ module.exports = function applyMatRegion(cv, guards, access) {
       row = rowOrPoint.y;
       column = rowOrPoint.x;
     } else if (col === undefined) {
-      // 这条消息 README 里逐字引用过，改动前先改文档。
       throw new TypeError(
-        "replaceMatOnPoint(value, row, col) 或 replaceMatOnPoint(value, point)：缺少 col",
+        "replaceMatOnPoint(value, row, col) or replaceMatOnPoint(value, point): col is missing",
       );
     }
     guards.index(row, this.rows, "row", where);
@@ -253,10 +275,10 @@ module.exports = function applyMatRegion(cv, guards, access) {
     heap[k] = saturate === null ? value : saturate(value);
   };
 
-  /** 给第 d 列的通道 0 逐行加上 constant（就地）。 */
+  /** Adds constant to channel 0 of every row of column d, in place. */
   cv.Mat.prototype.addOnCol = function addOnCol(constant, d) {
     const where = "Mat.addOnCol(constant, col)";
-    guards.mat(this, "接收者 Mat", where);
+    guards.mat(this, "the receiver", where);
     guards.number(constant, "constant", where);
     guards.index(d, this.cols, "col", where);
     const rows = this.rows;
@@ -271,12 +293,12 @@ module.exports = function applyMatRegion(cv, guards, access) {
     }
   };
 
-  /** 把 src1 的通道 0 累加到 this 由 rect 指定的矩形区域（就地）。 */
+  /** Adds channel 0 of src1 to the rectangle `rect` of this Mat (in place). */
   cv.Mat.prototype.rectAdd = function rectAdd(src1, rect) {
     rectInPlace(this, src1, rect, "Mat.rectAdd(src, rect)", 1);
   };
 
-  /** 把 src1 的通道 0 从 this 由 rect 指定的矩形区域中减去（就地）。 */
+  /** Subtracts channel 0 of src1 from the rectangle `rect` of this Mat (in place). */
   cv.Mat.prototype.rectSubtract = function rectSubtract(src1, rect) {
     rectInPlace(this, src1, rect, "Mat.rectSubtract(src, rect)", -1);
   };

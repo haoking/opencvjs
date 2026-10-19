@@ -1,26 +1,16 @@
 "use strict";
 
-// 验证新构建的 wasm 产物可用。通过环境变量 OPENCV_ARTIFACT 指向待测产物。
+// Smoke test for a freshly built wasm artifact; build-wasm.yml runs it on every variant.
+// OPENCV_ARTIFACT points at the artifact directory.
 //
-// 本地开发时未设置 OPENCV_ARTIFACT 就跳过——常规 npm test 不该因为本机没有
-// 构建产物而失败。
-//
-// 但在「本来就该有产物」的场合，跳过必须变成失败：这个测试是 wasm 构建作业
-// （实测约 11 分钟，见 build-wasm.yml 顶部）里的**唯一**验证。实测过，未设
-// OPENCV_ARTIFACT 时 `node --test test/smoke/*.test.js` 退出码是 0——env 名字
-// 写错、路径拼错、上游步骤没产出目录，任何一种都会让整场构建在「零验证」下
-// 把 workflow 报绿。门禁报绿却什么都没查，比没有门禁更糟。
-//
-// 判据用的是 OPENCV_SMOKE_REQUIRED，**不是** process.env.CI。
-// 用 CI 是错的，已实测：GitHub Actions 给每个步骤都设 CI=true，而
-// .github/workflows/ci.yml 的 `npm test` glob（test/*/*.test.js）也会匹配到
-// 本文件——那条链路测的是组装后的 dist/，不设 OPENCV_ARTIFACT，本文件在那里
-// 本就该跳过。以 CI 为判据会让 ci.yml 在 Node 18/20/22 三个矩阵项上全部失败
-// （本机 `CI=true npm test` 实测 fail 1、exit 1）。真正需要这条守卫的是
-// build-wasm.yml 里那个专门的冒烟步骤，它显式声明 OPENCV_SMOKE_REQUIRED=1。
-//
-// 该步骤另有一重不依赖 Node 的守卫：进 node 之前先在 shell 里
-// `test -d "$OPENCV_ARTIFACT"`。两者互为保险，都不依赖对方生效。
+// Without OPENCV_ARTIFACT it skips, so a plain `npm test` does not fail on machines that
+// have no artifact. Where an artifact must exist the skip has to become a failure: this is
+// the only check inside the build job, and a skipped `node --test` still exits 0 — a
+// misspelt variable or a missing directory would let the whole build go green unverified.
+// The switch is OPENCV_SMOKE_REQUIRED=1, not process.env.CI: GitHub Actions sets CI=true
+// for every step, including ci.yml's `npm test`, which globs this file too and has no
+// artifact. The build job also runs `test -d "$OPENCV_ARTIFACT"` in the shell first; the
+// two guards do not depend on each other.
 const test = require("node:test");
 const assert = require("node:assert");
 const path = require("path");
@@ -28,135 +18,210 @@ const fs = require("fs");
 
 const artifact = process.env.OPENCV_ARTIFACT;
 
-// 单文件变体（build/build.sh --single-file）的产物形状与另外两个相反：只有一个
-// opencv.js，wasm 已 base64 内联进去，因此 glue 反而必须**大于** 2MB。
-//
-// 这个判据用显式的环境变量，不用「目录里有没有 .wasm」来猜。猜的话，一次
-// --disable_single_file 意外生效的拆分构建（.wasm 没被拷进来）会被当成单文件
-// 变体、然后一路报绿——那正好是这条断言本该抓住的故障。
+// The single-file variant inverts the artifact's shape: a single opencv.js with the wasm
+// embedded, so the glue must be *larger* than 2 MB. The variant is stated explicitly
+// rather than guessed from "is there a .wasm" — guessing would pass a split build that
+// lost its .wasm as a single-file one. Same 2 MB threshold as build/build.sh and
+// build/assemble.sh.
 const SINGLE_FILE = process.env.OPENCV_SMOKE_SINGLE_FILE === "1";
 const INLINE_THRESHOLD = 2 * 1024 * 1024;
 
-// 与 OPENCV_PARITY_REQUIRED 一样只认 "1"：按真值判断的话 OPENCV_SMOKE_REQUIRED=0
-// 反而会被当成「必须真跑」。
+// Only "1" counts, as with OPENCV_PARITY_REQUIRED: a truthiness check would treat
+// OPENCV_SMOKE_REQUIRED=0 as "required".
 if (!artifact && process.env.OPENCV_SMOKE_REQUIRED === "1") {
   throw new Error(
-    "OPENCV_SMOKE_REQUIRED=1 但 OPENCV_ARTIFACT 未设置 —— " +
-      "冒烟测试是 wasm 构建的唯一验证，静默跳过等于让整场构建" +
-      "在零验证下报绿。本地开发不设这两个变量时会正常跳过。",
+    "OPENCV_SMOKE_REQUIRED=1 but OPENCV_ARTIFACT is not set — the smoke test is the " +
+      "build's only check and must not be skipped there. Unset both for local runs.",
   );
 }
 
+const HEAP_VIEWS = [
+  "HEAP8",
+  "HEAPU8",
+  "HEAP16",
+  "HEAPU16",
+  "HEAP32",
+  "HEAPU32",
+  "HEAPF32",
+  "HEAPF64",
+];
+const RUNTIME_FUNCTIONS = [
+  "BindingError",
+  "InternalError",
+  "UnboundTypeError",
+  "flushPendingDeletes",
+  "setDelayFunction",
+  "count_emval_handles",
+  "getInheritedInstanceCount",
+  "getLiveInheritedInstances",
+  "FS_createPreloadedFile",
+];
+
 test(
-  `新构建的 wasm 产物冒烟验证（${SINGLE_FILE ? "单文件" : "拆分"}变体）`,
+  `smoke test of a freshly built wasm artifact (${SINGLE_FILE ? "single-file" : "split"} variant)`,
   {
-    skip: !artifact ? "未设置 OPENCV_ARTIFACT（本地开发）" : false,
-    // 有限超时：wasm 实例化正常应在秒级完成；若 onRuntimeInitialized 因
-    // 加载失败而从不触发，不加超时会一直挂到 workflow 180 分钟的硬限才被
-    // 杀掉——把本该秒级失败的问题变成最昂贵的失败方式。60s 对正常情况绰绰
-    // 有余，对真正的挂起也能快速止损。
+    skip: !artifact ? "OPENCV_ARTIFACT is not set (local development)" : false,
+    // Instantiation takes seconds. A load that hangs must fail here rather than run into
+    // the job's timeout.
     timeout: 60000,
   },
   async () => {
     const jsPath = path.resolve(artifact, "opencv.js");
     const wasmPath = path.resolve(artifact, "opencv_js.wasm");
-
-    assert.ok(fs.existsSync(jsPath), `缺少 ${jsPath}`);
+    assert.ok(fs.existsSync(jsPath), `missing ${jsPath}`);
 
     const jsSize = fs.statSync(jsPath).size;
     if (SINGLE_FILE) {
-      assert.ok(!fs.existsSync(wasmPath), `单文件变体不该有独立的 ${wasmPath}`);
+      assert.ok(
+        !fs.existsSync(wasmPath),
+        `the single-file variant must not have a separate ${wasmPath}`,
+      );
       assert.ok(
         jsSize > INLINE_THRESHOLD,
-        `opencv.js 只有 ${(jsSize / 1048576).toFixed(1)}MB —— SINGLE_FILE=1 未生效，wasm 没被内联进来`,
+        `opencv.js is only ${(jsSize / 1048576).toFixed(1)} MB — SINGLE_FILE=1 did not take effect`,
       );
     } else {
       assert.ok(
         fs.existsSync(wasmPath),
-        `缺少 ${wasmPath} —— --disable_single_file 未生效？`,
+        `missing ${wasmPath} — did --disable_single_file not take effect?`,
       );
       assert.ok(
         jsSize < INLINE_THRESHOLD,
-        `opencv.js 有 ${(jsSize / 1048576).toFixed(1)}MB —— wasm 可能仍被 base64 内联进了 JS`,
+        `opencv.js is ${(jsSize / 1048576).toFixed(1)} MB — the wasm is probably still embedded`,
       );
     }
 
-    // 加载就绪的判据只能是 cv.Mat 是否可用，不能看 onRuntimeInitialized 是否存在。
-    // 实测（2026-07-28 首次真实构建产物）：新 wasm 产物的 require() 返回 Promise，
-    // await 后 29ms 即就绪、cv.Mat 已是 function，但 emscripten **同时保留了
-    // cv.onRuntimeInitialized 这个属性**。原判据写作
-    //   typeof cv.onRuntimeInitialized === "function" || !cv.Mat
-    // 时第一个子条件恒为真，于是即便已经就绪也会进入下面那个 Promise 等待，
-    // 而此时初始化早已完成、回调永不再触发 —— 事件循环空转后被 Node 判为
-    // failureType: 'cancelledByParent'（"Promise resolution is still pending
-    // but the event loop has already resolved"）。首次 CI 构建正是栽在这里。
+    // Ready means `typeof cv.Mat === "function"`, never onRuntimeInitialized: artifacts
+    // built with emsdk 3.1.64 still carried that property after the promise resolved, and
+    // waiting on it hung the first CI build.
     const mod = require(jsPath);
     const cv = typeof mod.then === "function" ? await mod : mod;
-    if (typeof cv.Mat !== "function") {
-      await new Promise((resolve) => {
-        cv.onRuntimeInitialized = resolve;
-      });
-    }
-
-    // 基本可用性
-    const m = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
-    assert.strictEqual(m.rows, 2);
-    assert.deepStrictEqual(Array.from(m.data32F), [1, 2, 3, 4]);
-
-    // clone 必须是深拷贝 —— 上游曾让它静默退化为浅拷贝 12 个月。
-    // 每次换 OpenCV 版本都要重验，不能假定。
-    const copy = m.clone();
-    m.data32F[0] = 999;
-    assert.strictEqual(copy.data32F[0], 1, "clone() 退化为浅拷贝");
-
-    // 白名单必须保住这两个**类**绑定。挑类而不是自由函数，是因为 embind 生成
-    // 类绑定走的是另一条代码路径（注册构造函数 + 方法表），自由函数全在也不能
-    // 证明它没坏。ORB 来自 features 模块、FaceDetectorYN 来自 objdetect，
-    // 两个模块各取一个，一次覆盖两条模块链路。
-    //
-    // 这条断言在 4.x 时代点的是 CascadeClassifier，理由是「5.x 会移除它，
-    // 所以要钉住 4.x」。基线升到 5.0.0 后那个理由不复存在：OpenCV 5 把
-    // CascadeClassifier / HOGDescriptor / groupRectangles / AKAZE / BRISK /
-    // KAZE / AgastFeatureDetector 从 **C++ API** 里删了（不只是白名单），
-    // 加白名单也救不回来，所以断言只能改点别的。
-    for (const name of ["ORB", "FaceDetectorYN"]) {
-      assert.strictEqual(typeof cv[name], "function", `白名单丢失 ${name}`);
-    }
-
-    // 反向钉住 5.x 基线：CascadeClassifier 必须**不在**。没有这条，产物若因
-    // 某次改动退回 4.x 构建，上面那组正向断言照样全过（ORB/FaceDetectorYN
-    // 在 4.x 里也有），一次静默的版本回退就报绿了。
     assert.strictEqual(
-      cv.CascadeClassifier,
-      undefined,
-      "CascadeClassifier 又出现了 —— 产物可能不是 5.x 构建",
+      typeof cv.Mat,
+      "function",
+      "cv.Mat is not a constructor after loading — the runtime is not ready",
     );
 
-    // 上面那条只分得清 4.x / 5.x。版本号本身也要对上 build/opencv-version.txt，
-    // 否则同为 5.x 的另一个小版本照样报绿（test/unit/artifact-version.test.js 在
-    // 组装后的 dist/ 上查同一件事）。
-    const wantVersion = fs
-      .readFileSync(
-        path.join(__dirname, "..", "..", "build", "opencv-version.txt"),
-        "utf8",
-      )
-      .trim();
-    const versionLine = /General configuration for OpenCV (\S+)/.exec(
-      cv.getBuildInformation(),
-    );
-    assert.ok(versionLine, "getBuildInformation() 里找不到版本行");
-    assert.strictEqual(
-      versionLine[1],
-      wantVersion,
-      `产物是 OpenCV ${versionLine[1]}，但 build/opencv-version.txt 钉的是 ${wantVersion}`,
-    );
+    const owned = [];
+    const own = (obj) => {
+      owned.push(obj);
+      return obj;
+    };
+    try {
+      const m = own(cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]));
+      assert.strictEqual(m.rows, 2);
+      assert.deepStrictEqual(Array.from(m.data32F), [1, 2, 3, 4]);
 
-    // dnn 的 JS 绑定应已被裁掉（注意：dnn 的 C++ 代码仍在产物中——白名单只
-    // 控制 embind 绑定生成，build_js.py 硬编码 -DBUILD_opencv_dnn=ON，体积
-    // 不会因此显著下降。这里验证的是绑定已裁，不是 dnn 已从产物移除）。
-    assert.strictEqual(cv.readNetFromTensorflow, undefined, "dnn 未被裁掉");
+      // clone() must be a deep copy. Upstream once made it shallow without anyone noticing
+      // for a year (opencv/opencv#26643), and on Emscripten >= 4.0.0 upstream's own fix
+      // never runs; build/patches/opencv-js-deep-clone.patch restores it.
+      const copy = own(m.clone());
+      m.data32F[0] = 999;
+      assert.strictEqual(copy.data32F[0], 1, "clone() is a shallow copy");
 
-    m.delete();
-    copy.delete();
+      // Runtime exports added by build/patches/opencv-js-link-flags.patch. The extension
+      // layer reads and writes the wasm heap through the HEAP* views.
+      for (const name of HEAP_VIEWS) {
+        assert.ok(
+          ArrayBuffer.isView(cv[name]),
+          `missing runtime export cv.${name}`,
+        );
+      }
+      for (const name of RUNTIME_FUNCTIONS) {
+        assert.strictEqual(
+          typeof cv[name],
+          "function",
+          `missing runtime export cv.${name}`,
+        );
+      }
+
+      // The same patch raises the memory ceiling to 2 GB: 1.25 GB is past the old 1 GB
+      // cap. The pages are never touched, so this stays cheap.
+      const big = own(new cv.Mat(1280, 1024 * 1024, cv.CV_8UC1));
+      assert.strictEqual(
+        big.rows,
+        1280,
+        "a 1.25 GB Mat could not be allocated",
+      );
+
+      // What emsdk 6.0.12's Embind adds and the README documents: `using` on a Mat
+      // (Symbol.dispose is delete) and iterable vectors.
+      if (typeof Symbol.dispose === "symbol") {
+        assert.strictEqual(
+          typeof m[Symbol.dispose],
+          "function",
+          "Mat has no Symbol.dispose — `using` would not free it",
+        );
+      }
+      const vec = own(new cv.MatVector());
+      vec.push_back(m);
+      assert.strictEqual(
+        typeof vec[Symbol.iterator],
+        "function",
+        "MatVector is not iterable",
+      );
+      const items = [...vec];
+      owned.push(...items);
+      assert.strictEqual(items.length, 1);
+      assert.ok(
+        items[0] instanceof cv.Mat,
+        "iterating a MatVector did not yield Mats",
+      );
+
+      // Class bindings the whitelist must keep, across modules: ORB from features, and
+      // FaceDetectorYN plus the MCC classes from objdetect (the MCC ones also need
+      // build/patches/opencv-js-mcc-bindings.patch). Classes rather than free functions,
+      // because Embind registers classes through a separate path (constructor + method
+      // table) that free functions do not exercise.
+      for (const name of [
+        "ORB",
+        "FaceDetectorYN",
+        "mcc_CCheckerDetector",
+        "mcc_CChecker",
+        "mcc_DetectorParametersMCC",
+      ]) {
+        assert.strictEqual(
+          typeof cv[name],
+          "function",
+          `whitelist binding missing: cv.${name}`,
+        );
+      }
+
+      // Pins the 5.x baseline from the other side: OpenCV 5 removed CascadeClassifier
+      // from the C++ API, so seeing it means a 4.x build slipped in.
+      assert.strictEqual(
+        cv.CascadeClassifier,
+        undefined,
+        "CascadeClassifier is back — this is probably not a 5.x build",
+      );
+
+      // The exact version must match build/opencv-version.txt; otherwise another 5.x
+      // release would pass too. test/unit/artifact-version.test.js checks dist/ the same way.
+      const wantVersion = fs
+        .readFileSync(
+          path.join(__dirname, "..", "..", "build", "opencv-version.txt"),
+          "utf8",
+        )
+        .trim();
+      const versionLine = /General configuration for OpenCV (\S+)/.exec(
+        cv.getBuildInformation(),
+      );
+      assert.ok(versionLine, "no version line in getBuildInformation()");
+      assert.strictEqual(
+        versionLine[1],
+        wantVersion,
+        `the artifact is OpenCV ${versionLine[1]}, but build/opencv-version.txt pins ${wantVersion}`,
+      );
+
+      // dnn has no JS bindings. Its C++ code is still compiled in — build_js.py forces
+      // -DBUILD_opencv_dnn=ON and the whitelist only controls which bindings are generated.
+      assert.strictEqual(
+        cv.readNetFromTensorflow,
+        undefined,
+        "dnn bindings are present",
+      );
+    } finally {
+      for (const obj of owned) if (!obj.isDeleted()) obj.delete();
+    }
   },
 );

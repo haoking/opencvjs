@@ -1,77 +1,94 @@
 "use strict";
 
-// 就地写入类操作的性能回归门禁。
+// Performance regression gate for the in-place writes.
 //
-// ── 这个门禁防的是什么 ────────────────────────────────────────────────────────
-// replaceMatOnRect / rectAdd / rectSubtract / replaceMatOnCol / addOnCol 这五个方法是
-// 逐像素写入的。它们在入口用 guards 一次性证明下标范围合法，循环里按地址直接读写
-// wasm 堆（typed-access 的 pixels()），**一次 embind 调用都不做**。
+// What this gate guards against
+// -----------------------------
+// replaceMatOnRect / rectAdd / rectSubtract / replaceMatOnCol / addOnCol write pixel by
+// pixel. They prove the index range valid once on entry with the guards, and their loops
+// address the wasm heap directly (typed-access's pixels()) **without a single Embind
+// call**.
 //
-// 最容易被写回去的是「逐像素调访问器」：原生的 *Ptr(i, j)（3.0.0 就是这么写的），
-// 或者更短的 PTR(i, j)。代码更短、行为也正确，只是每个像素都要跨一次语言边界、再新建
-// 一个 TypedArray（PTR 还要多读 rows / cols 两个 embind getter）——慢上百倍。本文件
-// 每次运行都把这两种写法作为「退化参照」一起测、把倍数打印出来。**别把倍数抄进别处的
-// 注释**：源码里曾经同时存在 38% / 82% / 105% 三种说法（三组口径不同的对照），互相
-// 差到一倍；要引用就引用本门禁的输出。
+// The easiest regression is "call an accessor per pixel": native *Ptr(i, j) (as 3.0.0
+// did) or the shorter PTR(i, j). The code is shorter and correct, but every pixel crosses
+// the language boundary and creates a new TypedArray (PTR also reads the rows / cols
+// Embind getters) — two orders of magnitude slower. Every run of this file measures both
+// forms as "regression references" and prints the factors. **Do not copy factors into
+// comments elsewhere**: the sources once quoted 38% / 82% / 105% at the same time (three
+// comparisons measured differently), a factor of two apart; quote this gate's output.
 //
-// ── 为什么 region-ops.bench.js 覆盖不到 ──────────────────────────────────────
-// 那个门禁测的是 roiClone()，而 roiClone() 内部是「原生 roi + clone」，**根本不逐像素
-// 循环**。把上面这几个方法的循环改回逐像素调访问器，它照样一路绿灯——在本文件出现
-// 之前，这样一次退化能悄悄合进主干。这正是本项目一直在清的「会说谎的绿灯」。
+// Why region-ops.bench.js does not cover this
+// -------------------------------------------
+// That gate measures roiClone(), which is "native roi + clone" inside and **does not loop
+// per pixel at all**. Turning the loops above back into per-pixel accessor calls keeps it
+// green — before this file existed, such a regression could have slipped into the main
+// branch unnoticed, the kind of lying green light this project keeps removing.
 //
-// ── 门禁的形状（与直觉相反的一点）────────────────────────────────────────────
-// 直觉的写法是「对照组 = 退化写法，阈值 1.5×」。**那是无效的**，方向反了：被测实现比
-// 退化写法快得多，比值远小于 1；真有人把循环改回退化写法，比值也只升到 1.0 左右，
-// 离 1.5 的阈值还远——门禁照样打印「达标」。所以基准取的是**「按地址直接读写堆」的
-// 手写参照**，也就是被测实现该有的样子（和 region-ops.bench.js 拿被测实现所封装的原语
-// 当基准同理），阈值为参照 × 1.5。这个形状对「循环变慢」这件事本身报警，不只针对某一
-// 种写法。退化参照照样每轮都测，同时用来检查本门禁**还有没有鉴别力**，见
-// MIN_DISCRIMINATION 那段。
+// The shape of the gate (one counter-intuitive point)
+// ---------------------------------------------------
+// The intuitive version is "control = the regressed form, threshold 1.5×". **That does not
+// work**; the direction is wrong: the implementation under test is far faster than the
+// regressed form, so the ratio is far below 1, and if someone did put the regressed loop
+// back, the ratio would only rise to about 1.0, still far from 1.5, and the gate would
+// print "pass". So the baseline is **a hand-written reference that addresses the heap
+// directly** — what the implementation under test should look like (just as
+// region-ops.bench.js uses the primitives the implementation wraps) — and the threshold is
+// reference × 1.5. This shape fires on "the loop got slower" itself, not on one particular
+// rewrite. The regression references are still measured every round, to check that this
+// gate **can still tell the difference**; see MIN_DISCRIMINATION.
 //
-// ── 次数、规模与比较口径 ──────────────────────────────────────────────────────
-// 快慢两类实现差两个数量级：用同一个次数，要么快的那一方只跑几毫秒、测不准，要么
-// 慢的那一方一轮就要几秒。所以各用各的次数，比较的是**每次调用**的耗时。
+// Counts, sizes and what is compared
+// ----------------------------------
+// The fast and slow implementations are two orders of magnitude apart: with one count the
+// fast ones run for a few milliseconds and cannot be measured, or the slow ones take
+// seconds per round. So each kind has its own count, and the comparison is **per call**.
 //
-// 规模刻意取大（512×512 上写 256×256、列长 512）。被测实现每次调用有一笔与像素数
-// 无关的固定开销：入口校验要读 rows / cols 等 embind getter，取地址也要读 data /
-// step。在 32×32 上循环本身只要约 1 µs，那笔固定开销就占到三四成，比值贴着 1.5
-// 的阈值来回晃（实测 1.46–1.48x），门禁会随机报红。本门禁防的是**每像素**的开销
-// 退化，规模一大，固定开销的占比可以忽略，退化照样一眼可见。
+// The sizes are large on purpose (256×256 written into 512×512, columns of 512). Each call
+// has a fixed cost independent of the pixel count: entry validation reads Embind getters
+// such as rows / cols, and addressing reads data / step. On 32×32 the loop itself takes
+// about 1 µs, the fixed cost is 30–40% of that, and the ratio hovered at the 1.5 threshold
+// (1.46–1.48x measured), so the gate failed at random. This gate guards against
+// **per-pixel** regressions; at a large size the fixed cost is negligible and a regression
+// still shows at a glance.
 //
-// 测量方法与 region-ops.bench.js 一致：各实现逐轮轮换起跑顺序、丢弃第 1 轮（JIT 分层
-// 编译与 embind 调用桥的一次性预热会被先跑的那一方整体付掉，是测量顺序造成的伪影）、
-// 取第 2 轮起的最小值。
+// Measured like region-ops.bench.js: the start order rotates every round, round 1 is
+// discarded (whoever runs first pays the one-time JIT tiering and Embind call bridge
+// warm-up, an artifact of measurement order), and the minimum from round 2 on is taken.
 const { getCv } = require("../helpers");
 
-const SIZE = 512; // 源图 512×512 CV_32FC1
+const SIZE = 512; // a 512×512 CV_32FC1 source
 const RECT = { x: 1, y: 1, width: 256, height: 256 };
 const COL = 3;
-const ROUNDS = 4; // 第 1 轮是预热轮，丢弃；取第 2..4 轮的最小值
+const ROUNDS = 4; // round 1 is warm-up and discarded; the minimum of rounds 2..4 is taken
 
-// 被测实现相对参照允许的倍数。多出来的只该是入口校验与取堆视图的固定开销，
-// 留 50% 给测量噪声（region-ops.bench.js 用的也是 1.5，理由相同）。
+// How much slower than the reference the implementation under test may be. The extra time
+// should only be the fixed cost of entry validation and taking the heap view, with 50%
+// left for measurement noise (region-ops.bench.js uses 1.5 for the same reason).
 const LIMIT_FACTOR = 1.5;
 
-// 每个退化参照至少要比参照慢这么多，本门禁才有鉴别力可言：如果退化写法只慢 20%，
-// 那么把循环改回那种写法也过得了 1.5 倍的门禁。真跌到这里以下就要发声，而不是继续
-// 报绿——那意味着 embind 调用变便宜了（门禁该重新定标），或者被测实现已经在偷偷做
-// 等价的事。
+// Each regression reference must be at least this much slower than the reference for the
+// gate to mean anything: if the regressed form were only 20% slower, putting it back would
+// pass a 1.5× gate. Falling below this must fail loudly instead of staying green — it
+// means Embind calls got cheaper (recalibrate the gate) or the implementation under test
+// is quietly doing the equivalent.
 const MIN_DISCRIMINATION = 1.5;
 
-// ROUNDS < 2 时 rounds.slice(1) 是空数组，Math.min() 返回 Infinity，阈值随之变成
-// Infinity，`actual > LIMIT` 恒为 false —— 门禁会永远打印「✅ 性能达标」而实际什么
-// 都没查。当前 ROUNDS 是常量且无外部入口，触发不了，但这正是「门禁报绿却什么都没
-// 查」的模板，先把它堵死。（用 console.error + process.exit 而不是 throw：门禁要的
-// 是明确的退出码，不是一段栈回溯。理由详见 region-ops.bench.js 同一处注释。）
+// With ROUNDS < 2, rounds.slice(1) is empty, Math.min() returns Infinity, the threshold
+// becomes Infinity, and `actual > LIMIT` is always false — the gate would always print
+// "✅ performance OK" while checking nothing. ROUNDS is a constant with no external input,
+// so this cannot happen today, but it is exactly the "green gate that checks nothing"
+// pattern, so it is closed off. (console.error + process.exit rather than throw: a gate
+// needs a clear exit code, not a stack trace; see the same comment in
+// region-ops.bench.js.)
 if (ROUNDS < 2) {
   console.error(
-    `❌ ROUNDS 必须 >= 2（当前 ${ROUNDS}）：第 1 轮是预热轮要丢弃，` +
-      `少于 2 轮时 Math.min(...[]) === Infinity，阈值失效、门禁恒为通过。`,
+    `❌ ROUNDS must be >= 2 (it is ${ROUNDS}): round 1 is warm-up and discarded, and ` +
+      `with fewer than 2 rounds Math.min(...[]) === Infinity, so the threshold is void and the gate always passes.`,
   );
   process.exit(1);
 }
 
-/** 跑 n 次，返回每次调用的平均耗时（微秒）。 */
+/** Runs fn n times and returns the mean time per call in microseconds. */
 function perCallMicros(n, fn) {
   const start = process.hrtime.bigint();
   for (let i = 0; i < n; i += 1) fn();
@@ -94,8 +111,9 @@ async function main() {
   const colArr = new Array(SIZE).fill(2);
 
   /**
-   * 参照实现用的寻址：每次调用都重新取（被测实现也是每次调用都取），CV_32F 专用。
-   * 堆视图最后取，理由同 typed-access.js 的 pixels()。
+   * Addressing for the reference: taken again on every call (as the implementation under
+   * test does), CV_32F only. The heap view is taken last, for the reason given at
+   * typed-access.js's pixels().
    */
   function layout(m) {
     const base = m.data.byteOffset / 4;
@@ -104,16 +122,18 @@ async function main() {
     return { heap: cv.HEAPF32, base, rowStep, pixelStep };
   }
 
-  // 每个用例四份实现：
-  //   reference —— 参照：按地址直接读写堆（= 被测实现该有的样子），作为基准
-  //   actual    —— 被测：dist/ 里真正发布的那个方法
-  //   nativePtr —— 退化参照：循环里逐像素调原生 floatPtr()（3.0.0 的写法）
-  //   viaPTR    —— 退化参照：循环里逐像素调 PTR()
-  // fast / slow 是两类实现各自的调用次数。
-  // 参照与退化参照都不收「(旧值, 新值) => 值」这种回调：三个用例共用同一段函数
-  // 字面量，回调的调用点会变成多态、V8 不再内联，参照自己就先慢了一截，门禁随之
-  // 变松。被测实现也是出于同一个原因拆成固定形状的内核（见 mat-region.js）。
-  // sign：0 = 拷贝，1 = 累加，-1 = 相减。
+  // Four implementations per case:
+  //   reference — addresses the heap directly (what the implementation should look like); the baseline
+  //   actual    — the method actually published in dist/
+  //   nativePtr — regression reference: native floatPtr() per pixel in the loop (as in 3.0.0)
+  //   viaPTR    — regression reference: PTR() per pixel in the loop
+  // fast / slow are the call counts for the two kinds.
+  // Neither the reference nor the regression references take an "(old, new) => value"
+  // callback: the three cases share one function literal, the callback's call site would
+  // turn polymorphic and V8 would stop inlining, making the reference itself slower and
+  // the gate looser. The implementation under test is split into fixed-shape kernels for
+  // the same reason (see mat-region.js).
+  // sign: 0 = copy, 1 = add, -1 = subtract.
   const CASES = [];
   for (const [name, sign] of [
     ["replaceMatOnRect", 0],
@@ -176,7 +196,7 @@ async function main() {
     ["addOnCol", false],
   ]) {
     CASES.push({
-      name: `${name} ${SIZE} 行`,
+      name: `${name} ${SIZE} rows`,
       fast: 100000,
       slow: 2000,
       reference() {
@@ -220,7 +240,7 @@ async function main() {
   for (const c of CASES) {
     const rounds = Object.fromEntries(IMPLS.map(([key]) => [key, []]));
     for (let r = 0; r < ROUNDS; r += 1) {
-      // 逐轮轮换起跑顺序，防止某一方系统性地总是先跑而吃到预热成本
+      // Rotate the start order every round, so no implementation always runs first and pays the warm-up
       for (let k = 0; k < IMPLS.length; k += 1) {
         const [key, count] = IMPLS[(r + k) % IMPLS.length];
         rounds[key].push(perCallMicros(c[count], c[key]));
@@ -236,39 +256,40 @@ async function main() {
     const ratio = (v) => `${(v / reference).toFixed(2)}x`;
 
     console.log(
-      `\n${c.name}   （每次调用的耗时；快 ${c.fast} 次 / 慢 ${c.slow} 次 × ${ROUNDS} 轮，丢弃预热轮取最小值）`,
+      `\n${c.name}   (time per call; fast ${c.fast} / slow ${c.slow} calls × ${ROUNDS} rounds, warm-up discarded, minimum taken)`,
     );
     console.log(
-      `  参照（按地址直接读写堆）          ${us(reference)}   ← 基准`,
+      `  reference (direct heap addressing)   ${us(reference)}   ← baseline`,
     );
     console.log(
-      `  被测（dist/ 里的实现）            ${us(actual)}   ${ratio(actual)}`,
+      `  under test (dist/)                   ${us(actual)}   ${ratio(actual)}`,
     );
     console.log(
-      `  退化参照（循环调原生 floatPtr）   ${us(nativePtr)}   ${ratio(nativePtr)}   ← 3.0.0 的写法`,
+      `  regression ref (native floatPtr)     ${us(nativePtr)}   ${ratio(nativePtr)}   ← as in 3.0.0`,
     );
     console.log(
-      `  退化参照（循环调 PTR）            ${us(viaPTR)}   ${ratio(viaPTR)}   ← 本门禁要防的写法`,
+      `  regression ref (PTR per pixel)       ${us(viaPTR)}   ${ratio(viaPTR)}   ← what this gate guards against`,
     );
-    console.log(`  阈值 ${limit.toFixed(2)} µs`);
+    console.log(`  threshold ${limit.toFixed(2)} µs`);
 
     if (actual > limit) {
       console.error(
-        `❌ 性能退化：${c.name} 比「按地址直接读写堆」慢了 ${ratio(actual)} —— ` +
-          `循环里是不是又逐像素调访问器了？（每像素一次跨语言调用、一个新 TypedArray）`,
+        `❌ Performance regression: ${c.name} is ${ratio(actual)} the time of direct heap ` +
+          `addressing. Is the loop calling an accessor per pixel again? (one language-boundary crossing and one new TypedArray per pixel)`,
       );
       failed = true;
     }
     for (const [label, value] of [
-      ["循环调原生 floatPtr", nativePtr],
-      ["循环调 PTR", viaPTR],
+      ["native floatPtr per pixel", nativePtr],
+      ["PTR per pixel", viaPTR],
     ]) {
       if (value < reference * MIN_DISCRIMINATION) {
         console.error(
-          `❌ 本门禁已失去鉴别力：${c.name} 上「${label}」只比参照慢 ${ratio(value)}，` +
-            `而阈值是 ${LIMIT_FACTOR}x —— 把循环改回那种写法也能通过，门禁形同虚设。` +
-            `请重新定标 LIMIT_FACTOR，或确认 embind 调用是否已变便宜（若是，这个门禁` +
-            `连同按地址读写堆的那套写法都该重新评估，而不是继续报绿）。`,
+          `❌ This gate can no longer tell the difference: on ${c.name}, "${label}" is only ` +
+            `${ratio(value)} the reference time while the threshold is ${LIMIT_FACTOR}x, so putting ` +
+            `that loop back would pass. Recalibrate LIMIT_FACTOR, or check whether Embind calls ` +
+            `got cheaper (if so, re-evaluate this gate and the direct heap addressing itself ` +
+            `instead of staying green).`,
         );
         failed = true;
       }
@@ -281,10 +302,10 @@ async function main() {
   if (failed) {
     process.exit(1);
   }
-  console.log("\n✅ 性能达标");
+  console.log("\n✅ performance OK");
 }
 
 main().catch((e) => {
-  console.error(`❌ 门禁未能执行: ${e && e.message ? e.message : e}`);
+  console.error(`❌ the gate could not run: ${e && e.message ? e.message : e}`);
   process.exit(1);
 });

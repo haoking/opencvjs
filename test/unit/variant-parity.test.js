@@ -1,26 +1,32 @@
 "use strict";
 
-// baseline 与 simd 两个变体的**数值一致性**。
+// **Numerical agreement** between the baseline and simd variants.
 //
-// ── 为什么需要这一条 ──────────────────────────────────────────────────────
-// 「SIMD 版本能跑」和「SIMD 版本算得对」是两件事。CI 会带 OPENCV_SIMD=1 把整套
-// 测试在 SIMD 变体上再跑一遍，那证明的是「同一套断言在两个变体上都成立」；
-// 本文件补的是另一半：把同一份输入喂给两份产物，逐元素比较输出。断言全过但
-// 两边数字不同（各自都落在断言的容差里）这种情况，只有这样才查得出来。
+// Why this exists
+// ---------------
+// "The SIMD build runs" and "the SIMD build computes the right thing" are different
+// claims. CI runs the whole suite again on the SIMD variant with OPENCV_SIMD=1, which
+// shows that the same assertions hold on both variants. This file covers the other half:
+// it feeds the same input to both artifacts and compares the outputs element by element.
+// Only this catches outputs that differ while each stays within an assertion's tolerance.
 //
-// 这也是 -msimd128 唯一真正的风险面：SIMD 内核是另一份手写代码，与标量路径走
-// 的不是同一条分支。
+// That is the one real risk of -msimd128: SIMD kernels are separate hand-written code,
+// not the same branch as the scalar path.
 //
-// ── 为什么走子进程 ────────────────────────────────────────────────────────
-// 两个变体不能在同一个进程里同时加载 —— OpenCV 的 UMD 外壳把 Module 泄漏成了
-// 隐式全局变量，第二个变体会撞上第一个的 embind 注册表。完整的机理、实测结论
-// 与替代方案写在 test/variant-cases.js 顶部。
+// Why child processes
+// -------------------
+// The two variants cannot be loaded in one process: OpenCV's UMD wrapper leaks Module as
+// an implicit global, and the second variant collides with the first one's Embind
+// registry. The mechanism, the measurements and the alternatives are described at the
+// top of test/variant-cases.js.
 //
-// ── 跳过与强制 ────────────────────────────────────────────────────────────
-// 本地通常只 assemble 了 baseline（构 SIMD 要 Docker），此时整组跳过。
-// 但在「本来就该有两个变体」的场合，跳过必须变成失败——判据是
-// OPENCV_PARITY_REQUIRED=1，与 test/smoke/wasm-artifact.test.js 的
-// OPENCV_SMOKE_REQUIRED 同一个套路：门禁报绿却什么都没查，比没有门禁更糟。
+// Skipping and requiring
+// ----------------------
+// A local dist/ may have baseline only (e.g. only that artifact was downloaded from CI),
+// in which case the whole file is skipped. Where both variants are supposed to exist,
+// skipping must become a failure: OPENCV_PARITY_REQUIRED=1, the same pattern as
+// OPENCV_SMOKE_REQUIRED in test/smoke/wasm-artifact.test.js. A gate that reports green
+// without checking anything is worse than no gate.
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
@@ -37,87 +43,105 @@ const HAS_SIMD = fs.existsSync(SIMD_GLUE);
 
 if (!HAS_SIMD && process.env.OPENCV_PARITY_REQUIRED === "1") {
   throw new Error(
-    `OPENCV_PARITY_REQUIRED=1 但 ${SIMD_GLUE} 不存在 —— ` +
-      `双产物一致性是「SIMD 版本没算错」的唯一保证，静默跳过等于不查。` +
-      `先 npm run assemble <baseline 目录> <simd 目录>。`,
+    `OPENCV_PARITY_REQUIRED=1 but ${SIMD_GLUE} does not exist. Variant parity is the ` +
+      `only guarantee that the SIMD build computes correctly; skipping it silently ` +
+      `checks nothing. Run npm run assemble <baseline dir> <simd dir> first.`,
   );
 }
 
-const skip = HAS_SIMD ? false : "dist/simd/ 不存在（本地通常只构了 baseline）";
+const skip = HAS_SIMD
+  ? false
+  : "dist/simd/ does not exist (local builds usually have baseline only)";
 
-// ── 浮点用例的判据 ────────────────────────────────────────────────────────
+// The criterion for floating-point cases
+// --------------------------------------
 //
 //     max|a − b|  <=  TOL × max(‖baseline‖∞, 1)
 //
-// 也就是**按整幅数据的量级归一的绝对差**，不是逐元素相对差。公式与常数都直接取自
-// OpenCV 自己的测试框架，不是我们凭空定的：
+// i.e. **an absolute difference normalized by the magnitude of the whole output**, not a
+// per-element relative difference. Both the formula and the constant come from OpenCV's
+// own test framework:
 //
 //   modules/imgproc/test/test_filter.cpp
-//     CV_PyramidBaseTest::get_success_error_level() → CV_32F 时 1e-5
-//     CV_PyramidBaseTest : CV_FilterBaseTest，而后者构造函数里
+//     CV_PyramidBaseTest::get_success_error_level() → 1e-5 for CV_32F
+//     CV_PyramidBaseTest : CV_FilterBaseTest, whose constructor sets
 //     element_wise_relative_error = false
 //   modules/ts/src/ts_func.cpp  cmpEps()
 //     if (refarr.depth() >= CV_32F && !element_wise_relative_error)
 //         maxval = norm(refarr, NORM_INF);  maxval = MAX(maxval, 1.);
 //     ...
 //     threshold = element_wise_relative_error ? fabs(b_val) + 1 : maxval;
-//     if (fabs(a_val - b_val) > threshold * success_err_level) → 失败
+//     if (fabs(a_val - b_val) > threshold * success_err_level) → failure
 //
-// 上游同族算子的 success_err_level（全部 element_wise_relative_error = false）：
-//   pyrDown / blur / GaussianBlur 1e-5，filter2D 1e-4，Sobel 5e-4。
-// 这里统一取 **1e-5**，即其中最严的那个——对本表里每一个算子都比上游更严，
-// 所以「按操作分档」在这里只会放松，没有意义。
+// Upstream success_err_level for the same family of operations (all with
+// element_wise_relative_error = false): pyrDown / blur / GaussianBlur 1e-5, filter2D
+// 1e-4, Sobel 5e-4. This file uses **1e-5**, the strictest of them, for everything — at
+// least as strict as upstream for every operation in the table, so per-operation levels
+// could only loosen it.
 //
-// ── 为什么不用逐元素相对差（这条曾经写错过）────────────────────────────────
-// 本文件最初用的是 |a−b| / max(|a|,|b|,1e-6)，并且注释里写着「能容下末位一两个
-// ulp」。首次真实 SIMD 构建（run 30379642633）下它在 pyrDown 32FC4 上报出
-// 7.00e-5 的偏差，看起来像是 752 ulp、比声称的「一两个 ulp」大两个数量级。
+// Why not a per-element relative difference (this was once wrong)
+// ---------------------------------------------------------------
+// This file first used |a−b| / max(|a|,|b|,1e-6), with a comment saying it "allows one or
+// two ulp in the last place". On the first real SIMD build (run 30379642633) it reported
+// a 7.00e-5 deviation on pyrDown 32FC4, which looked like 752 ulp — two orders of
+// magnitude above "one or two ulp".
 //
-// 查下来是**判据错了，不是 SIMD 错了**。用真实产物做的定量分析（把 pyrDown 的
-// 5×5 核 [1,4,6,4,1]/16 + BORDER_REFLECT_101 用 double 重算一遍当真值，
-// 与两个变体逐元素对比）：
+// The **criterion was wrong, not SIMD**. Quantitative analysis on the real artifacts
+// (recomputing pyrDown's 5×5 kernel [1,4,6,4,1]/16 with BORDER_REFLECT_101 in double as
+// the reference and comparing both variants element by element):
 //
-//   触发失败的那个元素 idx 2104
-//     baseline   0.010001882910728455
-//     simd       0.010001182556152344
-//     双精度参照 0.010000599548220634   ← 用 double 累加同一个 5×5 核算出的真值
-//     |baseline − 真值| = 1.283e-6      |simd − 真值| = 5.830e-7
-//   该像素累加过程中的量级 Σ|w·x| = 47.80，而输出只有 0.010 ——
-//   **输出仅为累加量级的 0.021%，是一次几乎完全的抵消。**
+//   the failing element, idx 2104
+//     baseline            0.010001882910728455
+//     simd                0.010001182556152344
+//     double reference    0.010000599548220634   ← the same 5×5 kernel accumulated in double
+//     |baseline − ref| = 1.283e-6      |simd − ref| = 5.830e-7
+//   The magnitude during accumulation for that pixel is Σ|w·x| = 47.80, while the output
+//   is only 0.010 — **the output is 0.021% of the accumulated magnitude, an almost
+//   complete cancellation.**
 //
-// 误差是在 ~47.8 这个量级上产生的，却被拿 0.01 去除——分母小了 4800 倍，于是
-// 1.6 ulp 被放大成「752 ulp」。以累加量级为分母重新度量，两个变体的最大误差是
-// baseline 1.9 ulp / simd 1.6 ulp，正是原注释所说的「一两个 ulp」。
+// The error arises at a magnitude of ~47.8 but was divided by 0.01 — a denominator 4800
+// times too small — which inflated 1.6 ulp into "752 ulp". Measured against the
+// accumulated magnitude, the largest errors are 1.9 ulp (baseline) and 1.6 ulp (simd):
+// exactly the "one or two ulp" the old comment claimed.
 //
-// 相关性也对得上：按旧判据偏差最大的前 10 个元素，抵消率中位数 0.121%；
-// 全体元素的抵消率中位数是 19.128%。**旧判据挑出来的正是抵消最狠的那些点。**
+// The correlation holds too: among the 10 elements with the largest deviation under the
+// old criterion, the median cancellation ratio is 0.121%, against 19.128% over all
+// elements. **The old criterion picked exactly the points with the most cancellation.**
 //
-// 而且 SIMD 在每一项聚合指标上都**更接近真值**，不是更远：
-//   RMS 误差        baseline 1.199e-6   simd 9.721e-7
-//   更接近真值的元素 baseline 1111 个    simd 1544 个（相同 1441 个）
-//   最大误差(ulp)   baseline 1.9        simd 1.6
-// 有数值缺陷的实现会系统性地偏离双精度真值，这里的方向恰好相反。
+// And SIMD is **closer to the reference** on every aggregate measure, not further away:
+//   RMS error                  baseline 1.199e-6   simd 9.721e-7
+//   elements closer to ref     baseline 1111       simd 1544 (1441 tied)
+//   largest error (ulp)        baseline 1.9        simd 1.6
+// A numerically broken implementation would drift systematically away from the double
+// reference; here the direction is the opposite.
 //
-// 结论：pyrDown 的差异是浮点累加顺序不同造成的正常离散，SIMD 侧甚至略优。
-// 判据换成上游的那一条，而不是把旧判据的阈值调松——后者会让这条断言从
-// 「SIMD 没算错」退化成「SIMD 错得不太多」。
+// Conclusion: the pyrDown difference is ordinary floating-point scatter from a different
+// accumulation order, with SIMD slightly better. The criterion was replaced by upstream's
+// rather than loosening the old threshold, which would have turned "SIMD is not wrong"
+// into "SIMD is not too wrong".
 //
-// ── 这条判据的已知弱点 ────────────────────────────────────────────────────
-// 分母是整幅数据的 ‖·‖∞，所以对「输出动态范围极大」的算子（例如 DFT 的 DC 项远大于
-// 高频项），量级很小的那些元素即使相对误差很大也能过。上游有同样的性质。本表的
-// 输入固定在 [−100,100)，各用例输出量级 O(1)–O(10³)，`MAX(maxval, 1.)` 那个下限
-// 从不生效。真要收紧得给每个算子写双精度参照实现，成本远超收益——双产物一致性
-// 的主力保证是「同一套 237 项断言在两个变体上各跑一遍」，本文件是补充而非替代。
+// Known weakness of this criterion
+// --------------------------------
+// The denominator is ‖·‖∞ of the whole output, so for operations with a very large
+// output dynamic range (e.g. a DFT whose DC term dwarfs the high frequencies) small
+// elements pass even with a large relative error. Upstream has the same property. The
+// inputs here are fixed in [−100, 100), the outputs range from O(1) to O(10³), and the
+// `MAX(maxval, 1.)` floor never applies. Tightening it would take a double-precision
+// reference implementation per operation, which costs far more than it gains: the main
+// parity guarantee is the whole suite running on both variants, and this file
+// supplements it rather than replacing it.
 const TOL = 1e-5;
 
-// 每个子进程的时限。execFileSync 是同步调用，会占住事件循环，下面那条用例自己的
-// timeout（node:test 靠定时器实现）在它返回之前根本没机会触发——子进程一旦挂起
-// （例如 wasm 初始化卡住），整套测试会一直挂到 CI 作业的硬限。所以时限必须设在
-// execFileSync 上，由它直接杀子进程。两个变体串行跑，80s × 2 仍在用例的 180s 之内。
+// Time limit per child process. execFileSync is synchronous and blocks the event loop,
+// so the test's own timeout (node:test implements it with a timer) cannot fire until it
+// returns: a hung child (e.g. stuck wasm initialization) would hang the suite until the
+// CI job's hard limit. The limit therefore sits on execFileSync, which kills the child
+// itself. The two variants run one after the other; 80 s × 2 is still within the test's
+// 180 s.
 const CHILD_TIMEOUT_MS = 80000;
 
 test(
-  "两个变体的 wasm 二进制确实不同 —— --simd 没有被静默丢掉",
+  "the two variants' wasm binaries really differ (--simd was not silently dropped)",
   { skip },
   (t) => {
     const sha = (p) =>
@@ -128,20 +152,21 @@ test(
     t.diagnostic(
       `baseline ${fs.statSync(baseWasm).size} B / simd ${fs.statSync(simdWasm).size} B`,
     );
-    // 这是**必要条件，不是充分条件**：两份二进制不同并不证明里面真有 v128 指令
-    // （证明那件事要完整解析 wasm，超出本测试范围）。但它能挡住最现实的那种故障
-    // ——--simd 被上游改名/移除/静默忽略，于是两条构建路径产出逐字节相同的东西，
-    // 而所有断言照样全绿、报告照样宣称「SIMD 变体已验证」。
+    // A **necessary, not sufficient** condition: different binaries do not prove that
+    // v128 instructions are inside (that takes a full wasm parse, beyond this test). It
+    // does stop the most realistic failure — --simd renamed, removed or silently ignored
+    // upstream, both build paths producing identical bytes, and every assertion still
+    // green while the report claims "SIMD variant verified".
     assert.notStrictEqual(
       sha(baseWasm),
       sha(simdWasm),
-      "baseline 与 simd 的 opencv_js.wasm 逐字节相同 —— --simd 很可能没生效",
+      "baseline and simd opencv_js.wasm are byte-identical; --simd most likely had no effect",
     );
   },
 );
 
 test(
-  "baseline 与 simd 两个变体的输出一致",
+  "the baseline and simd variants produce the same output",
   { skip, timeout: 180000 },
   async (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "opencvjs-parity-"));
@@ -158,19 +183,30 @@ test(
         out[v] = JSON.parse(fs.readFileSync(f, "utf8"));
       }
 
-      // 先把全部用例算完，最后一次性断言。
+      // Evaluate every case first and assert once at the end.
       //
-      // 不在第一个不合格的用例上就抛：首次真实 SIMD 构建时正是 pyrDown 先抛，
-      // 于是排在它后面的 Sobel / dft / 两个扩展层用例一个都没跑，报告里看不出
-      // 「其余算子到底是全对还是也有问题」——而那恰恰是判断「个别算子的浮点离散」
-      // 还是「SIMD 整体有缺陷」最需要的信息。收集完再断言，一次就能看到全貌。
+      // Not throwing on the first failing case: on the first real SIMD build pyrDown
+      // threw first, so Sobel, dft and the two extension-layer cases after it never ran,
+      // and the report could not say whether the remaining operations were all fine or
+      // broken too — exactly what is needed to tell "one operation's floating-point
+      // scatter" from "SIMD is broken". Collecting first shows the whole picture at once.
       const failures = [];
       for (const c of CASES) {
         const a = out.baseline[c.name];
         const b = out.simd[c.name];
-        assert.ok(Array.isArray(a) && Array.isArray(b), `${c.name}: 缺少结果`);
-        assert.strictEqual(a.length, b.length, `${c.name}: 输出长度不同`);
-        assert.ok(a.length > 0, `${c.name}: 输出为空，这个用例什么都没测`);
+        assert.ok(
+          Array.isArray(a) && Array.isArray(b),
+          `${c.name}: result missing`,
+        );
+        assert.strictEqual(
+          a.length,
+          b.length,
+          `${c.name}: output lengths differ`,
+        );
+        assert.ok(
+          a.length > 0,
+          `${c.name}: empty output; this case tests nothing`,
+        );
 
         let maxAbs = 0;
         let at = -1;
@@ -179,7 +215,7 @@ test(
         for (let i = 0; i < a.length; i += 1) {
           if (!Number.isFinite(a[i]) || !Number.isFinite(b[i])) {
             failures.push(
-              `${c.name}: 第 ${i} 个元素不是有限数 baseline=${a[i]} simd=${b[i]}`,
+              `${c.name}: element ${i} is not finite, baseline=${a[i]} simd=${b[i]}`,
             );
             at = -2;
             break;
@@ -196,35 +232,37 @@ test(
         if (at === -2) continue;
 
         if (c.exact) {
-          // 整数内核与扩展层：没有舍入可言，任何差异都是 bug。
+          // Integer kernels and the extension layer: there is no rounding, so any
+          // difference is a bug.
           if (maxAbs !== 0) {
             failures.push(
-              `${c.name}: 第 ${at} 个元素不同 baseline=${a[at]} simd=${b[at]}（本用例要求逐位相同）`,
+              `${c.name}: element ${at} differs, baseline=${a[at]} simd=${b[at]} (this case must be bit-identical)`,
             );
           }
           continue;
         }
 
         const threshold = TOL * Math.max(normInf, 1);
-        // 无论过不过都把数字打出来：「逐位相同」和「差 1.3e-7」是两个不同的事实，
-        // 只报一个「通过」会把它丢掉。逐位相同与否是**构建相关**的偶然性质
-        // （2.1.0 首次真实构建时 14 个用例里 12 个逐位相同），所以只报告、不断言
-        // ——一旦哪天不再相同，CI 日志里看得见，但不会因此误报失败。
+        // Print the numbers whether or not the case passes: "bit-identical" and "differs
+        // by 1.3e-7" are different facts, and a bare "pass" would lose them. Being
+        // bit-identical is an accident of the build (on the first real 2.1.0 build, 12 of
+        // 14 cases were), so it is reported, not asserted — if it changes, the CI log
+        // shows it without failing.
         t.diagnostic(
-          `${c.name}: ${nDiff === 0 ? "逐位相同" : `${nDiff}/${a.length} 元素不同`}` +
+          `${c.name}: ${nDiff === 0 ? "bit-identical" : `${nDiff}/${a.length} elements differ`}` +
             `  max|a-b|=${maxAbs.toExponential(2)}` +
             `  ‖ref‖∞=${normInf.toExponential(2)}` +
-            `  判据=${(maxAbs / Math.max(normInf, 1)).toExponential(2)}` +
-            `  阈值=${TOL.toExponential(0)}` +
+            `  criterion=${(maxAbs / Math.max(normInf, 1)).toExponential(2)}` +
+            `  threshold=${TOL.toExponential(0)}` +
             (maxAbs > 0
-              ? `  余量 ${(threshold / maxAbs).toFixed(0)}x`
-              : "  余量 ∞"),
+              ? `  margin ${(threshold / maxAbs).toFixed(0)}x`
+              : "  margin ∞"),
         );
         if (maxAbs > threshold) {
           failures.push(
-            `${c.name}: max|a-b| = ${maxAbs.toExponential(3)} 超过 ` +
+            `${c.name}: max|a-b| = ${maxAbs.toExponential(3)} exceeds ` +
               `${TOL} × max(‖ref‖∞,1) = ${threshold.toExponential(3)}` +
-              `（最大差在第 ${at} 个元素 baseline=${a[at]} simd=${b[at]}）`,
+              ` (largest difference at element ${at}, baseline=${a[at]} simd=${b[at]})`,
           );
         }
       }
@@ -232,7 +270,7 @@ test(
       assert.deepStrictEqual(
         failures,
         [],
-        `双产物输出不一致（共 ${failures.length} 项）:\n  ${failures.join("\n  ")}`,
+        `the variants' outputs disagree (${failures.length} case(s)):\n  ${failures.join("\n  ")}`,
       );
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });

@@ -1,35 +1,41 @@
 "use strict";
 
-// 参数前置校验（src/js/guards.js）的守卫。
+// Guards for the argument validation in src/js/guards.js.
 //
-// 这批用例要钉住的不是「会抛异常」，而是**抛出物的形状**：
+// What these cases pin down is not "it throws" but **the shape of what is thrown**:
 //
-//   加 guards 之前，一个越界的 Rect 让 C++ 的 CV_Assert 走 abort，emscripten
-//   把它转成 `throw <裸数字>` —— 一个堆指针，不是错误码（随变体与分配历史变化：
-//   实测 baseline 上是 1914504，simd 变体上同一段代码是 1955632，所以不写死具体值）。
-//   调用方 catch 到它之后：
-//     e instanceof Error → false      e.message → undefined
-//     e.message.includes(...) → TypeError: Cannot read properties of undefined
-//   也就是说，调用方想「记一条日志再降级」都会让自己再崩一次，而那个数字对定位
-//   问题毫无帮助。更糟的一类（越界的行列号）连 abort 都没有，直接静默改写别人的
-//   堆内存。
+//   Before the guards, an out-of-range Rect made C++'s CV_Assert abort. The thrown value
+//   depends on the emsdk version that built the artifact (details at the top of
+//   src/js/guards.js):
+//     emsdk 3.1.64  `throw <bare number>` — a heap pointer, not an error code (it changes
+//                   with the variant and the allocation history: 1914504 on baseline,
+//                   1955632 on simd, so no value is hard-coded). e instanceof Error is
+//                   false and e.message is undefined, so a caller doing
+//                   e.message.includes(...) crashes again (Cannot read properties of
+//                   undefined).
+//     emsdk 6.0.12  abort() throws a RuntimeError whose message is the same for every
+//                   failure, "Aborted(undefined). Build with -sASSERTIONS for more
+//                   info.", and prints an "Aborted(undefined)" line on stderr.
+//   Neither helps locate the problem. The worse class (out-of-range rows and columns)
+//   does not even abort: it silently rewrites somebody else's heap memory.
 //
-// 因此每条用例都断言三件事：抛的是 Error 的子类、是正确的子类（TypeError 还是
-// RangeError）、消息里同时有**实际收到的值**和**期望的集合/范围**。最后一条尤其
-// 重要：一条不含实际值的错误消息，和那个裸数字相比只是没那么难看而已。
+// So every case asserts three things: an Error subclass is thrown, it is the right one
+// (TypeError or RangeError), and the message contains both **the value received** and
+// **the expected set or range**. The last one matters most: an error message without the
+// actual value is only a slightly less ugly abort.
 
 const test = require("node:test");
 const assert = require("node:assert");
 const { getCv } = require("../helpers");
 
-/** 3×3 CV_32FC1，值 1..9。 */
+/** 3×3 CV_32FC1 with values 1..9. */
 function mat3(cv) {
   return cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 }
 
 /**
- * 跑一个必然失败的调用，返回抛出物；并在这里就把「必须是 Error 子类」断言掉。
- * needles 里的每个片段都必须出现在 e.message 中。
+ * Runs a call that must fail and returns what it threw, asserting right here that it is
+ * an Error subclass. Every needle must appear in e.message.
  */
 function assertGuard(fn, Ctor, needles, label) {
   let thrown;
@@ -40,33 +46,39 @@ function assertGuard(fn, Ctor, needles, label) {
     threw = true;
     thrown = e;
   }
-  assert.ok(threw, `${label}: 没有抛出任何东西 —— 校验没生效`);
+  assert.ok(threw, `${label}: nothing was thrown; the check did not run`);
   assert.ok(
     thrown instanceof Error,
-    `${label}: 抛出的不是 Error 实例，而是 ${typeof thrown} ${String(thrown)}` +
-      `（这正是 guards 要消灭的形状）`,
+    `${label}: threw a ${typeof thrown} ${String(thrown)} instead of an Error ` +
+      `(exactly the shape the guards exist to remove)`,
   );
   assert.ok(
     thrown instanceof Ctor,
-    `${label}: 期望 ${Ctor.name}，实际是 ${thrown.constructor.name}: ${thrown.message}`,
+    `${label}: expected ${Ctor.name}, got ${thrown.constructor.name}: ${thrown.message}`,
   );
   for (const needle of needles) {
     assert.ok(
       thrown.message.includes(needle),
-      `${label}: 消息里缺少 "${needle}" —— 实际消息: ${thrown.message}`,
+      `${label}: the message lacks "${needle}"; actual message: ${thrown.message}`,
     );
   }
   return thrown;
 }
 
 // ---------------------------------------------------------------------------
-// 前提：不加校验时，产物确实抛裸数字。
+// Premise: without validation, what a native failure throws says nothing.
 //
-// 这条不是凑数——guards 的全部理由都建立在它上面。如果哪天换了产物、abort 改成
-// 抛真正的 Error，这里会立刻失败，届时应当重新评估 guards 的必要性（而不是默默
-// 保留一层已经没有理由的校验）。
+// This is not filler — the whole case for the guards rests on it. It first asserted "a
+// bare number is thrown"; upgrading to emsdk 6.0.12 made it fail as intended (the throw
+// became a RuntimeError), and the premise was re-evaluated: the new throw is an Error,
+// but its message is the same "Aborted(undefined)…" for every failure, so the case still
+// holds. Both known shapes are accepted here — ci.yml may test artifacts from an earlier
+// build, so both occur — and the message must **not** contain anything that locates the
+// problem. If artifacts ever throw errors carrying OpenCV's assertion text (for
+// instance with exception catching enabled), this fails and the premise needs another
+// look.
 // ---------------------------------------------------------------------------
-test("前提：原生 roi() 越界时抛的是裸数字，不是 Error", async () => {
+test("premise: what native roi() throws when out of range says nothing", async () => {
   const cv = await getCv();
   const mat = mat3(cv);
   let thrown;
@@ -80,24 +92,34 @@ test("前提：原生 roi() 越界时抛的是裸数字，不是 Error", async (
     mat.delete();
   }
 
-  assert.ok(threw, "原生 roi() 越界居然没抛 —— guards 的前提变了，需重新评估");
-  assert.strictEqual(
-    thrown instanceof Error,
-    false,
-    `原生 abort 现在抛的是 Error（${thrown && thrown.constructor && thrown.constructor.name}）—— ` +
-      `guards 的理由需要重写`,
+  assert.ok(
+    threw,
+    "native roi() did not throw when out of range; the guards' premise changed and needs another look",
   );
-  assert.strictEqual(typeof thrown, "number", `实际抛出物: ${String(thrown)}`);
-  assert.strictEqual(thrown.message, undefined);
+  const shape = `${typeof thrown} ${thrown && thrown.constructor && thrown.constructor.name}: ${
+    thrown && thrown.message
+  }`;
+  if (typeof thrown === "number") {
+    // emsdk 3.1.64: a bare heap pointer
+    return;
+  }
+  assert.ok(
+    thrown instanceof Error && /^Aborted\(/.test(thrown.message),
+    `a native failure now throws ${shape}, which is neither known shape; the case for the guards needs another look`,
+  );
+  assert.ok(
+    !/roi|Rect|Assertion|cv::|\(-215/.test(thrown.message),
+    `the native failure's message now locates the problem (${thrown.message}); the case for the guards needs another look`,
+  );
 });
 
-test("abort 之后模块仍可用（所以问题是错误信息，不是模块报废）", async () => {
+test("the module still works after an abort (the problem is the error, not a broken module)", async () => {
   const cv = await getCv();
   const mat = mat3(cv);
   try {
     mat.roi(new cv.Rect(1, 1, 10, 10));
   } catch (_) {
-    /* 裸数字，忽略 */
+    /* the abort's throw, see the previous case; ignored */
   }
   const after = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
   try {
@@ -109,56 +131,57 @@ test("abort 之后模块仍可用（所以问题是错误信息，不是模块�
 });
 
 // ---------------------------------------------------------------------------
-// 表驱动：每条都是一个「加 guards 之前会 abort 或静默写坏内存」的调用。
+// Table-driven: every entry is a call that aborted or silently corrupted memory before
+// the guards existed.
 // ---------------------------------------------------------------------------
 const CASES = [
-  // —— Rect 越界（加 guards 前：abort，裸数字）——
+  // Out-of-range Rects (before the guards: abort)
   {
-    name: "roiClone 的 Rect 超出右下边界",
+    name: "roiClone with a Rect past the bottom-right edge",
     call: (cv, m) => m.roiClone(new cv.Rect(1, 1, 10, 10)),
     error: RangeError,
     needs: ["Mat.roiClone(rect)", "width=10", "cols=3", "rows=3"],
   },
   {
-    name: "roiClone 的 Rect 有负坐标",
+    name: "roiClone with a negative Rect coordinate",
     call: (cv, m) => m.roiClone(new cv.Rect(-1, 0, 2, 2)),
     error: RangeError,
     needs: ["x=-1", "0 ≤ x"],
   },
   {
-    name: "roiClone 收到的不是 Rect",
+    name: "roiClone given something that is not a Rect",
     call: (cv, m) => m.roiClone(undefined),
     error: TypeError,
     needs: ["Mat.roiClone(rect)", "undefined", "{x, y, width, height}"],
   },
   {
-    name: "roiClone 的 Rect 字段是小数",
+    name: "roiClone with a fractional Rect field",
     call: (cv, m) => m.roiClone({ x: 0, y: 0, width: 1.5, height: 2 }),
     error: TypeError,
-    needs: ["整数", "number 1.5"],
+    needs: ["must be integers", "number 1.5"],
   },
-  // —— 列 / 对角线下标越界（加 guards 前：abort 或畸形 Mat）——
+  // Out-of-range column / diagonal indices (before the guards: abort or a malformed Mat)
   {
-    name: "colClone 的列号越界",
+    name: "colClone with an out-of-range column",
     call: (cv, m) => m.colClone(9),
     error: RangeError,
     needs: ["Mat.colClone(col)", "col = 9", "0..2"],
   },
   {
-    name: "colClone 的列号是小数（原本被静默截断）",
+    name: "colClone with a fractional column (used to be truncated silently)",
     call: (cv, m) => m.colClone(1.5),
     error: TypeError,
-    needs: ["col 必须是整数", "number 1.5"],
+    needs: ["col must be an integer", "number 1.5"],
   },
   {
-    name: "diagClone 的对角线号越界",
+    name: "diagClone with an out-of-range diagonal",
     call: (cv, m) => m.diagClone(4),
     error: RangeError,
     needs: ["Mat.diagClone(d)", "d = 4", "-2..2"],
   },
-  // —— 就地写入的下标越界（加 guards 前：静默写坏堆内存）——
+  // Out-of-range indices in in-place writes (before the guards: silent heap corruption)
   {
-    name: "replaceMatOnRect 的 Rect 超出目标",
+    name: "replaceMatOnRect with a Rect past the destination",
     call: (cv, m) => {
       const src = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
       try {
@@ -171,7 +194,7 @@ const CASES = [
     needs: ["Mat.replaceMatOnRect(src, rect)", "x=2", "cols=3"],
   },
   {
-    name: "replaceMatOnRect 的 src 装不下 rect",
+    name: "replaceMatOnRect with a src smaller than the rect",
     call: (cv, m) => {
       const src = cv.matFromArray(1, 1, cv.CV_32FC1, [1]);
       try {
@@ -181,16 +204,16 @@ const CASES = [
       }
     },
     error: RangeError,
-    needs: ["src 是 1×1", "装不下 3×3"],
+    needs: ["src is 1×1", "too small for the 3×3 region"],
   },
   {
-    name: "replaceMatOnRect 的 src 不是 Mat",
+    name: "replaceMatOnRect with a src that is not a Mat",
     call: (cv, m) => m.replaceMatOnRect({}, new cv.Rect(0, 0, 1, 1)),
     error: TypeError,
-    needs: ["src 必须是 cv.Mat", "Object 实例"],
+    needs: ["src must be a cv.Mat", "Object instance"],
   },
   {
-    name: "rectAdd 的 Rect 超出目标",
+    name: "rectAdd with a Rect past the destination",
     call: (cv, m) => {
       const src = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
       try {
@@ -203,7 +226,7 @@ const CASES = [
     needs: ["Mat.rectAdd(src, rect)", "rows=3"],
   },
   {
-    name: "rectSubtract 的 Rect 超出目标",
+    name: "rectSubtract with a Rect past the destination",
     call: (cv, m) => {
       const src = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
       try {
@@ -216,91 +239,92 @@ const CASES = [
     needs: ["Mat.rectSubtract(src, rect)", "width=4"],
   },
   {
-    name: "replaceMatOnRow 的行号越界",
+    name: "replaceMatOnRow with an out-of-range row",
     call: (cv, m) => m.replaceMatOnRow([1, 2, 3], 7),
     error: RangeError,
     needs: ["Mat.replaceMatOnRow(arr, row)", "row = 7", "0..2"],
   },
   {
-    name: "replaceMatOnRow 的数组太短",
+    name: "replaceMatOnRow with a short array",
     call: (cv, m) => m.replaceMatOnRow([1], 0),
     error: RangeError,
-    needs: ["arr 只有 1 个元素", "需要 3 个"],
+    needs: ["arr has 1 element but 3 are needed"],
   },
   {
-    name: "replaceMatOnCol 的列号越界",
+    name: "replaceMatOnCol with an out-of-range column",
     call: (cv, m) => m.replaceMatOnCol([1, 2, 3], 7),
     error: RangeError,
     needs: ["Mat.replaceMatOnCol(arr, col)", "col = 7"],
   },
   {
-    name: "replaceMatOnCol 的数组太短",
+    name: "replaceMatOnCol with a short array",
     call: (cv, m) => m.replaceMatOnCol([1], 0),
     error: RangeError,
-    needs: ["arr 只有 1 个元素", "需要 3 个"],
+    needs: ["arr has 1 element but 3 are needed"],
   },
   {
-    name: "addOnCol 的列号越界",
+    name: "addOnCol with an out-of-range column",
     call: (cv, m) => m.addOnCol(1, 7),
     error: RangeError,
     needs: ["Mat.addOnCol(constant, col)", "col = 7"],
   },
   {
-    name: "addOnCol 的常数不是数",
+    name: "addOnCol with a constant that is not a number",
     call: (cv, m) => m.addOnCol(undefined, 0),
     error: TypeError,
-    needs: ["constant 必须是数", "undefined"],
+    needs: ["constant must be a number", "undefined"],
   },
   {
-    name: "replaceMatOnPoint 的行列越界",
+    name: "replaceMatOnPoint with an out-of-range row and column",
     call: (cv, m) => m.replaceMatOnPoint(99, 7, 7),
     error: RangeError,
     needs: ["Mat.replaceMatOnPoint(value, row, col)", "row = 7"],
   },
   {
-    name: "replaceMatOnPoint 的 Point 越界",
+    name: "replaceMatOnPoint with an out-of-range Point",
     call: (cv, m) => m.replaceMatOnPoint(99, new cv.Point(9, 0)),
     error: RangeError,
     needs: ["col = 9", "0..2"],
   },
   {
-    name: "replaceMatOnPoint 的值不是数（数据可以是 NaN，但必须是 number）",
+    name: "replaceMatOnPoint with a value that is not a number (data may be NaN, but must be a number)",
     call: (cv, m) => m.replaceMatOnPoint("1", 0, 0),
     error: TypeError,
     needs: [
       "Mat.replaceMatOnPoint(value, row, col)",
-      "value 必须是 number",
+      "value must be a number",
       'string "1"',
     ],
   },
-  // —— 标量运算的常数 ——
+  // Constants of the scalar operations
   {
-    name: "addConstant 收到 undefined（原本静默产出整片 NaN）",
+    name: "addConstant given undefined (used to produce a Mat full of NaN silently)",
     call: (cv, m) => m.addConstant(undefined),
     error: TypeError,
-    needs: ["Mat.addConstant(constant)", "NaN 除外", "undefined"],
+    needs: ["Mat.addConstant(constant)", "other than NaN", "undefined"],
   },
   {
-    name: "mulConstant 收到 NaN",
+    name: "mulConstant given NaN",
     call: (cv, m) => m.mulConstant(NaN),
     error: TypeError,
-    needs: ["NaN 除外", "number NaN"],
+    needs: ["other than NaN", "number NaN"],
   },
   {
-    name: "constantDivide 收到字符串",
+    name: "constantDivide given a string",
     call: (cv, m) => m.constantDivide("2"),
     error: TypeError,
-    needs: ["NaN 除外", 'string "2"'],
+    needs: ["other than NaN", 'string "2"'],
   },
   {
-    name: "addOnCol 的常数是 NaN",
+    name: "addOnCol with a NaN constant",
     call: (cv, m) => m.addOnCol(NaN, 0),
     error: TypeError,
     needs: ["Mat.addOnCol(constant, col)", "number NaN"],
   },
   {
-    // 被除数用 Scalar 填充，而 Scalar 只有 4 个分量：>4 通道的 Mat 在 C++ 里 abort。
-    name: "constantDivide 在 5 通道 Mat 上（Scalar 填不满，原本 abort 抛裸数字）",
+    // The dividend is filled with a Scalar, which has only 4 components: a Mat with more
+    // than 4 channels aborts in C++.
+    name: "constantDivide on a 5-channel Mat (a Scalar cannot fill it; used to abort)",
     call: (cv) => {
       const planes = new cv.MatVector();
       const one = cv.matFromArray(1, 1, cv.CV_32FC1, [2]);
@@ -316,24 +340,28 @@ const CASES = [
       }
     },
     error: TypeError,
-    needs: ["Mat.constantDivide(constant)", "实际收到 5 通道"],
+    needs: ["Mat.constantDivide(constant)", "got 5 channels"],
   },
-  // —— reshapeRows 的行数 ——
+  // The row count of reshapeRows
   {
-    name: "reshapeRows 的行数不是整数（原本抛的是 RangeError）",
+    name: "reshapeRows with a fractional row count (used to throw a RangeError)",
     call: (cv, m) => m.reshapeRows(1.5),
     error: TypeError,
-    needs: ["Mat.reshapeRows(rows)", "rows 必须是整数", "number 1.5"],
+    needs: ["Mat.reshapeRows(rows)", "rows must be an integer", "number 1.5"],
   },
   {
-    name: "reshapeRows 的行数不能整除像素数",
+    name: "reshapeRows with a row count that does not divide the pixel count",
     call: (cv, m) => m.reshapeRows(4),
     error: RangeError,
-    needs: ["Mat.reshapeRows(rows)", "9 个像素无法整除为 4 行"],
+    needs: [
+      "Mat.reshapeRows(rows)",
+      "the 9 pixels",
+      "cannot be split evenly into 4 rows",
+    ],
   },
-  // —— norm2 的尺寸 / 类型不匹配（加 guards 前：cv.subtract abort，裸数字）——
+  // norm2 with mismatched sizes / types (before the guards: cv.subtract aborts)
   {
-    name: "norm2 两个 Mat 尺寸不同",
+    name: "norm2 with Mats of different sizes",
     call: (cv, m) => {
       const b = cv.matFromArray(1, 3, cv.CV_32FC1, [1, 2, 3]);
       try {
@@ -343,10 +371,10 @@ const CASES = [
       }
     },
     error: RangeError,
-    needs: ["cv.norm2(src1, src2, normType)", "src1 是 3×3", "src2 是 1×3"],
+    needs: ["cv.norm2(src1, src2, normType)", "src1 is 3×3", "src2 is 1×3"],
   },
   {
-    name: "norm2 两个 Mat 类型不同",
+    name: "norm2 with Mats of different types",
     call: (cv, m) => {
       const b = cv.matFromArray(3, 3, cv.CV_8UC1, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
       try {
@@ -356,29 +384,29 @@ const CASES = [
       }
     },
     error: TypeError,
-    needs: ["CV_32FC1", "CV_8UC1", "类型必须一致"],
+    needs: ["CV_32FC1", "CV_8UC1", "the types must match"],
   },
   {
-    name: "norm2 收到非 Mat",
+    name: "norm2 given something that is not a Mat",
     call: (cv) => cv.norm2(1, 2),
     error: TypeError,
-    needs: ["src1 必须是 cv.Mat", "number 1"],
+    needs: ["src1 must be a cv.Mat", "number 1"],
   },
   {
-    name: "norm2 的 normType 不是可用的范数类型（原本 abort 抛裸数字）",
+    name: "norm2 with a normType that is not a supported norm (used to abort)",
     call: (cv, m) => cv.norm2(m, m, 3),
     error: RangeError,
     needs: ["cv.norm2(src1, src2, normType)", "normType = 3"],
   },
   {
-    name: "norm2 在非 CV_8UC1 上用 NORM_HAMMING（原本 abort 抛裸数字）",
+    name: "norm2 with NORM_HAMMING on something other than CV_8UC1 (used to abort)",
     call: (cv, m) => cv.norm2(m, m, cv.NORM_HAMMING),
     error: TypeError,
     needs: ["cv.norm2(src1, src2, normType)", "CV_8UC1", "CV_32FC1"],
   },
-  // —— dftSplit 的通道数 ——
+  // The channel count of dftSplit
   {
-    name: "dftSplit 在多通道 Mat 上（只会读通道 0，静默返回垃圾）",
+    name: "dftSplit on a multi-channel Mat (reads channel 0 only and silently returns garbage)",
     call: (cv) => {
       const m2 = cv.matFromArray(2, 2, cv.CV_32FC2, [1, 2, 3, 4, 5, 6, 7, 8]);
       try {
@@ -388,74 +416,100 @@ const CASES = [
       }
     },
     error: TypeError,
-    needs: ["Mat.dftSplit()", "CV_32FC2", "只接受 1 通道", "实际收到 2 通道"],
+    needs: [
+      "Mat.dftSplit()",
+      "CV_32FC2",
+      "accepts only 1-channel",
+      "got 2 channels",
+    ],
   },
-  // —— matFromArray 的元素个数 ——
+  // The element count of matFromArray
   {
-    name: "matFromArray 元素不足（原本静默返回未初始化的堆内存）",
+    name: "matFromArray with too few elements (used to return uninitialized heap memory silently)",
     call: (cv) => cv.matFromArray(3, 3, cv.CV_32FC1, [1, 2, 3]),
     error: RangeError,
-    needs: ["cv.matFromArray", "需要 9 个元素", "实际收到 3 个"],
+    needs: ["cv.matFromArray", "needs 9 elements", "got 3"],
   },
   {
-    name: "matFromArray 多通道时元素个数按通道算",
+    name: "matFromArray counts elements per channel on multi-channel types",
     call: (cv) => cv.matFromArray(2, 2, cv.CV_32FC3, [1, 2, 3, 4]),
     error: RangeError,
-    needs: ["CV_32FC3", "需要 12 个元素", "2×2×3 通道"],
+    needs: ["CV_32FC3", "needs 12 elements", "2×2×3 channels"],
   },
   {
-    name: "matFromArray 的 array 不是数组",
+    name: "matFromArray with an array that is not an array",
     call: (cv) => cv.matFromArray(1, 1, cv.CV_32FC1, 5),
     error: TypeError,
-    needs: ["array 必须是数组或 TypedArray", "number 5"],
+    needs: ["array must be an array or a TypedArray", "number 5"],
   },
-  // —— PTR 自己的边界（它是文档化的公开 API，用户会绕开上面那些方法直接调）——
   {
-    name: "PTR(row, col) 行列都越界",
+    // The glue used to allocate the Mat before rejecting the type, leaking it on every call.
+    name: "matFromArray with an unknown type (a misspelt constant is undefined)",
+    call: (cv) => cv.matFromArray(2, 2, cv.CV_32FC5, [1, 2, 3, 4]),
+    error: TypeError,
+    needs: ["cv.matFromArray", "type must be", "type=undefined"],
+  },
+  {
+    name: "matFromArray with a fractional row count",
+    call: (cv) => cv.matFromArray(1.5, 2, cv.CV_8UC1, [1, 2, 3]),
+    error: TypeError,
+    needs: ["cv.matFromArray", "rows", "number 1.5"],
+  },
+  {
+    name: "matFromArray with a negative column count",
+    call: (cv) => cv.matFromArray(1, -2, cv.CV_8UC1, []),
+    error: RangeError,
+    needs: ["cols = -2", "must not be negative"],
+  },
+  // PTR's own bounds (it is documented public API; users call it directly, bypassing the
+  // methods above)
+  {
+    name: "PTR(row, col) with both indices out of range",
     call: (cv, m) => m.PTR(9, 9),
     error: RangeError,
     needs: ["Mat.PTR(row, col)", "row = 9", "0..2"],
   },
   {
-    name: "PTR(row) 行形式越界",
+    name: "PTR(row), the row form, out of range",
     call: (cv, m) => m.PTR(9),
     error: RangeError,
     needs: ["Mat.PTR(row, col)", "row = 9", "0..2"],
   },
   {
-    name: "PTR 只有列越界",
+    name: "PTR with only the column out of range",
     call: (cv, m) => m.PTR(0, 3),
     error: RangeError,
     needs: ["col = 3", "0..2"],
   },
   {
-    name: "PTR 的负行号",
+    name: "PTR with a negative row",
     call: (cv, m) => m.PTR(-1, 0),
     error: RangeError,
     needs: ["row = -1"],
   },
   {
-    // 1.x 到 2.0 之间，col 的缺省值是 -1、判据是 col < 0，于是 PTR(0, -1) 被当成
-    // 「取整行」而不是报错。缺省值已改为 undefined，负列号一律如实报越界。
-    name: "PTR 的负列号（旧实现把 -1 当成取整行的哨兵）",
+    // Between 1.x and 2.0 col defaulted to -1 with a `col < 0` test, so PTR(0, -1) was
+    // taken as "the whole row" instead of failing. The default is undefined now and every
+    // negative column is reported as out of range.
+    name: "PTR with a negative column (the old code took -1 as the whole-row sentinel)",
     call: (cv, m) => m.PTR(0, -1),
     error: RangeError,
     needs: ["col = -1", "0..2"],
   },
   {
-    name: "PTR 的小数行号（原本被静默截断成第 1 行）",
+    name: "PTR with a fractional row (used to be truncated to row 1 silently)",
     call: (cv, m) => m.PTR(1.5, 0),
     error: TypeError,
-    needs: ["row 必须是整数", "number 1.5"],
+    needs: ["row must be an integer", "number 1.5"],
   },
   {
-    name: "PTR 的小数列号",
+    name: "PTR with a fractional column",
     call: (cv, m) => m.PTR(0, 1.5),
     error: TypeError,
-    needs: ["col 必须是整数", "number 1.5"],
+    needs: ["col must be an integer", "number 1.5"],
   },
   {
-    name: "空 Mat 上的 PTR",
+    name: "PTR on an empty Mat",
     call: (cv) => {
       const empty = new cv.Mat();
       try {
@@ -465,7 +519,7 @@ const CASES = [
       }
     },
     error: RangeError,
-    needs: ["Mat.PTR(row, col)", "该 Mat 在这个方向上是空的"],
+    needs: ["Mat.PTR(row, col)", "the Mat is empty in this dimension"],
   },
 ];
 
@@ -482,13 +536,13 @@ for (const c of CASES) {
 }
 
 // ---------------------------------------------------------------------------
-// 已被 delete() 的 Mat。
+// Deleted Mats.
 //
-// 这一类和上面几类不同：embind 本来就抛 BindingError（是 Error 实例、消息可读），
-// 所以 guards 在这里补的不是「可捕获性」，而是 embind 说不出的那半句——是哪个
-// 函数的哪个参数。下面同时钉住这两点。
+// Unlike the cases above, Embind already throws a BindingError here (an Error with a
+// readable message), so what the guards add is not catchability but the half Embind
+// cannot say: which argument of which function. Both are pinned below.
 // ---------------------------------------------------------------------------
-test("guards: 用已 delete() 的 Mat 调用扩展方法，报出函数名与参数名", async () => {
+test("guards: calling an extension method on a deleted Mat names the function and the argument", async () => {
   const cv = await getCv();
   const dead = mat3(cv);
   dead.delete();
@@ -504,11 +558,11 @@ test("guards: 用已 delete() 的 Mat 调用扩展方法，报出函数名与参
     ["Mat.addOnCol(constant, col)", () => dead.addOnCol(1, 0)],
   ];
   for (const [where, fn] of calls) {
-    assertGuard(fn, TypeError, [where, "已被 delete()"], where);
+    assertGuard(fn, TypeError, [where, "the receiver has been deleted"], where);
   }
 });
 
-test("guards: 第二个参数是已 delete() 的 Mat 时，指名道姓地报 src", async () => {
+test("guards: a deleted Mat as the second argument is reported by name", async () => {
   const cv = await getCv();
   const mat = mat3(cv);
   const dead = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
@@ -517,13 +571,13 @@ test("guards: 第二个参数是已 delete() 的 Mat 时，指名道姓地报 sr
     assertGuard(
       () => mat.replaceMatOnRect(dead, new cv.Rect(0, 0, 2, 2)),
       TypeError,
-      ["Mat.replaceMatOnRect(src, rect)", "src 已被 delete()"],
+      ["Mat.replaceMatOnRect(src, rect)", "src has been deleted"],
       "replaceMatOnRect(dead src)",
     );
     assertGuard(
       () => cv.norm2(mat, dead),
       TypeError,
-      ["cv.norm2(src1, src2, normType)", "src2 已被 delete()"],
+      ["cv.norm2(src1, src2, normType)", "src2 has been deleted"],
       "norm2(dead src2)",
     );
   } finally {
@@ -532,44 +586,46 @@ test("guards: 第二个参数是已 delete() 的 Mat 时，指名道姓地报 sr
 });
 
 // ---------------------------------------------------------------------------
-// 校验必须只拦下真正的错误：合法调用一个都不能被误伤。
-// （全类型 × 全通道的正确性由 test/types 与 test/unit 的其余用例覆盖，这里只钉
-// 那些正好落在边界上、最容易被写错的校验的输入。）
+// The checks must stop only real errors: no valid call may be rejected.
+// (Correctness across all types and channels is covered by test/types and the rest of
+// test/unit; this pins only inputs right on the boundaries, where checks are easiest to
+// get wrong.)
 // ---------------------------------------------------------------------------
-test("guards: 贴边但合法的输入不受影响", async () => {
+test("guards: valid inputs on the boundaries are not affected", async () => {
   const cv = await getCv();
   const mat = mat3(cv);
   const kept = [];
   try {
-    // Rect 正好铺满整个 Mat
+    // A Rect covering the whole Mat
     kept.push(mat.roiClone(new cv.Rect(0, 0, 3, 3)));
-    // 空 Rect 是 OpenCV 允许的
+    // An empty Rect, which OpenCV allows
     kept.push(mat.roiClone(new cv.Rect(1, 1, 0, 0)));
-    // 最后一列、两端的对角线
+    // The last column and the outermost diagonals
     kept.push(mat.colClone(2));
     kept.push(mat.diagClone(2));
     kept.push(mat.diagClone(-2));
-    // 最后一行 / 最后一个像素
+    // The last row / the last pixel
     mat.replaceMatOnRow([1, 2, 3], 2);
     mat.replaceMatOnPoint(0, 2, 2);
     mat.addOnCol(0, 2);
-    // 负数常数、0 都是有限数
+    // Negative constants and 0 are finite numbers
     kept.push(mat.addConstant(-1.5));
     kept.push(mat.mulConstant(0));
 
     assert.strictEqual(kept[0].rows, 3);
-    assert.strictEqual(kept[1].rows, 0, "空 Rect 应得到空 Mat");
-    // colClone 是在下面那次 replaceMatOnRow 之前取的副本，因此仍是原始的第 2 列
+    assert.strictEqual(kept[1].rows, 0, "an empty Rect gives an empty Mat");
+    // colClone was copied before the replaceMatOnRow below, so it is still the original
+    // column 2
     assert.deepStrictEqual(Array.from(kept[2].DATA()), [3, 6, 9]);
 
-    // PTR 的两种合法形式，以及贴边的下标。
-    // 此刻 mat 的第 2 行是上面 replaceMatOnRow([1,2,3], 2) 写进去的，随后
-    // replaceMatOnPoint(0, 2, 2) 把 (2,2) 改成了 0；addConstant / mulConstant
-    // 返回新 Mat，不动源。
+    // Both valid forms of PTR, and indices on the boundary.
+    // Row 2 of mat now holds what replaceMatOnRow([1,2,3], 2) wrote, and
+    // replaceMatOnPoint(0, 2, 2) then set (2,2) to 0; addConstant / mulConstant return
+    // new Mats and leave the source alone.
     assert.deepStrictEqual(Array.from(mat.PTR(2)), [1, 2, 0]);
     assert.deepStrictEqual(Array.from(mat.PTR(2, 2)), [0]);
     assert.deepStrictEqual(Array.from(mat.PTR(0, 0)), [1]);
-    // 显式传 undefined 与省略参数等价（行形式）
+    // Passing undefined explicitly is the same as omitting it (the row form)
     assert.deepStrictEqual(Array.from(mat.PTR(2, undefined)), [1, 2, 0]);
   } finally {
     mat.delete();
@@ -578,17 +634,19 @@ test("guards: 贴边但合法的输入不受影响", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// ±Infinity 必须放行。
+// ±Infinity must be accepted.
 //
-// 这是一次真实的误伤：guards.number 起初图省事写成 `Number.isFinite`，把 ±Infinity
-// 和 NaN 一起拒了。可 ±Infinity 是合法的 IEEE-754 值，加 guards 之前它本来就工作
-// 得好好的（在 preguard 的产物上实测 addConstant(Infinity) 得到整片 Infinity），
-// 在代价图 / 距离图上还是标准哨兵。把原本正确的用法拒掉，就是这层校验最不该犯的错。
+// This was a real false rejection: guards.number was first written as `Number.isFinite`
+// for brevity, rejecting ±Infinity along with NaN. But ±Infinity is a valid IEEE-754
+// value that worked before the guards existed (addConstant(Infinity) gave all Infinity
+// on the pre-guard artifacts), and it is the standard sentinel in cost and distance
+// maps. Rejecting a correct use is the worst mistake this layer can make.
 //
-// 与 NaN 的区别是有意的：NaN 作为**运算数**没有正当用途，它会把整个 Mat 一次性毁掉，
-// 而那通常是上游已经出错的信号。
+// The difference from NaN is deliberate: as an **operand** NaN has no legitimate use; it
+// wipes out the whole Mat at once, which usually means something upstream already went
+// wrong.
 // ---------------------------------------------------------------------------
-test("guards: ±Infinity 是合法运算数，不能被误伤", async () => {
+test("guards: ±Infinity is a valid operand and must not be rejected", async () => {
   const cv = await getCv();
   const mk = () => cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
   const out = [];
@@ -623,7 +681,8 @@ test("guards: ±Infinity 是合法运算数，不能被误伤", async () => {
     c.replaceMatOnPoint(-Infinity, 0, 0);
     assert.deepStrictEqual(Array.from(c.DATA()), [-Infinity, 2, 3, 4]);
 
-    // NaN 仍然拒 —— 两条边界是分开定的，不是一句 isFinite 顺手带出来的
+    // NaN is still rejected: the two boundaries were decided separately, not as a side
+    // effect of isFinite
     const d = mk();
     out.push(d);
     assert.throws(() => d.addConstant(NaN), TypeError);
@@ -632,14 +691,16 @@ test("guards: ±Infinity 是合法运算数，不能被误伤", async () => {
   }
 });
 
-test("guards: 写进数据里的 NaN / Infinity 不受限制（运算数与数据的区别）", async () => {
+test("guards: NaN / Infinity written as data are not restricted (operands versus data)", async () => {
   const cv = await getCv();
   const mat = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
   try {
-    // arrayLike 只查长度、不查元素值：往指定像素写 NaN 表示「此处无效」是正当写法。
-    // 这条不对称是有意的，别在后续改动里「顺手统一」掉。
+    // Arrays are checked for length, not element values: writing NaN into a pixel to
+    // mean "invalid here" is legitimate. The asymmetry is deliberate; do not "unify" it
+    // away in a later change.
     mat.replaceMatOnRow([Infinity, NaN], 0);
-    // replaceMatOnPoint 写的也是一格数据（曾被当成运算数拒收 NaN，已改）。
+    // replaceMatOnPoint writes one element of data too (it once rejected NaN as if it
+    // were an operand; fixed).
     mat.replaceMatOnPoint(NaN, 1, 1);
     const got = Array.from(mat.DATA());
     assert.strictEqual(got[0], Infinity);
@@ -651,17 +712,52 @@ test("guards: 写进数据里的 NaN / Infinity 不受限制（运算数与数�
   }
 });
 
+test("guards: an array element that cannot be converted fails the call before anything is written", async () => {
+  const cv = await getCv();
+  const m = cv.matFromArray(2, 2, cv.CV_8UC1, [1, 2, 3, 4]);
+  try {
+    // `+x` throws for a BigInt or a Symbol. Converting while writing left the Mat
+    // half-written: [7, 8n] used to write the 7 before failing on the 8n.
+    for (const [where, call] of [
+      ["Mat.replaceMatOnRow(arr, row)", () => m.replaceMatOnRow([7, 8n], 0)],
+      [
+        "Mat.replaceMatOnCol(arr, col)",
+        () => m.replaceMatOnCol([7, Symbol("x")], 0),
+      ],
+    ]) {
+      assertGuard(
+        call,
+        TypeError,
+        [where, "arr[1]", "nothing was written"],
+        where,
+      );
+      assert.deepStrictEqual(
+        Array.from(m.DATA()),
+        [1, 2, 3, 4],
+        `${where} wrote part of the array`,
+      );
+    }
+    // Elements that do convert keep working on the slow path: numeric strings, and NaN
+    // mixed in (it saturates to 0 on an integer Mat).
+    m.replaceMatOnRow(["9", NaN], 1);
+    assert.deepStrictEqual(Array.from(m.DATA()), [1, 2, 9, 0]);
+  } finally {
+    m.delete();
+  }
+});
+
 // ---------------------------------------------------------------------------
-// 就地写入的那批方法在**入口**就把下标校验掉了，循环里按地址直接读写 wasm 堆
-// （access.pixels()），不再逐像素过 PTR()。这两条守卫钉住这个分工的两端。
+// The in-place writes validate their indices **on entry** and then address the wasm heap
+// directly (access.pixels()) instead of going through PTR() per pixel. These two cases
+// pin both ends of that split.
 // ---------------------------------------------------------------------------
-test("guards: 就地写入方法报的是自己的函数名，不是 Mat.PTR", async () => {
+test("guards: in-place writes report their own name, not Mat.PTR", async () => {
   const cv = await getCv();
   const mat = mat3(cv);
   const src = cv.matFromArray(2, 2, cv.CV_32FC1, [1, 2, 3, 4]);
   try {
-    // 入口校验必须先于任何 PTR 调用触发——否则错误消息会退化成 Mat.PTR(...)，
-    // 调用方就看不出到底是哪个 API 用错了。
+    // The entry check must fire before any PTR call; otherwise the message degrades to
+    // Mat.PTR(...) and the caller cannot tell which API was misused.
     const cases = [
       ["Mat.addOnCol(constant, col)", () => mat.addOnCol(1, 7)],
       [
@@ -693,7 +789,7 @@ test("guards: 就地写入方法报的是自己的函数名，不是 Mat.PTR", a
       const e = assertGuard(fn, RangeError, [where], where);
       assert.ok(
         !e.message.includes("Mat.PTR"),
-        `${where}: 错误来自 PTR 而不是入口校验 —— 消息: ${e.message}`,
+        `${where}: the error came from PTR rather than the entry check; message: ${e.message}`,
       );
     }
   } finally {
@@ -702,16 +798,17 @@ test("guards: 就地写入方法报的是自己的函数名，不是 Mat.PTR", a
   }
 });
 
-test("guards: 逐像素循环不经过 PTR()（经过就是每像素多两次 embind 调用）", async () => {
+test("guards: per-pixel loops do not go through PTR() (that would be two extra Embind calls per pixel)", async () => {
   const cv = await getCv();
   const mat = mat3(cv);
   const src = cv.matFromArray(2, 2, cv.CV_32FC1, [10, 20, 30, 40]);
   const realPTR = cv.Mat.prototype.PTR;
-  // 把 PTR 换成地雷：循环里只要碰它一次就炸。这是唯一能观察到「循环走没走
-  // PTR」的办法，而这正是最容易被后来的改动悄悄改回去的地方——走 PTR 会让
-  // 这些方法慢上百倍，倍数见 test/bench/inplace-ops.bench.js 的门禁输出。
+  // Replace PTR with a tripwire: touching it once in a loop throws. It is the only way to
+  // observe whether a loop goes through PTR, and exactly what a later change could
+  // quietly bring back — going through PTR makes these methods two orders of magnitude
+  // slower (see the gate output of test/bench/inplace-ops.bench.js).
   cv.Mat.prototype.PTR = function () {
-    throw new Error("循环里调了 PTR()");
+    throw new Error("PTR() was called in a loop");
   };
   try {
     mat.replaceMatOnRect(src, new cv.Rect(1, 1, 2, 2));
@@ -719,13 +816,13 @@ test("guards: 逐像素循环不经过 PTR()（经过就是每像素多两次 em
     mat.rectSubtract(src, new cv.Rect(1, 1, 2, 2));
     mat.replaceMatOnCol([1, 2, 3], 0);
     mat.addOnCol(1, 0);
-    // 手算：[1..9] → replaceMatOnRect 把 (1,1)(1,2)(2,1)(2,2) 换成 10,20,30,40
-    // → rectAdd 再加一遍 → rectSubtract 再减回去 → replaceMatOnCol 把第 0 列
-    // 写成 1,2,3 → addOnCol 第 0 列各加 1。
+    // By hand: [1..9] → replaceMatOnRect sets (1,1)(1,2)(2,1)(2,2) to 10,20,30,40
+    // → rectAdd adds them again → rectSubtract takes them off → replaceMatOnCol writes
+    // 1,2,3 into column 0 → addOnCol adds 1 to each element of column 0.
     assert.deepStrictEqual(
       Array.from(mat.DATA()),
       [2, 2, 3, 3, 10, 20, 4, 30, 40],
-      "绕开 PTR 之后写入结果不对",
+      "the result is wrong once PTR is bypassed",
     );
   } finally {
     cv.Mat.prototype.PTR = realPTR;
@@ -734,12 +831,81 @@ test("guards: 逐像素循环不经过 PTR()（经过就是每像素多两次 em
   }
 });
 
-test("guards: 重复加载不会把 matFromArray 一层层包起来，PTR 也不会被重复包装", async () => {
+// ---------------------------------------------------------------------------
+// rect can be any object with getters. An implementation that reads it once to validate
+// and again to address can see two different values: validation sees a valid width, the
+// write uses an out-of-range one and rewrites the heap past dst's data. This case makes
+// width read 1 the first two times (enough to fool guards.rect and guards.covers) and 64
+// afterwards.
+// ---------------------------------------------------------------------------
+test("guards: each rect field is read once, so validation and the write see the same values", async () => {
+  const cv = await getCv();
+  const dst = cv.matFromArray(1, 4, cv.CV_8UC1, [0, 0, 0, 0]);
+  const src = cv.matFromArray(1, 4, cv.CV_8UC1, [9, 9, 9, 9]);
+  const reads = { x: 0, y: 0, width: 0, height: 0 };
+  const shiftyRect = () => {
+    for (const k of Object.keys(reads)) reads[k] = 0;
+    return {
+      get x() {
+        reads.x += 1;
+        return 0;
+      },
+      get y() {
+        reads.y += 1;
+        return 0;
+      },
+      get width() {
+        reads.width += 1;
+        return reads.width <= 2 ? 1 : 64;
+      },
+      get height() {
+        reads.height += 1;
+        return 1;
+      },
+    };
+  };
+  const off = dst.data.byteOffset;
+  const tail = () => Array.from(cv.HEAPU8.subarray(off + 4, off + 64));
+  const before = tail();
+  const kept = [];
+  try {
+    for (const [where, call] of [
+      ["replaceMatOnRect", (r) => dst.replaceMatOnRect(src, r)],
+      ["rectAdd", (r) => dst.rectAdd(src, r)],
+      ["rectSubtract", (r) => dst.rectSubtract(src, r)],
+      ["roiClone", (r) => kept.push(dst.roiClone(r))],
+    ]) {
+      call(shiftyRect());
+      assert.deepStrictEqual(
+        reads,
+        { x: 1, y: 1, width: 1, height: 1 },
+        `${where}: a rect field was read more than once`,
+      );
+      assert.deepStrictEqual(
+        tail(),
+        before,
+        `${where}: heap bytes after dst's data were rewritten; the write did not use the validated width`,
+      );
+    }
+    assert.strictEqual(
+      kept[0].cols,
+      1,
+      "roiClone should use the validated width = 1",
+    );
+  } finally {
+    dst.delete();
+    src.delete();
+    for (const m of kept) m.delete();
+  }
+});
+
+test("guards: loading again neither stacks matFromArray wrappers nor wraps PTR twice", async () => {
   const path = require("path");
   const { DIST } = require("../helpers");
-  // loadOpenCV() 可以被调用多次（两个模块各写一句 await require(...)() 就够了），
-  // 而 cv 是 require 缓存里的同一个对象。挂 prototype 的那些扩展天然幂等，
-  // 只有 matFromArray 是包裹——不设幂等就会一次调用层层叠加。
+  // loadOpenCV() can run more than once (two modules each writing
+  // await require(...)() are enough), and cv is the same object in the require cache. The
+  // prototype extensions are naturally idempotent; only matFromArray is a wrapper and
+  // would stack without a guard.
   const loadCV = require(path.join(DIST, "index.js"));
   const cv = await loadCV();
   const first = cv.matFromArray;
@@ -748,22 +914,22 @@ test("guards: 重复加载不会把 matFromArray 一层层包起来，PTR 也不
   assert.strictEqual(
     cv.matFromArray,
     first,
-    "第二次加载又包了一层 matFromArray",
+    "the second load wrapped matFromArray again",
   );
   assert.strictEqual(cv.matFromArray.guarded, true);
-  // PTR 的校验是写在函数体里的、不是包裹上去的，所以重装只是重新赋一次值，
-  // 天然幂等：既不会叠加校验，行为也完全一致。
+  // PTR's check lives in the function body rather than in a wrapper, so loading again
+  // only reassigns it: idempotent, no stacked checks, identical behaviour.
   assert.strictEqual(
     typeof cv.Mat.prototype.PTR,
     "function",
-    "重复加载后 PTR 丢了",
+    "PTR is gone after loading again",
   );
   const probe = cv.matFromArray(2, 2, cv.CV_8UC1, [1, 2, 3, 4]);
   try {
     assert.throws(
       () => probe.PTR(9, 9),
       RangeError,
-      "重复加载后 PTR 的边界校验失效",
+      "PTR's bounds check stopped working after loading again",
     );
   } finally {
     probe.delete();
@@ -771,9 +937,9 @@ test("guards: 重复加载不会把 matFromArray 一层层包起来，PTR 也不
   assert.strictEqual(
     firstPTR.length,
     cv.Mat.prototype.PTR.length,
-    "重复加载后 PTR 的形参个数变了 —— 可能被包了一层",
+    "PTR's parameter count changed after loading again; it may have been wrapped",
   );
-  // 包装仍然生效，且合法调用照常
+  // The wrapper still works, and valid calls are unaffected
   assert.throws(() => cv.matFromArray(2, 2, cv.CV_8UC1, [1]), RangeError);
   const m = cv.matFromArray(2, 2, cv.CV_8UC1, [1, 2, 3, 4]);
   try {
@@ -783,7 +949,7 @@ test("guards: 重复加载不会把 matFromArray 一层层包起来，PTR 也不
   }
 });
 
-test("guards: 拦下一次错误调用后，Mat 与模块都完好", async () => {
+test("guards: after stopping a bad call, the Mat and the module are intact", async () => {
   const cv = await getCv();
   const mat = mat3(cv);
   try {
@@ -791,13 +957,13 @@ test("guards: 拦下一次错误调用后，Mat 与模块都完好", async () =>
     assert.throws(() => mat.addOnCol(NaN, 0));
     assert.throws(() => mat.colClone(99));
 
-    // 数据一个字节都没被动过——校验是在任何写入之前完成的
+    // Not a single byte changed: validation completes before any write
     assert.deepStrictEqual(
       Array.from(mat.DATA()),
       [1, 2, 3, 4, 5, 6, 7, 8, 9],
-      "校验失败的调用不应该已经写进去一部分",
+      "a call that failed validation must not have written anything",
     );
-    // 后续正常调用照常
+    // Later valid calls work as usual
     mat.replaceMatOnPoint(99, 1, 1);
     assert.deepStrictEqual(
       Array.from(mat.DATA()),
@@ -808,11 +974,12 @@ test("guards: 拦下一次错误调用后，Mat 与模块都完好", async () =>
   }
 });
 
-test("guards: dftSplit 在空 Mat 上抛错时，释放它已经分配的两个 Mat", async () => {
+test("guards: when dftSplit throws on an empty Mat, it releases the two Mats it allocated", async () => {
   const cv = await getCv();
-  // dftSplit 先 zeros() 出实部 / 虚部两个 Mat，再逐元素写；空 Mat 上写第一个元素
-  // 就会抛 RangeError。把 zeros 包一层，记下它分配出的每个 Mat，抛错之后逐个
-  // 检查是否已被释放——这是 JS 侧唯一能观察到 wasm 堆泄漏的办法。
+  // dftSplit first zeros() a real and an imaginary Mat, then writes element by element;
+  // on an empty Mat the first write throws a RangeError. zeros is wrapped to record every
+  // Mat it allocates, and each is checked for release after the throw — the only way to
+  // observe a wasm heap leak from JS.
   const realZeros = cv.Mat.zeros;
   const made = [];
   const tracked = function zeros(...args) {
@@ -820,16 +987,20 @@ test("guards: dftSplit 在空 Mat 上抛错时，释放它已经分配的两个 
     made.push(m);
     return m;
   };
-  // embind 的重载分发器会回头读 cv.Mat.zeros.overloadTable，换函数时要一并带上。
+  // Embind's overload dispatcher reads cv.Mat.zeros.overloadTable back, so the
+  // replacement must carry it along.
   Object.assign(tracked, realZeros);
   cv.Mat.zeros = tracked;
   const empty = new cv.Mat(0, 3, cv.CV_32FC1);
   try {
     assert.throws(() => empty.dftSplit(), RangeError);
-    assert.ok(made.length > 0, "前提：dftSplit 应先分配了输出 Mat");
+    assert.ok(
+      made.length > 0,
+      "premise: dftSplit should have allocated its output Mats first",
+    );
     assert.ok(
       made.every((m) => m.isDeleted()),
-      `dftSplit 抛错后有 ${made.filter((m) => !m.isDeleted()).length} 个 Mat 没被释放`,
+      `after dftSplit threw, ${made.filter((m) => !m.isDeleted()).length} Mat(s) were not released`,
     );
   } finally {
     cv.Mat.zeros = realZeros;

@@ -1,41 +1,45 @@
 "use strict";
 
-// baseline / simd 两个变体的数值对比用例表，以及跑这张表的**子进程执行器**。
+// The table of cases that compare the baseline and simd variants numerically, and the
+// **child-process runner** that executes it.
 //
-//   node test/variant-cases.js <baseline|simd> <输出 JSON 路径>
+//   node test/variant-cases.js <baseline|simd> <output JSON path>
 //
-// 由 test/unit/variant-parity.test.js 调用。放在 test/ 顶层是为了不被
-// `npm test` 的 glob（test/*/*.test.js）当成测试文件捡走。
+// Called by test/unit/variant-parity.test.js. It lives at the top of test/ so the
+// `npm test` glob (test/*/*.test.js) does not pick it up as a test file.
 //
-// ── 为什么必须是子进程 ────────────────────────────────────────────────────
-// 两个变体**不能在同一个进程里同时加载**。OpenCV 的 UMD 外壳最后一段是
+// Why a child process
+// -------------------
+// The two variants **cannot be loaded in the same process**. OpenCV's UMD wrapper ends
+// with
 //
 //     if (typeof Module === 'undefined')
 //       Module = {};
 //     return cv(Module);
 //
-// 这里的 `Module = {}` 没有 var/let/const，而整个 UMD 外壳不是严格模式
-// （文件里一个 "use strict" 都没有），于是它是一个**隐式全局变量**。
-// 后果：第一个变体加载后 globalThis.Module 就指向它的 cv 对象（已实测
-// `global.Module === cv` 为 true）；第二个变体再 require 进来时
-// `typeof Module === 'undefined'` 为假，于是把**同一个对象**喂给自己的工厂，
-// embind 在往上注册符号时撞车，抛
+// `Module = {}` has no var / let / const, and the UMD wrapper is not strict mode (the file
+// has no "use strict" at all), so it creates an **implicit global**. After the first
+// variant loads, globalThis.Module points at its cv object (`global.Module === cv` is
+// true); when the second variant is required, `typeof Module === 'undefined'` is false,
+// so it feeds the **same object** to its own factory, and Embind collides while
+// registering symbols:
 //     BindingError: Cannot register public name 'IntVector' twice
 //
-// 已实测：在两次 require 之间 `delete global.Module` 就能绕开，两个实例随后
-// 各自工作正常。但本文件不走那条路——那是在依赖上游一个 sloppy-mode 疏漏的
-// 具体表现形式。每个变体一个干净进程，既不依赖这个细节，也顺带排除了其他
-// 尚未发现的跨实例状态共享。
+// `delete global.Module` between the two requires works around it (both instances then
+// work), but this file does not do that: it would depend on the exact form of an upstream
+// sloppy-mode slip. One clean process per variant depends on no such detail and also
+// rules out any other cross-instance state not yet discovered.
 //
-// ⚠️ 同一条约束对使用者也成立：一个进程里只能加载一个变体。正常用法不受影响
-// （loadOpenCV() 只加载一个），但想在同一进程里对比两个变体是不行的。
+// The same constraint applies to users: one variant per process. Normal use is
+// unaffected (loadOpenCV() loads one), but comparing both variants in one process does
+// not work.
 const fs = require("fs");
 const path = require("path");
 
 /**
- * 确定性伪随机源。两个变体必须拿到逐字节相同的输入，否则比较毫无意义——
- * 所以不能用 Math.random()。这是个 32 位 LCG（乘数取自 Numerical Recipes），
- * 只要求可复现，不要求统计性质。
+ * A deterministic pseudo-random source. Both variants must get byte-identical input or
+ * the comparison means nothing, so Math.random() is out. A 32-bit LCG (multiplier from
+ * Numerical Recipes): reproducible, with no statistical claims.
  */
 function lcg(seed) {
   let s = seed >>> 0;
@@ -55,12 +59,13 @@ function bytes(n, seed) {
 function floats(n, seed) {
   const rnd = lcg(seed);
   const out = new Array(n);
-  // 值域刻意跨越 0 并带小数：全是小整数的话，浮点内核算错了也看不出来。
+  // The range deliberately crosses 0 and has fractions: with small integers only, a wrong
+  // floating-point kernel could go unnoticed.
   for (let i = 0; i < n; i += 1) out[i] = (rnd() % 20000) / 100 - 100;
   return out;
 }
 
-/** CV_16S 全值域的有符号整数：取整缺陷只在负数与 .5 上露面，两者都要有。 */
+/** Signed integers over CV_16S's full range: rounding bugs only show on negatives and on .5, so both are needed. */
 function shorts(n, seed) {
   const rnd = lcg(seed);
   const out = new Array(n);
@@ -68,7 +73,7 @@ function shorts(n, seed) {
   return out;
 }
 
-/** 按 depth 取对应的 TypedArray 视图并拷成普通数组。 */
+/** Copies the TypedArray view matching the Mat's depth into a plain array. */
 function dump(cv, mat) {
   switch (mat.depth()) {
     case cv.CV_8U:
@@ -86,32 +91,40 @@ function dump(cv, mat) {
     case cv.CV_64F:
       return Array.from(mat.data64F);
     default:
-      throw new Error(`未预期的 depth: ${mat.depth()}`);
+      throw new Error(`unexpected depth: ${mat.depth()}`);
   }
 }
 
 // ---------------------------------------------------------------------------
-// 用例表。run(cv) 返回一个数字数组。
+// The case table. run(cv) returns an array of numbers.
 //
-// exact = true  要求两个变体**逐位相同**：整数内核不存在舍入差异，本项目扩展层
-//               那几个方法更是纯拷贝/整数循环，任何差异都是 bug。
-// exact = false 只要求相对误差 <= 容差：浮点 SIMD 内核会改变累加与乘加的结合
-//               顺序（可分离滤波、点积、变换），末位差异是规范允许的。
+// exact = true  the variants must be **bit-identical**: integer kernels have no rounding
+//               differences, and this project's extension methods are plain copies or
+//               integer loops, so any difference is a bug.
+// exact = false only max|a − b| <= tolerance × max(‖baseline‖∞, 1) is required — an
+//               absolute difference normalized by the magnitude of the whole output,
+//               **not** a per-element relative difference (criterion and reasons in
+//               unit/variant-parity.test.js): floating-point SIMD kernels change the
+//               association order of sums and multiply-adds (separable filters, dot
+//               products, transforms), and last-place differences are allowed.
 //
-// 选点覆盖四类：① 上游 2020 年那组逐 kernel 数据里 SIMD 影响最大的几个
-// （resize 8UC4 1.77x / pyrDown 32FC4 3.09x / gaussianBlur 3.36x，以及**反例**
-// blur CV_32FC1 0.519x）；② 本项目自己的扩展层；③ 几个最常用的逐元素与几何
-// 变换内核；④ 有符号整型上「浮点 → 整数取整」的路径（addWeighted、带缩放的
-// convertTo 以及建立在它上面的扩展方法）。第 ④ 类是后补的：上游 wasm SIMD 后端的
-// v_round 写成 trunc(x + 0.5)，负数偏 1、.5 进位也与 cvRound 不同，而前三类恰好
-// 全都绕开了这条路径，于是 CI 一直是绿的。build/patches/opencv-wasm-v_round.patch
-// 修正它；这两个用例取的运算都是精确的（整数加减、× 0.5、× 1.5），结果恰为 .5 的
-// 地方全凭取整规则定胜负，没打补丁的 simd 产物必然过不了。规模刻意压小——这张表比的是**数值**，不是速度，速度归
-// test/simd-compare.js 管。
+// The cases cover four groups: (1) the operations where SIMD mattered most in upstream's
+// 2020 per-kernel data (resize 8UC4 1.77x / pyrDown 32FC4 3.09x / GaussianBlur 3.36x,
+// and the **counterexample** blur CV_32FC1 0.519x); (2) this project's extension layer;
+// (3) a few of the most common element-wise and geometric kernels; (4) "float → integer
+// rounding" on signed integers (addWeighted, convertTo with scaling, and the extension
+// methods built on it). Group 4 was added later: upstream's wasm SIMD backend computed
+// v_round as trunc(x + 0.5), off by one for negatives and rounding .5 differently from
+// cvRound, and groups 1–3 all happened to avoid that path, so CI stayed green.
+// build/patches/opencv-wasm-v_round.patch fixes it; the two cases use exact operations
+// (integer add / subtract, × 0.5, × 1.5), so wherever a result is exactly .5 only the
+// rounding rule decides, and an unpatched simd artifact cannot pass. The sizes are kept
+// small on purpose: this table compares **values**, not speed; speed is
+// test/simd-compare.js's job.
 // ---------------------------------------------------------------------------
 const CASES = [
   {
-    name: "add 8UC1（逐元素整数）",
+    name: "add 8UC1 (element-wise integer)",
     exact: true,
     run(cv) {
       const a = cv.matFromArray(64, 64, cv.CV_8UC1, bytes(4096, 1));
@@ -126,7 +139,7 @@ const CASES = [
     },
   },
   {
-    name: "absdiff 8UC3（逐元素整数、多通道）",
+    name: "absdiff 8UC3 (element-wise integer, multi-channel)",
     exact: true,
     run(cv) {
       const a = cv.matFromArray(32, 32, cv.CV_8UC3, bytes(3072, 3));
@@ -154,7 +167,7 @@ const CASES = [
     },
   },
   {
-    name: "cvtColor RGBA2GRAY（整数定点）",
+    name: "cvtColor RGBA2GRAY (integer fixed point)",
     exact: true,
     run(cv) {
       const a = cv.matFromArray(48, 48, cv.CV_8UC4, bytes(48 * 48 * 4, 6));
@@ -167,7 +180,7 @@ const CASES = [
     },
   },
   {
-    name: "resize 8UC4 INTER_LINEAR（上游实测 1.77x 的那一项）",
+    name: "resize 8UC4 INTER_LINEAR (1.77x upstream)",
     exact: true,
     run(cv) {
       const a = cv.matFromArray(64, 64, cv.CV_8UC4, bytes(64 * 64 * 4, 7));
@@ -193,7 +206,7 @@ const CASES = [
     },
   },
   {
-    name: "GaussianBlur 8UC1（上游实测 3.36x 的那一项）",
+    name: "GaussianBlur 8UC1 (3.36x upstream)",
     exact: true,
     run(cv) {
       const a = cv.matFromArray(64, 64, cv.CV_8UC1, bytes(4096, 9));
@@ -206,7 +219,7 @@ const CASES = [
     },
   },
   {
-    name: "blur 32FC1（上游实测 0.519x —— SIMD 反而更慢的那一项）",
+    name: "blur 32FC1 (0.519x upstream: SIMD was slower)",
     exact: false,
     run(cv) {
       const a = cv.matFromArray(64, 64, cv.CV_32FC1, floats(4096, 10));
@@ -219,7 +232,7 @@ const CASES = [
     },
   },
   {
-    name: "pyrDown 32FC4（上游实测 3.09x 的那一项）",
+    name: "pyrDown 32FC4 (3.09x upstream)",
     exact: false,
     run(cv) {
       const a = cv.matFromArray(64, 64, cv.CV_32FC4, floats(64 * 64 * 4, 11));
@@ -249,7 +262,7 @@ const CASES = [
     exact: true,
     run(cv) {
       const a = cv.matFromArray(64, 64, cv.CV_8UC1, bytes(4096, 13));
-      // 固定的仿射矩阵：轻微旋转 + 平移，避免退化成纯拷贝。
+      // A fixed affine matrix: a slight rotation plus a translation, so it is not a plain copy.
       const m = cv.matFromArray(
         2,
         3,
@@ -266,7 +279,7 @@ const CASES = [
     },
   },
   {
-    name: "dft 32FC1（浮点累加，最容易因指令顺序而差末位）",
+    name: "dft 32FC1 (floating-point sums, the most sensitive to instruction order)",
     exact: false,
     run(cv) {
       const a = cv.matFromArray(32, 32, cv.CV_32FC1, floats(1024, 14));
@@ -279,7 +292,7 @@ const CASES = [
     },
   },
   {
-    name: "扩展层 roiClone / colClone / diagClone",
+    name: "extension layer: roiClone / colClone / diagClone",
     exact: true,
     run(cv) {
       const a = cv.matFromArray(32, 32, cv.CV_32FC3, floats(32 * 32 * 3, 15));
@@ -295,16 +308,16 @@ const CASES = [
     },
   },
   {
-    name: "扩展层 rectAdd / addOnCol / reshapeRows / norm2",
+    name: "extension layer: rectAdd / addOnCol / reshapeRows / norm2",
     exact: true,
     run(cv) {
       const a = cv.matFromArray(16, 16, cv.CV_32SC1, bytes(256, 16));
       const patch = cv.matFromArray(4, 4, cv.CV_32SC1, bytes(16, 17));
-      // 签名是 rectAdd(src, rect) / replaceMatOnRect(src, rect)：源在前、矩形在后。
+      // The signature is rectAdd(src, rect) / replaceMatOnRect(src, rect): source first, rect second.
       a.rectAdd(patch, new cv.Rect(2, 3, 4, 4));
-      // replaceMatOnCol(arr, col) 的第一个参数是**数组**，不是 Mat。
+      // replaceMatOnCol(arr, col) takes an **array** first, not a Mat.
       a.replaceMatOnCol(bytes(16, 18), 5);
-      // addOnCol 的第一个参数是**标量常数**，不是 Mat。
+      // addOnCol takes a **scalar constant** first, not a Mat.
       a.addOnCol(7, 9);
       const re = a.reshapeRows(8);
       const b = cv.matFromArray(16, 16, cv.CV_32SC1, bytes(256, 19));
@@ -318,13 +331,13 @@ const CASES = [
     },
   },
   {
-    name: "扩展层 addConstant / constantSubtract / mulConstant(0.5) 16SC1（float→int 取整）",
+    name: "extension layer: addConstant / constantSubtract / mulConstant(0.5) 16SC1 (float → int rounding)",
     exact: true,
     run(cv) {
       const a = cv.matFromArray(64, 64, cv.CV_16SC1, shorts(4096, 20));
       const r1 = a.addConstant(3);
       const r2 = a.constantSubtract(7);
-      // 奇数 × 0.5 恰为 .5：进位规则在这里定胜负
+      // An odd number × 0.5 is exactly .5: the rounding rule decides here
       const r3 = a.mulConstant(0.5);
       const out = [...dump(cv, r1), ...dump(cv, r2), ...dump(cv, r3)];
       for (const m of [a, r1, r2, r3]) m.delete();
@@ -332,7 +345,7 @@ const CASES = [
     },
   },
   {
-    name: "convertTo ×1.5 与 addWeighted 0.5/0.5 8SC1（float→int 取整）",
+    name: "convertTo ×1.5 and addWeighted 0.5/0.5 8SC1 (float → int rounding)",
     exact: true,
     run(cv) {
       const signed = (seed) => bytes(4096, seed).map((v) => v - 128);
@@ -351,25 +364,27 @@ const CASES = [
 
 module.exports = { CASES, lcg, bytes, floats, shorts, dump };
 
-// --- 子进程执行器 -----------------------------------------------------------
+// --- Child-process runner ---------------------------------------------------
 if (require.main === module) {
   const variant = process.argv[2];
   const outFile = process.argv[3];
   if (variant !== "baseline" && variant !== "simd") {
     console.error(
-      `用法: node test/variant-cases.js <baseline|simd> <输出 JSON 路径>`,
+      `usage: node test/variant-cases.js <baseline|simd> <output JSON path>`,
     );
     process.exit(2);
   }
   if (!outFile) {
-    // 走文件而不是 stdout：这张表一趟能吐出四万多个数，JSON 文本几百 KB，
-    // execFileSync 默认 maxBuffer 只有 1 MB，靠近上限的失败方式很难看懂。
-    console.error("缺少输出 JSON 路径");
+    // A file rather than stdout: one run of this table produces over forty thousand
+    // numbers, hundreds of KB of JSON, and execFileSync's default maxBuffer is 1 MB; failures
+    // near that limit are hard to understand.
+    console.error("missing the output JSON path");
     process.exit(2);
   }
   const dist = process.env.OPENCV_DIST || path.join(__dirname, "..", "dist");
-  // 显式点名变体。缺失时 dist/index.js 会抛错而不是回落到另一个——正是这条
-  // 保证了「simd 那一侧真的是 simd」，否则整个对比会拿 baseline 跟自己比，恒过。
+  // Name the variant explicitly. If it is missing, dist/index.js throws instead of falling
+  // back to the other one — this is what guarantees the simd side really is simd;
+  // otherwise the whole comparison would compare baseline with itself and always pass.
   require(path.join(dist, "index.js"))({ simd: variant === "simd" })
     .then((cv) => {
       const out = {};
@@ -377,7 +392,9 @@ if (require.main === module) {
       fs.writeFileSync(outFile, JSON.stringify(out));
     })
     .catch((e) => {
-      console.error(`❌ ${variant} 变体执行失败: ${(e && e.message) || e}`);
+      console.error(
+        `❌ the ${variant} variant failed: ${(e && e.message) || e}`,
+      );
       process.exit(1);
     });
 }

@@ -1,118 +1,123 @@
 "use strict";
 
-// WebAssembly SIMD 探测与变体决策。
+// WebAssembly SIMD detection and variant selection.
 //
-// ── false 分支怎么验 ──────────────────────────────────────────────────────
-// 探测函数在支持 SIMD 的引擎上返回 true，这一条可以直接测（Node 22 就是）。
-// 但「在不支持 SIMD 的引擎上返回 false」没法直接测——手边没有那样的引擎，
-// 而这恰恰是探测最要紧的那一半：探测器若恒为 true，93.57% 覆盖率之外的
-// 6.43% 浏览器会拿到一份跑不起来的 wasm。
+// How the false branch is tested
+// ------------------------------
+// The probe returns true on an engine that supports SIMD, which can be tested directly
+// (Node 22 does). "Returns false on an engine without SIMD" cannot — no such engine is at
+// hand — and it is the half that matters most: a probe that always said true would hand
+// every engine without SIMD a wasm it cannot run.
 //
-// 所以改成把这件事拆成两条各自可证的断言：
+// So the claim is split into two assertions that can each be proved:
 //
-//   ① WebAssembly.validate() 确实会校验函数体，不是只看魔数就返回 true。
-//      —— 把 SIMD 操作码改坏，validate 必须返回 false。
-//   ② 探测模块里的 SIMD 成分是承重的，不是装饰。
-//      —— 把结果类型 v128(0x7b) 换成 i32(0x7f)，validate 必须返回 false；
-//         而一个把 v128 与函数体一起换成标量的同构模块 validate 必须为 true。
+//   1. WebAssembly.validate() really checks function bodies; it does not return true
+//      after looking at the magic number.
+//      Break the SIMD opcode and validate must return false.
+//   2. The SIMD parts of the probe module are load-bearing, not decoration.
+//      Change the result type v128 (0x7b) to i32 (0x7f) and validate must return false;
+//      an otherwise identical module with v128 and the body replaced by scalars must
+//      validate.
 //
-// ①+② 合起来说明：这个模块的合法性完全押在引擎认不认识 SIMD 上。一个不认识
-// SIMD 的引擎在 ① 的机制下只能返回 false。这是在没有反例引擎的前提下能拿到的
-// 最强证据。
+// Together, 1 and 2 show that the module's validity rests entirely on whether the engine
+// knows SIMD. An engine that does not can only return false under mechanism 1. Without a
+// counterexample engine, this is the strongest evidence available.
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const { DIST } = require("../helpers");
 
-// 测组装后的那一份（和 helpers.js 的理由相同：用户拿到的是 dist/）。
+// Test the assembled copy (same reason as in helpers.js: users get dist/).
 const simd = require(path.join(DIST, "simd-detect.js"));
 
-/** 复制一份探测模块并改掉一个字节。原数组不能动——它是生产用的那一份。 */
+/** A copy of the probe module with one byte changed. The original is the production copy and must not be touched. */
 function mutated(index, value) {
   const bytes = simd.SIMD_PROBE.slice();
   bytes[index] = value;
   return bytes;
 }
 
-test("探测模块是 31 字节，头部是合法的 wasm 魔数与版本号", () => {
+test("the probe module is 31 bytes and starts with a valid wasm magic number and version", () => {
   assert.strictEqual(simd.SIMD_PROBE.length, 31);
   assert.deepStrictEqual(
     Array.from(simd.SIMD_PROBE.slice(0, 8)),
     [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00],
-    '前 8 字节应为 "\\0asm" + version 1',
+    'the first 8 bytes should be "\\0asm" + version 1',
   );
 });
 
-test("探测模块的函数返回 v128，函数体含两条 0xfd 前缀的 SIMD 指令", () => {
-  // 类型段: 01 05 | 01 | 60 00 01 7b
+test("the probe's function returns v128 and its body has two 0xfd-prefixed SIMD instructions", () => {
+  // Type section: 01 05 | 01 | 60 00 01 7b
   assert.deepStrictEqual(
     Array.from(simd.SIMD_PROBE.slice(8, 15)),
     [0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b],
-    "类型段应声明 func () -> (v128)，0x7b 即 v128",
+    "the type section should declare func () -> (v128); 0x7b is v128",
   );
-  // 代码段体: 00 | 41 00 | fd 0f | fd 62 | 0b
+  // Code section body: 00 | 41 00 | fd 0f | fd 62 | 0b
   assert.deepStrictEqual(
     Array.from(simd.SIMD_PROBE.slice(23, 31)),
     [0x00, 0x41, 0x00, 0xfd, 0x0f, 0xfd, 0x62, 0x0b],
-    "函数体应为 i32.const 0 / i8x16.splat / i8x16.popcnt / end",
+    "the body should be i32.const 0 / i8x16.splat / i8x16.popcnt / end",
   );
 });
 
-test("probeSimd() 在支持 SIMD 的运行时返回 true", () => {
-  // Node 18 起 WebAssembly SIMD 默认开启，本包 engines 要求 node >= 18，
-  // 所以这条在所有受支持的 Node 上都该为 true。它若为 false，说明要么探测
-  // 字节序列写错了，要么运行环境比声称的还老。
+test("probeSimd() returns true on a runtime with SIMD", () => {
+  // WebAssembly SIMD is on by default since Node 16.4 (V8 9.1) and this package requires
+  // node >= 22, so this should be true on every supported Node. If it is false, either
+  // the probe bytes are wrong or the runtime is older than it claims.
   assert.strictEqual(
     simd.probeSimd(),
     true,
-    "本运行时应支持 WebAssembly SIMD（node >= 18）",
+    "this runtime should support WebAssembly SIMD (node >= 22)",
   );
 });
 
-test("WebAssembly.validate 确实校验函数体：改坏 SIMD 指令即为 false", () => {
-  // 索引 29 是 i8x16.popcnt 的子操作码 0x62。
+test("WebAssembly.validate really checks the body: a broken SIMD instruction gives false", () => {
+  // Index 29 is 0x62, the sub-opcode of i8x16.popcnt.
   assert.strictEqual(simd.SIMD_PROBE[29], 0x62);
 
-  // 0xfe / 0xff：SIMD 子操作码是 LEB128 编码的 u32，最高位为 1 表示「后面还有
-  // 字节」，而这里后面紧跟的是 0x0b(end)——编码在此截断，模块畸形。这条不依赖
-  // 任何具体操作码的分配情况，将来新增指令也不会让它失效。
+  // 0xfe / 0xff: SIMD sub-opcodes are LEB128-encoded u32s, and a set high bit means
+  // "more bytes follow", but 0x0b (end) follows here, so the encoding is truncated and
+  // the module malformed. This does not depend on which opcodes are assigned, so new
+  // instructions cannot invalidate it.
   for (const bad of [0xfe, 0xff]) {
     assert.strictEqual(
       WebAssembly.validate(mutated(29, bad)),
       false,
-      `0xfd 0x${bad.toString(16)} 是截断的 LEB128，validate 应为 false`,
+      `0xfd 0x${bad.toString(16)} is truncated LEB128; validate should be false`,
     );
   }
 
-  // 0x0f：换成 i8x16.splat，它是合法指令，但签名是 i32 -> v128；此刻栈顶已经是
-  // 前一条 splat 压上去的 v128，类型不符。这条证明的是 validate 真的在做**类型
-  // 检查**，不只是认操作码。
+  // 0x0f: i8x16.splat is a valid instruction, but its signature is i32 -> v128, and the
+  // top of the stack is already the v128 pushed by the previous splat — a type mismatch.
+  // This proves validate really **type-checks** instead of just recognizing opcodes.
   //
-  // 刻意不用「随便挑一个未分配的操作码」来做这条断言：实测 256 个单字节子操作码
-  // 里有 239 个在此上下文中无效，但那多半是因为操作数个数不对（多数 SIMD 指令
-  // 要两个 v128，栈上只有一个），而不是因为操作码不存在——用它论证「validate
-  // 会拒绝不认识的指令」是站不住的。
+  // "Pick any unassigned opcode" is deliberately not used for this: 239 of the 256
+  // single-byte sub-opcodes are invalid in this position, but mostly because of the
+  // operand count (most SIMD instructions take two v128s and the stack has one), not
+  // because the opcode does not exist — it would not prove that validate rejects
+  // unknown instructions.
   assert.strictEqual(
     WebAssembly.validate(mutated(29, 0x0f)),
     false,
-    "i8x16.splat 期望 i32 而栈顶是 v128，validate 应为 false",
+    "i8x16.splat expects an i32 but the top of the stack is a v128; validate should be false",
   );
 });
 
-test("v128 是承重的：把结果类型换成 i32 后 validate 为 false", () => {
-  assert.strictEqual(simd.SIMD_PROBE[14], 0x7b, "索引 14 应是 v128");
+test("v128 is load-bearing: with the result type changed to i32, validate gives false", () => {
+  assert.strictEqual(simd.SIMD_PROBE[14], 0x7b, "index 14 should be v128");
   assert.strictEqual(
     WebAssembly.validate(mutated(14, 0x7f)),
     false,
-    "函数体压的是 v128，签名改成 i32 后类型不符，validate 应为 false",
+    "the body pushes a v128, so an i32 signature mismatches; validate should be false",
   );
 });
 
-test("同构的纯标量模块 validate 为 true —— 外壳本身是合法的", () => {
-  // 与探测模块结构完全相同，只是把 v128 换成 i32、函数体换成 i32.const 0。
-  // 它为 true 说明：不支持 SIMD 的引擎对探测模块返回 false，只可能是因为
-  // SIMD，而不是因为模块被写错了。
+test("an otherwise identical scalar module validates: the shell itself is valid", () => {
+  // Exactly the probe's structure, with v128 replaced by i32 and the body by
+  // i32.const 0. Since this is true, an engine without SIMD can return false for the
+  // probe only because of SIMD, not because the module is malformed.
   // prettier-ignore
   const scalar = new Uint8Array([
     0x00, 0x61, 0x73, 0x6d,
@@ -124,14 +129,18 @@ test("同构的纯标量模块 validate 为 true —— 外壳本身是合法的
   assert.strictEqual(WebAssembly.validate(scalar), true);
 });
 
-test("detectSimd() 记忆化，且与未记忆化的 probeSimd() 一致", () => {
+test("detectSimd() is memoized and agrees with the unmemoized probeSimd()", () => {
   simd.resetSimdCache();
   const first = simd.detectSimd();
   assert.strictEqual(first, simd.probeSimd());
-  assert.strictEqual(simd.detectSimd(), first, "第二次调用应返回同一结果");
+  assert.strictEqual(
+    simd.detectSimd(),
+    first,
+    "the second call should return the same result",
+  );
 });
 
-test("parseEnvSimd 认真值 / 假值，未设置返回 undefined", () => {
+test("parseEnvSimd recognizes true / false values and returns undefined when unset", () => {
   for (const v of ["1", "true", "TRUE", " on ", "yes"]) {
     assert.strictEqual(simd.parseEnvSimd(v), true, `${JSON.stringify(v)}`);
   }
@@ -143,17 +152,18 @@ test("parseEnvSimd 认真值 / 假值，未设置返回 undefined", () => {
   }
 });
 
-test("parseEnvSimd 对无法识别的值抛错，不是静默忽略", () => {
-  // 静默忽略 OPENCV_SIMD=ture 会让用户以为自己强制了 SIMD，实际跑的是探测
-  // 结果——「以为查了、其实没查」正是本仓库一路在清的那个失败模式。
+test("parseEnvSimd throws on an unrecognized value instead of ignoring it", () => {
+  // Silently ignoring OPENCV_SIMD=ture would make the user believe SIMD was forced while
+  // the probe decided — "thought it was checked, but it was not", the failure mode this
+  // repository keeps removing.
   assert.throws(() => simd.parseEnvSimd("ture"), {
     name: "TypeError",
-    message: /OPENCV_SIMD 的值无法识别/,
+    message: /Unrecognized OPENCV_SIMD value/,
   });
   assert.throws(() => simd.parseEnvSimd("2"), { name: "TypeError" });
 });
 
-test("resolveVariant 优先级：options > 环境变量 > 探测", () => {
+test("resolveVariant precedence: options > environment variable > probe", () => {
   const envOn = { OPENCV_SIMD: "1" };
   const envOff = { OPENCV_SIMD: "0" };
 
@@ -179,46 +189,48 @@ test("resolveVariant 优先级：options > 环境变量 > 探测", () => {
   });
 });
 
-test("resolveVariant 拒绝非 boolean 的 simd 与非对象的 options", () => {
-  // 注意 { simd: null } 也要抛：null !== undefined，它是「传了个不认识的值」，
-  // 不是「没传」。静默当成没传就又回到探测，用户以为自己指定了变体。
+test("resolveVariant rejects a non-boolean simd and non-object options", () => {
+  // { simd: null } must throw too: null !== undefined, it is "passed something
+  // unrecognized", not "passed nothing". Treating it as absent would fall back to the
+  // probe while the user believes a variant was chosen.
   for (const bad of ["true", 1, 0, null, {}]) {
     assert.throws(() => simd.resolveVariant({ simd: bad }, {}), {
       name: "TypeError",
-      message: /只接受 boolean/,
+      message: /accepts only a boolean/,
     });
   }
   assert.throws(() => simd.resolveVariant("baseline", {}), {
     name: "TypeError",
-    message: /必须是对象/,
+    message: /must be an object/,
   });
-  // null / undefined 都当作「没传 options」
+  // null and undefined both mean "no options"
   assert.strictEqual(simd.resolveVariant(null, {}).source, "probe");
   assert.strictEqual(simd.resolveVariant(undefined, {}).source, "probe");
 });
 
-test("dist/ 是分变体布局：baseline 必在，顶层不再有扁平的 glue", () => {
-  // 这条盯的是 build/assemble.sh 的输出形状。两个变体的 .wasm 文件名都是编译期
-  // 烘焙的 "opencv_js.wasm"，必须分目录存放；一旦有人把布局改回扁平，
-  // src/js/index.js 里 require("./baseline/opencv.js") 会找不到文件，
-  // 而那时报出来的错（MODULE_NOT_FOUND）会被自动模式当成「simd 变体缺失」
-  // 一类的正常情况处理，未必一眼看得出根因。
+test("dist/ has the per-variant layout: baseline is always there, and no flat glue at the top", () => {
+  // This watches the output shape of build/assemble.sh. Both variants' .wasm files carry
+  // the compile-time name "opencv_js.wasm" and must live in separate directories. If the
+  // layout were made flat again, require("./baseline/opencv.js") in src/js/index.js would
+  // not find its file, and the resulting MODULE_NOT_FOUND could be handled by automatic
+  // selection like an ordinary "simd variant missing", hiding the real cause.
   for (const f of ["opencv.js", "opencv_js.wasm"]) {
     assert.ok(
       fs.existsSync(path.join(DIST, "baseline", f)),
-      `缺少 dist/baseline/${f}`,
+      `dist/baseline/${f} is missing`,
     );
     assert.ok(
       !fs.existsSync(path.join(DIST, f)),
-      `dist/${f} 不该存在——2.1 起产物按变体分目录`,
+      `dist/${f} should not exist; artifacts are split by variant since 2.1`,
     );
   }
-  // simd 是可选的（本地可能只构了 baseline），但只要目录在，两个文件都得在。
+  // simd is optional (a local build may have baseline only), but if its directory exists
+  // both files must be in it.
   if (fs.existsSync(path.join(DIST, "simd"))) {
     for (const f of ["opencv.js", "opencv_js.wasm"]) {
       assert.ok(
         fs.existsSync(path.join(DIST, "simd", f)),
-        `dist/simd/ 存在但缺少 ${f}`,
+        `dist/simd/ exists but ${f} is missing`,
       );
     }
   }

@@ -1,24 +1,27 @@
 "use strict";
 
-// 就地写入方法（replaceMatOnRect / rectAdd / rectSubtract / replaceMatOnCol / addOnCol /
-// replaceMatOnRow / replaceMatOnPoint）的数值语义与寻址。
+// Numerical semantics and addressing of the in-place writes (replaceMatOnRect / rectAdd /
+// rectSubtract / replaceMatOnCol / addOnCol / replaceMatOnRow / replaceMatOnPoint).
 //
-// 期望值依据：
-//   - 写进整型 Mat 的值按 OpenCV 的 saturate_cast 处理——四舍六入五成双（cvRound
-//     的舍入规则），再钳到该 depth 的取值范围，NaN 得 0。这也是同一个库里
-//     addConstant / mulConstant 等（走 OpenCV 的 convertTo）一直以来的行为。
-//     旧实现直接赋给 TypedArray：按模 2^n 回绕、小数截断（250 + 20 写进 8U 得 14）。
-//   - 浮点 Mat 原样写入（NaN / ±Infinity 保留）。
-//   - src 与 this 共享内存时按「先整体读出 src、再写」的拷贝语义。
-//   - 只写通道 0（replaceMatOnRow 除外，它写整行的所有通道）。
+// Where the expected values come from:
+//   - Values written into an integer Mat follow OpenCV's saturate_cast: round half to
+//     even (cvRound's rounding), then clamp to the depth's range; NaN becomes 0. That is
+//     also how addConstant / mulConstant and friends (through OpenCV's convertTo) have
+//     always behaved in this library. The old code assigned straight to the TypedArray,
+//     which wraps modulo 2^n and truncates (250 + 20 written to 8U gave 14).
+//   - Floating-point Mats are written as is (NaN / ±Infinity kept).
+//   - When src shares memory with this, the copy semantics apply: src is read in full
+//     before anything is written.
+//   - Only channel 0 is written (except replaceMatOnRow, which writes every channel of
+//     the row).
 //
-// 期望值一律手算，不调用被测方法反推。
+// Expected values are always computed by hand, never derived from the methods under test.
 
 const test = require("node:test");
 const assert = require("node:assert");
 const { getCv } = require("../helpers");
 
-/** 建 Mat，跑 fn，返回数据，结束后释放。 */
+/** Builds a Mat, runs fn, returns the data, and releases the Mat. */
 async function run(type, rows, cols, data, fn) {
   const cv = await getCv();
   const m = cv.matFromArray(rows, cols, cv[type], data);
@@ -30,7 +33,7 @@ async function run(type, rows, cols, data, fn) {
   }
 }
 
-test("addOnCol / rectAdd / rectSubtract 在 8U 上饱和，不回绕", async () => {
+test("addOnCol / rectAdd / rectSubtract saturate on 8U instead of wrapping", async () => {
   assert.deepStrictEqual(
     await run("CV_8UC1", 2, 1, [10, 250], (m) => m.addOnCol(20, 0)),
     [30, 255],
@@ -59,8 +62,8 @@ test("addOnCol / rectAdd / rectSubtract 在 8U 上饱和，不回绕", async () 
   }
 });
 
-test("写进整型 Mat 的小数按四舍六入五成双舍入", async () => {
-  // 10.7 → 11；2.5 → 2；3.5 → 4（.5 取偶，与 cvRound 一致）
+test("fractions written into an integer Mat round half to even", async () => {
+  // 10.7 → 11; 2.5 → 2; 3.5 → 4 (.5 goes to even, like cvRound)
   assert.deepStrictEqual(
     await run("CV_8UC1", 3, 1, [10, 2, 3], (m) => m.addOnCol(0.7, 0)),
     [11, 3, 4],
@@ -75,7 +78,7 @@ test("写进整型 Mat 的小数按四舍六入五成双舍入", async () => {
   );
 });
 
-test("replaceMatOnRect 把浮点 src 写进 8U 时饱和、舍入，NaN 得 0", async () => {
+test("replaceMatOnRect saturates and rounds a float src written into 8U, and NaN becomes 0", async () => {
   const cv = await getCv();
   const src = cv.matFromArray(1, 4, cv.CV_32FC1, [300.7, -5, 2.5, NaN]);
   try {
@@ -90,7 +93,7 @@ test("replaceMatOnRect 把浮点 src 写进 8U 时饱和、舍入，NaN 得 0", 
   }
 });
 
-test("replaceMatOnCol / replaceMatOnRow / replaceMatOnPoint 写进 8S 时饱和", async () => {
+test("replaceMatOnCol / replaceMatOnRow / replaceMatOnPoint saturate when writing 8S", async () => {
   assert.deepStrictEqual(
     await run("CV_8SC1", 3, 1, [0, 0, 0], (m) =>
       m.replaceMatOnCol([200, -200, 1.5], 0),
@@ -109,7 +112,7 @@ test("replaceMatOnCol / replaceMatOnRow / replaceMatOnPoint 写进 8S 时饱和"
   );
 });
 
-test("CV_32S 上的就地写入同样饱和（不溢出成 INT_MIN）", async () => {
+test("in-place writes saturate on CV_32S too (no overflow to INT_MIN)", async () => {
   assert.deepStrictEqual(
     await run("CV_32SC1", 2, 1, [2147483647, -2147483648], (m) =>
       m.addOnCol(10, 0),
@@ -118,7 +121,7 @@ test("CV_32S 上的就地写入同样饱和（不溢出成 INT_MIN）", async ()
   );
 });
 
-test("浮点 Mat 原样写入：±Infinity 与 NaN 保留", async () => {
+test("floating-point Mats are written as is: ±Infinity and NaN are kept", async () => {
   const got = await run("CV_32FC1", 3, 1, [1, 2, 3], (m) => {
     m.replaceMatOnCol([Infinity, -Infinity, NaN], 0);
   });
@@ -127,17 +130,17 @@ test("浮点 Mat 原样写入：±Infinity 与 NaN 保留", async () => {
   assert.ok(Number.isNaN(got[2]));
 });
 
-test("src 与 this 是同一个 Mat 时按拷贝语义（先读完 src 再写）", async () => {
+test("when src and this are the same Mat, copy semantics apply (src is read before writing)", async () => {
   const cv = await getCv();
   const rect = new cv.Rect(1, 1, 2, 2);
-  // 3×3 [1..9]，把左上 2×2（1,2 / 4,5）写进右下 2×2
+  // 3×3 [1..9]: write the top-left 2×2 (1,2 / 4,5) into the bottom-right 2×2
   assert.deepStrictEqual(
     await run("CV_8UC1", 3, 3, [1, 2, 3, 4, 5, 6, 7, 8, 9], (m) =>
       m.replaceMatOnRect(m, rect),
     ),
     [1, 2, 3, 4, 1, 2, 7, 4, 5],
   );
-  // 右下 2×2 分别加上原来的左上 2×2：5+1, 6+2, 8+4, 9+5
+  // The bottom-right 2×2 plus the original top-left 2×2: 5+1, 6+2, 8+4, 9+5
   assert.deepStrictEqual(
     await run("CV_8UC1", 3, 3, [1, 2, 3, 4, 5, 6, 7, 8, 9], (m) =>
       m.rectAdd(m, rect),
@@ -146,7 +149,7 @@ test("src 与 this 是同一个 Mat 时按拷贝语义（先读完 src 再写）
   );
 });
 
-test("src 是 this 的视图、且与写入区重叠时也按拷贝语义", async () => {
+test("copy semantics also apply when src is a view of this that overlaps the written region", async () => {
   const cv = await getCv();
   assert.deepStrictEqual(
     await run("CV_8UC1", 3, 3, [1, 2, 3, 4, 5, 6, 7, 8, 9], (m) => {
@@ -161,17 +164,17 @@ test("src 是 this 的视图、且与写入区重叠时也按拷贝语义", asyn
   );
 });
 
-test("dst 是原生 roi() 视图时按视图自己的位置与行跨度写入", async () => {
+test("a dst that is a native roi() view is written at the view's own position and row stride", async () => {
   const cv = await getCv();
   const src = cv.matFromArray(2, 2, cv.CV_16SC1, [10, 20, 30, 40]);
   try {
-    // 4×4 父 Mat 全 0，视图取 Rect(1,1,3,2)；在视图的 Rect(1,0,2,2) 上累加 src，
-    // 落到父 Mat 的 (1,2)(1,3)(2,2)(2,3)
+    // A 4×4 parent of zeros and its Rect(1,1,3,2) view; adding src at the view's
+    // Rect(1,0,2,2) lands on (1,2)(1,3)(2,2)(2,3) of the parent
     const got = await run("CV_16SC1", 4, 4, new Array(16).fill(0), (m) => {
       const view = m.roi(new cv.Rect(1, 1, 3, 2));
       try {
         view.rectAdd(src, new cv.Rect(1, 0, 2, 2));
-        view.addOnCol(5, 0); // 视图第 0 列 = 父 Mat 第 1 列的第 1、2 行
+        view.addOnCol(5, 0); // column 0 of the view = rows 1 and 2 of the parent's column 1
       } finally {
         view.delete();
       }
@@ -188,7 +191,7 @@ test("dst 是原生 roi() 视图时按视图自己的位置与行跨度写入", 
   }
 });
 
-test("多通道上只写通道 0（replaceMatOnRow 写整行的所有通道）", async () => {
+test("only channel 0 is written on multi-channel Mats (replaceMatOnRow writes every channel of the row)", async () => {
   const cv = await getCv();
   const src = cv.matFromArray(1, 1, cv.CV_16SC2, [7, 8]);
   try {

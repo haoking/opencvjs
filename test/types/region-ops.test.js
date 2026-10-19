@@ -12,8 +12,8 @@ const {
   callRegion,
 } = require("../helpers");
 
-// 2.0 起被测的是 roiClone / colClone / diagClone（见 helpers.callRegion）；
-// 这里的 api 名只是用例标识与期望值分支的键，故保持 roi/col/diag 不变。
+// The methods under test are roiClone / colClone / diagClone (see helpers.callRegion);
+// the api names here only label the cases and select the expected values.
 const APIS = ["roi", "col", "diag"];
 
 for (const depth of DEPTHS) {
@@ -21,7 +21,7 @@ for (const depth of DEPTHS) {
     for (const api of APIS) {
       const typeName = `CV_${depth}C${channels}`;
 
-      test(`${api}Clone() on ${typeName} 返回连续且正确的数据`, async () => {
+      test(`${api}Clone() on ${typeName} returns continuous, correct data`, async () => {
         const cv = await getCv();
         const { mat, data } = makeMat(cv, depth, channels);
         let out;
@@ -30,7 +30,7 @@ for (const depth of DEPTHS) {
             out = callRegion(cv, mat, api);
           } catch (e) {
             assert.fail(
-              `${api}Clone() on ${typeName} 崩溃: ${describeError(e)}`,
+              `${api}Clone() on ${typeName} crashed: ${describeError(e)}`,
             );
           }
 
@@ -40,12 +40,12 @@ for (const depth of DEPTHS) {
           assert.strictEqual(
             out.isContinuous(),
             true,
-            `${api}Clone() on ${typeName} 返回了非连续 Mat —— .data* 读取会得到错误数据`,
+            `${api}Clone() on ${typeName} returned a non-continuous Mat; reading .data* would give wrong data`,
           );
           assert.deepStrictEqual(
             got,
             want,
-            `${api}Clone() on ${typeName} 数据错误`,
+            `${api}Clone() on ${typeName} returned wrong data`,
           );
         } finally {
           mat.delete();

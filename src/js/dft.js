@@ -1,51 +1,56 @@
 "use strict";
 
 /**
- * dftSplit() —— 把 cv.dft() 的 CCS-packed 单通道输出拆成实部 / 虚部两个 Mat。
+ * dftSplit() — splits the CCS-packed single-channel output of cv.dft() into a real and an
+ * imaginary Mat.
  *
- * ┌──────────────────────────────────────────────────────────────────────────┐
- * │ ⚠️⚠️ 这个函数的正确性没有任何证据支撑，请勿在新代码里使用。            │
- * │                                                                          │
- * │ (a) 它的 CCS 展开约定**从未被独立验证过**。本仓库对它做过的全部验证只有 │
- * │     「2.0 的搬运与 1.x 逐元素一致」和「输出无 NaN」——两者都不能说明这个 │
- * │     展开约定本身是对的。                                                 │
- * │ (b) 它在 1.x 时代的唯一消费者是当时手写的 mulSpectrums()，而那个实现     │
- * │     **返回 NaN**。也就是说这条链路从来没有过可用的端到端参照，不存在    │
- * │     「它以前工作正常」这回事。                                           │
- * │ (c) 需要复数谱相乘，请直接用原生 cv.mulSpectrums(a, b, dst, flags,      │
- * │     conjB)——它直接在 CCS 格式上做乘法，根本不需要先拆分。实测           │
- * │     [1,2,3,4]×[5,6,7,8] → 5, -9, 32, 32，无 NaN。                       │
- * │                                                                          │
- * │ 保留而不删除，只因为它属于 1.x 的公开 API，删除要走废弃周期。            │
- * └──────────────────────────────────────────────────────────────────────────┘
+ * **Deprecated: nothing supports the correctness of this function. Do not use it in new
+ * code.**
  *
- * cv.dft() 不带 DFT_COMPLEX_OUTPUT 时，输出是 CCS（complex-conjugate-symmetrical）
- * 紧凑格式：实虚部交错塞在一个单通道 Mat 里，且首列 / 末列的排布与中间各列
- * 不同。OpenCV 没有导出把它展开成两个实数 Mat 的函数，所以这个手写实现保留，
- * 实现逐字搬运自 1.x。
+ *  (a) Its CCS unpacking convention has **never been verified independently**. The only
+ *      checks this repository ever made are "2.0 matches 1.x element for element" and
+ *      "the output has no NaN"; neither says the convention itself is right.
+ *  (b) Its only consumer in 1.x was the hand-written mulSpectrums() of the time, which
+ *      **returned NaN**. The chain never had a working end-to-end reference, so "it used
+ *      to work" does not apply.
+ *  (c) For complex spectrum multiplication use native cv.mulSpectrums(a, b, dst, flags,
+ *      conjB): it multiplies in CCS format directly, with no need to split first
+ *      ([1,2,3,4] × [5,6,7,8] → 5, -9, 32, 32, no NaN).
+ *
+ * It is kept only because it is public API from 1.x, and removing it needs a deprecation
+ * cycle.
+ *
+ * Without DFT_COMPLEX_OUTPUT, cv.dft() returns the compact CCS
+ * (complex-conjugate-symmetrical) format: real and imaginary parts interleaved in one
+ * single-channel Mat, with the first and last columns laid out differently from the
+ * others. OpenCV exports no function that unpacks it into two real Mats, so this
+ * hand-written implementation, carried over verbatim from 1.x, stays.
  */
 
 module.exports = function applyDft(cv, guards) {
   /**
-   * @deprecated 正确性未经验证，且已无消费者。需要复数谱相乘请用原生
-   *   cv.mulSpectrums()。详见本文件顶部的说明。
-   * @returns {{r: cv.Mat, i: cv.Mat}} 实部与虚部（调用方负责 delete）
+   * @deprecated Correctness unverified and no remaining consumer. For complex spectrum
+   *   multiplication use native cv.mulSpectrums(). See the top of this file.
+   * @returns {{r: cv.Mat, i: cv.Mat}} the real and imaginary parts (the caller deletes them)
    */
   cv.Mat.prototype.dftSplit = function dftSplit() {
     const where = "Mat.dftSplit()";
-    guards.mat(this, "接收者 Mat", where);
-    // CCS 是 cv.dft() 不带 DFT_COMPLEX_OUTPUT 时的**单通道**输出格式，而下面的实现
-    // 也只读写通道 0。多通道输入上它会丢掉除通道 0 以外的全部数据，静默返回垃圾
-    // （实测 CV_32FC2 的 [1..8] 得到 1,0,3,0,5,0,7,0）。
+    guards.mat(this, "the receiver", where);
+    // CCS is the **single-channel** output of cv.dft() without DFT_COMPLEX_OUTPUT, and the
+    // code below reads and writes channel 0 only. On multi-channel input it drops every
+    // other channel and silently returns garbage (CV_32FC2 [1..8] gave 1,0,3,0,5,0,7,0).
     guards.channels(this, [1], where);
-    // 注意：这里**不**校验行列数为偶数。这个实现在奇数尺寸上依赖「M/2 被截断成
-    // 整数」——3×3 上 M/2 = 1.5，1.x 与 2.0 一路靠 embind 悄悄截成第 1 行，而
-    // README 里那个唯一的示例正好就是 3×3、其输出被逐字记录在文档里。
+    // Even row / column counts are deliberately **not** required. On odd sizes the code
+    // relies on M/2 being truncated to an integer: on 3×3, M/2 = 1.5, which 1.x and 2.0
+    // let Embind truncate to row 1 — and the only documented example is exactly 3×3, with
+    // its output recorded in the docs.
     //
-    // PTR() 现在会拒绝小数下标，所以下面把截断写成显式的 Math.trunc：**输出逐字
-    // 不变**（embind 也是向零截断，已在 1×4 / 2×2 / 3×3 / 4×4 上逐元素比对过），
-    // 只是把原来藏在 embind 里的行为摆到源码表面。这个函数的展开约定本来就没有
-    // 任何证据支撑（见文件顶部），此处不借加校验之名去改一个已发布的输出。
+    // PTR() now rejects fractional indices, so the truncation is spelled out as
+    // Math.trunc: **the output is unchanged** (Embind truncates towards zero as well,
+    // compared element by element on 1×4 / 2×2 / 3×3 / 4×4); the behaviour that was
+    // hidden inside Embind is just visible in the source now. Nothing supports the
+    // unpacking convention in the first place (see the top of the file), so adding
+    // validation is no excuse to change a published output.
     const M = this.rows;
     const N = this.cols;
     const midRow = Math.trunc(M / 2);
@@ -54,8 +59,9 @@ module.exports = function applyDft(cv, guards) {
     const colOneArray = [];
     const colLastArray = [];
 
-    // 两个输出 Mat 先分配、后逐元素填。空 Mat（第一次写 PTR(0, 0) 就越界）或不支持的
-    // depth 会在填的中途抛出，那时调用方拿不到这两个 Mat 的引用，只能在这里释放。
+    // Both output Mats are allocated first and filled element by element. An empty Mat
+    // (the first PTR(0, 0) is out of range) or an unsupported depth throws halfway
+    // through, when the caller has no reference to them yet, so they are released here.
     let realMat = null;
     let imagMat = null;
     try {
