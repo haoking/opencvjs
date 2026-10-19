@@ -128,19 +128,20 @@ for 10% more wasm, a higher engine floor and native failures turning into
 
 ### Size
 
-gzip `-9`, brotli quality 11 with a 24-bit window:
+The CI-built artifacts (build-wasm run 39340489087); gzip `-9`, brotli quality 11 with a
+24-bit window:
 
 | Artifact                  | 3.0.0                 | 4.0.0                | Change  |
 | ------------------------- | --------------------- | -------------------- | ------- |
-| `baseline/opencv_js.wasm` | 12,104,983 B          | 12,047,916 B         | −0.47%  |
-| gzip                      | 3,517,017 B           | 3,513,634 B          | −0.10%  |
-| brotli                    | 2,565,667 B           | 2,577,085 B          | +0.45%  |
-| `simd/opencv_js.wasm`     | 14,595,094 B          | 14,459,534 B         | −0.93%  |
-| gzip                      | 4,030,751 B           | 4,040,095 B          | +0.23%  |
-| brotli                    | 2,879,930 B           | 2,899,153 B          | +0.67%  |
+| `baseline/opencv_js.wasm` | 12,104,983 B          | 11,999,500 B         | −0.87%  |
+| gzip                      | 3,517,017 B           | 3,511,705 B          | −0.15%  |
+| brotli                    | 2,565,667 B           | 2,573,531 B          | +0.31%  |
+| `simd/opencv_js.wasm`     | 14,595,094 B          | 14,411,010 B         | −1.26%  |
+| gzip                      | 4,030,751 B           | 4,038,606 B          | +0.19%  |
+| brotli                    | 2,879,930 B           | 2,900,625 B          | +0.72%  |
 | glue `opencv.js` (each)   | 143,496 B             | 131,808 B            | −8.15%  |
-| single-file `opencv.js`   | 16,283,334 B (base64) | 13,395,809 B (UTF-8) | −17.73% |
-| npm package, unpacked     | 27.2 MB               | 27.0 MB              | —       |
+| single-file `opencv.js`   | 16,283,334 B (base64) | 13,356,444 B (UTF-8) | −17.97% |
+| npm package, unpacked     | 27.2 MB               | 26.9 MB              | —       |
 | npm package, tarball      | 7.8 MB                | 7.7 MB               | —       |
 
 The 3.x single-file size is the 3.1.0 candidate's (same toolchain as 3.0.0, which was not

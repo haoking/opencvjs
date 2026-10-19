@@ -610,39 +610,43 @@ discarded, the minimum of two passes with alternating start order.
 
 - **arm64**: node v22.22.2 / darwin-arm64, the 4.0.0 build (Emscripten 6.0.12). The noise
   floor, calibrated with two identical binaries, is ±3%.
-- **x86-64**: node v22.23.2 / linux-x64 on a shared GitHub Actions runner (not
-  noise-calibrated), the 3.1.0 candidate build (Emscripten 3.1.64).
+- **x86-64**: node v24.21.0 / linux-x64, the 4.0.0 build, two runs of the CI `verify` job
+  on shared GitHub Actions runners (not noise-calibrated); the ranges span both runs.
 
-| Operation                       | arm64     | x86-64    | Upstream 2020 |
-| ------------------------------- | --------- | --------- | ------------- |
-| `absdiff` 8UC3 256²             | **14.0x** | **15.9x** | —             |
-| `add` 8UC1 256²                 | **12.3x** | **12.9x** | —             |
-| `resize` 8UC4 256²→128²         | **4.4x**  | **4.2x**  | 1.77x         |
-| `GaussianBlur` 8UC1 256² k=5    | **3.3x**  | **2.6x**  | 3.36x         |
-| `pyrDown` 32FC4 256²            | **3.0x**  | **3.4x**  | 3.09x         |
-| `Sobel` 32FC1 256²              | 2.1x      | 2.0x      | —             |
-| `blur` 32FC1 256² k=5           | 1.6x      | 1.4x      | **0.519x**    |
-| `warpAffine` 8UC1 256²          | 1.2x      | **2.9x**  | —             |
-| `cvtColor` RGBA2GRAY 8UC4 256²  | 0.99x     | 1.01x     | —             |
-| `roiClone` 32² of 64²           | 1.00x     | 0.94x     | —             |
-| `replaceMatOnRect` 32² into 64² | 1.04x     | 0.97x     | —             |
-| `dft` 32FC1 256²                | **0.95x** | **0.90x** | —             |
+| Operation                       | arm64     | x86-64         | Upstream 2020 |
+| ------------------------------- | --------- | -------------- | ------------- |
+| `absdiff` 8UC3 256²             | **14.0x** | **11.5–16.8x** | —             |
+| `add` 8UC1 256²                 | **12.3x** | **8.6–10.6x**  | —             |
+| `resize` 8UC4 256²→128²         | **4.4x**  | **2.5–3.1x**   | 1.77x         |
+| `GaussianBlur` 8UC1 256² k=5    | **3.3x**  | **1.6–2.1x**   | 3.36x         |
+| `pyrDown` 32FC4 256²            | **3.0x**  | **3.0–3.4x**   | 3.09x         |
+| `Sobel` 32FC1 256²              | 2.1x      | 2.1–2.3x       | —             |
+| `blur` 32FC1 256² k=5           | 1.6x      | 1.6–1.7x       | **0.519x**    |
+| `warpAffine` 8UC1 256²          | 1.2x      | **4.3–4.8x**   | —             |
+| `cvtColor` RGBA2GRAY 8UC4 256²  | 0.99x     | **0.63–0.82x** | —             |
+| `roiClone` 32² of 64²           | 1.00x     | 1.00–1.04x     | —             |
+| `replaceMatOnRect` 32² into 64² | 1.04x     | 0.96–1.00x     | —             |
+| `dft` 32FC1 256²                | **0.95x** | 0.94–1.01x     | —             |
 
-- **`dft` is consistently slower with SIMD**: 0.95x here, 0.90x on x86-64 and on the 3.x
-  builds, 0.91x on OpenCV 4.14.0.
-- **`warpAffine` gains less on arm64 than it used to** (2.1x with Emscripten 3.1.64)
-  because Emscripten 6.0.12 made the _baseline_ build 1.7x faster, not because SIMD got
-  slower.
+- **`dft` gains nothing from SIMD**: 0.95x on arm64 and 0.94–1.01x on x86-64 here, 0.90x
+  on the 3.x builds, 0.91x on OpenCV 4.14.0.
+- **`cvtColor` RGBA2GRAY is slower with SIMD on x86-64** (0.63–0.82x here, 0.84x on
+  OpenCV 4.14.0, 1.01x on the 3.x build) and neutral on arm64.
+- **`warpAffine` gains far more on x86-64 than on arm64** because its baseline build is
+  slow there (120–200 ms against 19 ms on arm64). On arm64, Emscripten 6.0.12 made the
+  baseline 1.7x faster, which shrank the speedup from 2.1x to 1.2x.
+- **Shared runners vary**: the two x86-64 runs differ by up to 30% on single operations,
+  so small differences there are noise.
 - **Upstream's 2020 per-kernel data does not carry over**: its counterexample, `blur`
-  CV_32FC1 at 0.519x, is a speedup here, while `GaussianBlur` and `pyrDown` match it.
-  Measure the operations you care about.
+  CV_32FC1 at 0.519x, is a speedup here, while `pyrDown` matches it. Measure the
+  operations you care about.
 - The two extension-layer cases are within noise, as expected: they are a memory copy and
   a JS loop over the heap, neither of which `-msimd128` vectorizes.
 
 ### When to turn SIMD off
 
-Rarely. If your workload is dominated by `cv.dft()` (including `DFT_INVERSE`), the
-baseline build is 5–10% faster:
+Rarely. If your workload is dominated by `cv.dft()` (including `DFT_INVERSE`), or by
+color conversion on x86-64, the baseline build is as fast or faster:
 
 ```javascript
 const cv = await require("@haoking/opencvjs")({ simd: false });
