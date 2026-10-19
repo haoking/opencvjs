@@ -3,7 +3,7 @@
 All notable changes to `@haoking/opencvjs`. The project follows
 [semantic versioning](https://semver.org/).
 
-## 4.0.0 — Unreleased
+## 4.0.0 — 2026-10-19
 
 The toolchain moves from Emscripten 3.1.64 to 6.0.12 and the supported Node.js versions to
 22 and later. 4.0.0 also contains everything prepared for 3.1.0, which was never
